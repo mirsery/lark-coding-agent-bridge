@@ -35,6 +35,11 @@ export interface AgentRunOptions {
   sessionId?: string;
   threadId?: string;
   model?: string;
+  /**
+   * Reasoning effort for adapters whose CLI exposes one (Claude Code's
+   * `--effort`). Adapters without the concept ignore it.
+   */
+  effort?: string;
   images?: readonly string[];
   sandbox?: CodexSandboxMode;
   permissionMode?: ClaudePermissionMode;

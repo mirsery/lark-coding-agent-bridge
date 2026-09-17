@@ -68,6 +68,9 @@ export interface SecretsConfig {
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 export type CotMessagesMode = 'off' | 'brief' | 'detailed';
+/** Claude Code `--effort` levels, in the CLI's own order. */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
  * Access control settings. Empty lists are fail-closed in the v2 policy:
@@ -114,6 +117,13 @@ export interface AppPreferences {
    * CLI / account default applies. Default: unset.
    */
   model?: string;
+  /**
+   * Reasoning effort, forwarded as Claude Code's `--effort`. Claude-only —
+   * Codex sizes its own reasoning and has no matching flag, so the value is
+   * ignored for `codex` profiles. `undefined` means "don't pass `--effort`"
+   * and the CLI default applies. Default: unset.
+   */
+  effort?: EffortLevel;
   /**
    * Whether to send a separate Lark COT process message before the final
    * answer. `brief` mirrors the lightweight tool/progress visibility from

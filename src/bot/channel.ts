@@ -6,7 +6,12 @@ import type {
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { claudeCapability, codexCapability } from '../agent/capability';
-import { modelLabel, normalizeModelSelection, resolveModelArg } from '../agent/models';
+import {
+  modelLabel,
+  normalizeModelSelection,
+  resolveEffortArg,
+  resolveModelArg,
+} from '../agent/models';
 import {
   buildAgentPrompt,
   type BridgePromptInteractiveCard,
@@ -1064,6 +1069,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       title: channel.botIdentity?.name ?? controls.profile,
       agent: capability.agentId,
       model: modelLabel(agentKind, modelPref),
+      effort: resolveEffortArg(agentKind, controls.profileConfig.preferences.effort),
       provider: agentKind === 'codex' ? 'openai' : 'anthropic',
     },
     ...(callbackAuth

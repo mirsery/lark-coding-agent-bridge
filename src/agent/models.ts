@@ -1,4 +1,5 @@
 import type { AgentKind } from '../config/profile-schema';
+import { EFFORT_LEVELS, type EffortLevel } from '../config/schema';
 
 /**
  * Sentinel selection meaning "don't pass `--model`; let the agent CLI /
@@ -27,7 +28,8 @@ export interface ModelOption {
  */
 const CLAUDE_MODELS: ModelOption[] = [
   { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
-  { value: 'claude-opus-4-8', label: 'Opus 4.8（最新）' },
+  { value: 'claude-opus-5', label: 'Opus 5（最新）' },
+  { value: 'claude-opus-4-8', label: 'Opus 4.8' },
   { value: 'claude-opus-4-7', label: 'Opus 4.7' },
   { value: 'claude-sonnet-5', label: 'Sonnet 5（最新）' },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
@@ -80,6 +82,21 @@ export function resolveModelArg(
 ): string | undefined {
   const normalized = normalizeModelSelection(agentKind, value);
   return normalized === DEFAULT_MODEL ? undefined : normalized;
+}
+
+/**
+ * Resolve the concrete `--effort` value to hand the agent, or `undefined` to
+ * omit the flag. Claude-only: Codex sizes its own reasoning and rejects an
+ * unknown flag, so a stored level is ignored for `codex` profiles. Unknown
+ * levels (hand-edited config, a level a future CLI drops) also fall back to
+ * the CLI default rather than failing the run.
+ */
+export function resolveEffortArg(
+  agentKind: AgentKind,
+  value: string | undefined,
+): EffortLevel | undefined {
+  if (agentKind !== 'claude') return undefined;
+  return EFFORT_LEVELS.includes(value as EffortLevel) ? (value as EffortLevel) : undefined;
 }
 
 /** Picker label for a stored value, for display in the saved-config card. */

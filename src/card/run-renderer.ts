@@ -24,6 +24,8 @@ export interface RunCardMeta {
   title: string;
   agent?: string;
   model?: string;
+  /** Reasoning effort, omitted when the profile leaves it at the CLI default. */
+  effort?: string;
   provider?: string;
 }
 
@@ -99,6 +101,7 @@ function byline(meta: RunCardMeta | undefined): object[] {
   const parts = [
     meta.agent ? `Agent: ${meta.agent}` : undefined,
     meta.model ? `Model: ${meta.model}` : undefined,
+    meta.effort ? `Effort: ${meta.effort}` : undefined,
     meta.provider ? `Provider: ${meta.provider}` : undefined,
   ].filter((p): p is string => p !== undefined);
   if (parts.length === 0) return [];

@@ -4,6 +4,7 @@ import {
   isDefaultModel,
   modelLabel,
   normalizeModelSelection,
+  resolveEffortArg,
   resolveModelArg,
   supportedModels,
 } from '../../../src/agent/models.js';
@@ -42,7 +43,18 @@ describe('agent model catalog', () => {
   });
 
   it('labels a stored value using the picker option text', () => {
-    expect(modelLabel('claude', 'claude-opus-4-8')).toBe('Opus 4.8（最新）');
+    expect(modelLabel('claude', 'claude-opus-5')).toBe('Opus 5（最新）');
+    expect(modelLabel('claude', 'claude-opus-4-8')).toBe('Opus 4.8');
     expect(modelLabel('claude', DEFAULT_MODEL)).toContain('跟随默认');
+  });
+
+  it('resolves --effort only for claude, and only for known levels', () => {
+    expect(resolveEffortArg('claude', 'xhigh')).toBe('xhigh');
+    expect(resolveEffortArg('claude', 'max')).toBe('max');
+    // Unset / unknown / hand-edited → omit the flag, let the CLI default win.
+    expect(resolveEffortArg('claude', undefined)).toBeUndefined();
+    expect(resolveEffortArg('claude', 'extra')).toBeUndefined();
+    // Codex has no --effort flag; a stored level must not leak into its argv.
+    expect(resolveEffortArg('codex', 'xhigh')).toBeUndefined();
   });
 });
