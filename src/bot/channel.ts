@@ -1048,9 +1048,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   // Re-read prefs on every flush so toggling /config mid-stream takes
   // effect immediately. Cheap object lookups, no allocation when on.
+  // The thinking panel is process detail too, so it follows `showToolCalls`:
+  // someone who turned tool calls off wants the answer, not the reasoning that
+  // led to it. Only card mode renders it — `renderText` never did.
   const filterForPrefs = (state: RunState): RunState => {
     if (getShowToolCalls(controls.cfg)) return state;
-    return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
+    return {
+      ...state,
+      blocks: state.blocks.filter((b) => b.kind !== 'tool'),
+      reasoning: { content: '', active: false },
+    };
   };
   const cardRenderOptions: RunCardRenderOptions = {
     meta: {
