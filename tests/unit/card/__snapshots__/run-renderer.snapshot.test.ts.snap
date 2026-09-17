@@ -97,6 +97,7 @@ _运行中…_",
     "summary": {
       "content": "正在调用工具",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }
@@ -146,6 +147,7 @@ exports[`run card renderer snapshots > collapses consecutive tools while preserv
     "summary": {
       "content": "已完成",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }
@@ -214,6 +216,7 @@ exports[`run card renderer snapshots > renders active and completed thinking 1`]
     "summary": {
       "content": "思考中",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }
@@ -265,6 +268,7 @@ exports[`run card renderer snapshots > renders active and completed thinking 2`]
     "summary": {
       "content": "已完成",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }
@@ -286,6 +290,7 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
     "summary": {
       "content": "已完成",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }
@@ -307,6 +312,7 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
     "summary": {
       "content": "出错",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }
@@ -332,6 +338,7 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
     "summary": {
       "content": "已中断",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }
@@ -357,6 +364,7 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
     "summary": {
       "content": "已超时",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }
@@ -394,6 +402,7 @@ exports[`run card renderer snapshots > renders initial running state 1`] = `
     "summary": {
       "content": "思考中",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }
@@ -499,6 +508,7 @@ _运行中…_",
     "summary": {
       "content": "正在调用工具",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }
@@ -554,6 +564,7 @@ pwd
     "summary": {
       "content": "已完成",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }
@@ -606,6 +617,7 @@ ENOENT
     "summary": {
       "content": "已完成",
     },
+    "width_mode": "fill",
   },
   "schema": "2.0",
 }

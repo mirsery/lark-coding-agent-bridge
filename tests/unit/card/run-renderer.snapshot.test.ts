@@ -100,6 +100,48 @@ describe('run card renderer snapshots', () => {
     });
   });
 
+  it('renders a header bar and byline when identity meta is supplied', () => {
+    const meta = { title: 'CC', agent: 'claude', model: 'Opus 5', provider: 'anthropic' };
+
+    const running = renderCard(initialState, { meta }) as {
+      header?: { template?: string; title?: { content?: string } };
+      body?: { elements?: Array<{ tag?: string; content?: string }> };
+    };
+    expect(running.header).toEqual({ template: 'blue', title: { tag: 'plain_text', content: 'CC' } });
+    // While streaming, the footer status + stop button own the bottom of the
+    // card — the byline would only push them down.
+    expect(JSON.stringify(running.body)).not.toContain('Provider');
+
+    const done = renderCard(stateFrom([{ type: 'done', terminationReason: 'normal' }]), {
+      meta,
+    }) as { header?: { template?: string }; body?: { elements?: Array<{ tag?: string; content?: string }> } };
+    const elements = done.body?.elements ?? [];
+    expect(done.header?.template).toBe('blue');
+    expect(elements[elements.length - 2]?.tag).toBe('hr');
+    expect(elements[elements.length - 1]?.content).toBe(
+      "<font color='grey'>Agent: claude | Model: Opus 5 | Provider: anthropic</font>",
+    );
+
+    const failed = renderCard(
+      stateFrom([{ type: 'error', message: 'process failed', terminationReason: 'failed' }]),
+      { meta },
+    ) as { header?: { template?: string } };
+    expect(failed.header?.template).toBe('red');
+
+    const interrupted = renderCard(markInterrupted(stateFrom([{ type: 'text', delta: 'partial' }])), {
+      meta,
+    }) as { header?: { template?: string } };
+    expect(interrupted.header?.template).toBe('grey');
+  });
+
+  it('omits the header and byline when no identity meta is supplied', () => {
+    const card = renderCard(stateFrom([{ type: 'done', terminationReason: 'normal' }])) as {
+      header?: unknown;
+    };
+    expect(card.header).toBeUndefined();
+    expect(JSON.stringify(card)).not.toContain('Provider');
+  });
+
   it('keeps local paths in user-visible cards and text fallbacks', () => {
     const sensitivePath = '/Users/example/private/customer/repo/secret.txt';
     const state = stateFrom([

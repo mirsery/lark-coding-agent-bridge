@@ -19,6 +19,7 @@ import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
+import type { RunCardRenderOptions } from '../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
@@ -1051,20 +1052,28 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (getShowToolCalls(controls.cfg)) return state;
     return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
   };
-  const cardRenderOptions = callbackAuth
-    ? {
-        signCallback: (action: string) =>
-          callbackAuth.sign({
-            runId: execution.runId,
-            scope,
-            chatId,
-            operatorOpenId: firstMsg.senderId,
-            action,
-            policyFingerprint: flow.policy.policyFingerprint,
-            ttlMs: 24 * 60 * 60 * 1000,
-          }),
-      }
-    : {};
+  const cardRenderOptions: RunCardRenderOptions = {
+    meta: {
+      title: channel.botIdentity?.name ?? controls.profile,
+      agent: capability.agentId,
+      model: modelLabel(agentKind, modelPref),
+      provider: agentKind === 'codex' ? 'openai' : 'anthropic',
+    },
+    ...(callbackAuth
+      ? {
+          signCallback: (action: string) =>
+            callbackAuth.sign({
+              runId: execution.runId,
+              scope,
+              chatId,
+              operatorOpenId: firstMsg.senderId,
+              action,
+              policyFingerprint: flow.policy.policyFingerprint,
+              ttlMs: 24 * 60 * 60 * 1000,
+            }),
+        }
+      : {}),
+  };
 
   // For non-card modes Claude's output doesn't surface visually until either
   // a first streamed token (markdown mode) or the whole run ends (text mode).
@@ -1448,7 +1457,7 @@ async function sendFinalReply(input: {
   state: RunState;
   replyMode: ReturnType<typeof getMessageReplyMode>;
   sendOpts: { replyTo: string; replyInThread?: boolean };
-  cardRenderOptions: { signCallback?: (action: string) => string };
+  cardRenderOptions: RunCardRenderOptions;
 }): Promise<void> {
   const body = renderText(input.state);
 

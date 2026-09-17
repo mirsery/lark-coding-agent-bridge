@@ -1,5 +1,5 @@
 import { deepMaskEmails } from './mask-email';
-import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
+import type { Block, FooterStatus, RunState, Terminal, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
 const REASONING_MAX = 1500;
@@ -15,8 +15,21 @@ interface TextGroup {
 }
 type Group = ToolGroup | TextGroup;
 
+/**
+ * Identity shown in the card's header bar and footer byline. Optional so the
+ * command cards (`/doctor`) can keep rendering a bare body.
+ */
+export interface RunCardMeta {
+  /** Header bar title — the bot's own IM name, e.g. `CC`. */
+  title: string;
+  agent?: string;
+  model?: string;
+  provider?: string;
+}
+
 export interface RunCardRenderOptions {
   signCallback?: (action: string) => string;
+  meta?: RunCardMeta;
 }
 
 export function renderCard(state: RunState, options: RunCardRenderOptions = {}): object {
@@ -50,6 +63,8 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   if (state.terminal === 'running') {
     if (state.footer) elements.push(footerStatus(state.footer));
     elements.push(stopButton(options));
+  } else {
+    elements.push(...byline(options.meta));
   }
 
   // Mask raw emails across every text field so the Feishu tenant audit doesn't
@@ -57,11 +72,40 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   return deepMaskEmails({
     schema: '2.0',
     config: {
+      // `fill` widens the card to the chat column; without it long answers get
+      // squeezed into a narrow strip on desktop.
+      width_mode: 'fill',
       streaming_mode: state.terminal === 'running',
       summary: { content: summaryText(state) },
     },
+    ...(options.meta ? { header: cardHeader(options.meta.title, state.terminal) } : {}),
     body: { elements },
   });
+}
+
+/** Coloured title bar: blue while healthy, red on failure, grey when cut short. */
+function cardHeader(title: string, terminal: Terminal): object {
+  const template =
+    terminal === 'error' ? 'red' : terminal === 'running' || terminal === 'done' ? 'blue' : 'grey';
+  return {
+    template,
+    title: { tag: 'plain_text', content: title },
+  };
+}
+
+/** `hr` + grey agent/model line, mirroring what other bridge bots sign with. */
+function byline(meta: RunCardMeta | undefined): object[] {
+  if (!meta) return [];
+  const parts = [
+    meta.agent ? `Agent: ${meta.agent}` : undefined,
+    meta.model ? `Model: ${meta.model}` : undefined,
+    meta.provider ? `Provider: ${meta.provider}` : undefined,
+  ].filter((p): p is string => p !== undefined);
+  if (parts.length === 0) return [];
+  return [
+    { tag: 'hr' },
+    { tag: 'markdown', content: `<font color='grey'>${parts.join(' | ')}</font>` },
+  ];
 }
 
 function* groupBlocks(blocks: Block[]): Generator<Group> {
