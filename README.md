@@ -118,6 +118,18 @@ lark-channel-bridge restart --profile codex
 lark-channel-bridge status --profile codex
 ```
 
+### Restarting a `npm link`'d local dev checkout
+
+If `lark-channel-bridge` on your `PATH` is `npm link`'d to a local clone of this repo (`npm ls -g lark-channel-bridge` shows a symlink into the repo instead of a versioned npm install), the running daemon only reflects whatever was in `dist/` the moment it started — Node loads the built JS into memory once at process start and does not hot-reload. Editing source or even running `pnpm build` afterwards changes nothing for an already-running daemon.
+
+```bash
+pnpm build                                    # rebuild dist/ from current source
+lark-channel-bridge restart --profile <name>  # reload it into the running daemon
+lark-channel-bridge status --profile <name>   # confirm it came back up
+```
+
+Skipping the `pnpm build` step is the easy mistake — `restart` alone just relaunches the daemon against whatever `dist/` already exists on disk, silently stale if you forgot to build. To check without restarting: compare `git log -1` (latest commit) against `ls -la dist/cli.js` (last build time) — if the build predates the commit, the running daemon is out of date. Restarting drops the daemon's live connection for a few seconds; `KeepAlive` in the launchd/systemd service definition brings it back automatically, but time it for a moment nothing is mid-flight.
+
 ## Commands
 
 ### Host CLI

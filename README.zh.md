@@ -118,6 +118,18 @@ lark-channel-bridge restart --profile codex
 lark-channel-bridge status --profile codex
 ```
 
+### 重启 `npm link` 出来的本地开发副本
+
+如果 `PATH` 里的 `lark-channel-bridge` 是 `npm link` 到本仓库某个本地 checkout 的（`npm ls -g lark-channel-bridge` 显示的是软链到仓库目录，而不是一个带版本号的 npm 安装），那正在跑的 daemon 只反映它**启动那一刻** `dist/` 里的内容——Node 进程启动时把编译好的 JS 一次性加载进内存，不会热更新。之后改源码、甚至跑了 `pnpm build`，对这个已经在跑的 daemon 都不生效。
+
+```bash
+pnpm build                                    # 用当前源码重新编译 dist/
+lark-channel-bridge restart --profile <name>  # 让正在跑的 daemon 重新加载
+lark-channel-bridge status --profile <name>   # 确认起来了
+```
+
+最容易踩的坑是漏掉 `pnpm build` 这一步——单独跑 `restart` 只是拿磁盘上现成的 `dist/` 重新拉起 daemon，如果忘了先编译，加载的还是旧代码，而且不会报错提示你。想不重启就先确认是否过期：对比 `git log -1`（最新 commit 时间）和 `ls -la dist/cli.js`（上次编译时间）——编译时间早于最新 commit，说明该重启了。重启会让 daemon 的在线连接断几秒，launchd/systemd 服务里的 `KeepAlive` 会自动拉起，但最好挑一个手头没有任务正在进行的时间点执行。
+
 ## 命令速查
 
 ### 宿主 CLI
