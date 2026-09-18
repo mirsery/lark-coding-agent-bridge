@@ -90,17 +90,27 @@ export function ProfilesView({ onOpen }: { onOpen: (profile: string) => void }) 
               <div className="flex items-center gap-2">
                 <span className="font-medium">{p.name}</span>
                 <Badge variant="secondary">{p.agentKind}</Badge>
-                {p.running ? <Badge variant="success">在线</Badge> : <Badge variant="outline">未运行</Badge>}
+                {p.running ? (
+                  <Badge variant="success">{p.hostedHere ? "在线" : "在线（外部进程）"}</Badge>
+                ) : (
+                  <Badge variant="outline">未运行</Badge>
+                )}
               </div>
             </div>
             {p.running ? (
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={(e) => { e.stopPropagation(); setStopTarget(p.name); }}
-              >
-                停止
-              </Button>
+              p.hostedHere ? (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={(e) => { e.stopPropagation(); setStopTarget(p.name); }}
+                >
+                  停止
+                </Button>
+              ) : (
+                <span className="text-xs text-muted-foreground" title="由其他进程管理（例如单 profile 后台服务），此控制台无法停止">
+                  外部管理
+                </span>
+              )
             ) : (
               <Button variant="outline" size="sm" disabled={busy === p.name} onClick={(e) => start(p.name, e)}>
                 {busy === p.name ? "启动中…" : "启动"}

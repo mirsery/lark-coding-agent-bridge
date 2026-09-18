@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { resolveAppPaths } from '../../../src/config/app-paths';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import {
   createRootConfig,
@@ -10,6 +11,7 @@ import {
   saveRootConfig,
   writeActiveProfile,
 } from '../../../src/config/profile-store';
+import { register } from '../../../src/runtime/registry';
 import { startUiServer } from '../../../src/ui/server';
 import type { UiServerHandle, UiSupervisor } from '../../../src/ui/types';
 
@@ -194,7 +196,28 @@ describe('ui server (supervisor-backed)', () => {
     const { profiles } = await json(await get('/api/profiles', handle.token));
     const byName = Object.fromEntries(profiles.map((p: { name: string }) => [p.name, p]));
     expect(byName.claude.running).toBe(true);
+    expect(byName.claude.hostedHere).toBe(true);
     expect(byName.work.running).toBe(false);
+    expect(byName.work.hostedHere).toBe(false);
+  });
+
+  it('reports a profile kept alive by another process as running but not hosted here', async () => {
+    // Simulate a separate `start --profile work` daemon: a live registry
+    // entry this console's in-memory supervisor never started.
+    await register({
+      appId: 'cli_work',
+      tenant: 'feishu',
+      profileName: 'work',
+      agentKind: 'claude',
+      configPath,
+      version: 'test',
+      registryFile: resolveAppPaths({ rootDir }).userRegistryFile,
+    });
+
+    const { profiles } = await json(await get('/api/profiles', handle.token));
+    const byName = Object.fromEntries(profiles.map((p: { name: string }) => [p.name, p]));
+    expect(byName.work.running).toBe(true);
+    expect(byName.work.hostedHere).toBe(false);
   });
 
   it('lists online channels from the supervisor', async () => {

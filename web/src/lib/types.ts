@@ -28,6 +28,10 @@ export interface ProfileInfo {
   agentKind: AgentKind;
   active: boolean;
   running: boolean;
+  /** True only when this console's own process hosts the channel; false with
+   * running=true means a separate process owns it and start/stop here can't
+   * act on it. */
+  hostedHere: boolean;
 }
 
 export interface ModelOption {

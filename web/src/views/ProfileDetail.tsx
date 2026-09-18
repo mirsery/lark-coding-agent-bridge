@@ -76,6 +76,7 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
   }
 
   const running = info?.running ?? bots.length > 0;
+  const hostedHere = info?.hostedHere ?? bots.length > 0;
 
   return (
     <div className="space-y-4">
@@ -85,7 +86,11 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
         </Button>
         <h1 className="text-2xl font-semibold">{profile}</h1>
         {info && <Badge variant="secondary">{info.agentKind}</Badge>}
-        {running ? <Badge variant="success">在线</Badge> : <Badge variant="outline">未运行</Badge>}
+        {running ? (
+          <Badge variant="success">{hostedHere ? "在线" : "在线（外部进程）"}</Badge>
+        ) : (
+          <Badge variant="outline">未运行</Badge>
+        )}
         {!running && (
           <Button className="ml-auto" size="sm" disabled={starting} onClick={start}>
             {starting ? "启动中…" : "启动"}
@@ -96,17 +101,12 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>运行状态</CardTitle>
-          {running && (
+          {hostedHere && (
             <Button variant="destructive" size="sm" onClick={() => setConfirm(true)}>停止</Button>
           )}
         </CardHeader>
         <CardContent>
-          {bots.length === 0 ? (
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm text-muted-foreground">未运行。点右上角「启动」在主进程内上线。</p>
-              <Button size="sm" disabled={starting} onClick={start}>{starting ? "启动中…" : "启动"}</Button>
-            </div>
-          ) : (
+          {hostedHere && bots.length > 0 ? (
             <div className="space-y-2">
               {bots.map((b) => (
                 <div key={b.id} className="rounded-md border px-3 py-2 text-sm">
@@ -114,6 +114,15 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
                   <span className="text-muted-foreground"> · pid {b.pid} · 运行 {uptime(b.uptimeMs)} · v{b.version}</span>
                 </div>
               ))}
+            </div>
+          ) : running ? (
+            <p className="text-sm text-muted-foreground">
+              该 profile 正在由其他进程管理（例如单 profile 后台服务），此控制台无法查看或停止它的运行详情。
+            </p>
+          ) : (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm text-muted-foreground">未运行。点右上角「启动」在主进程内上线。</p>
+              <Button size="sm" disabled={starting} onClick={start}>{starting ? "启动中…" : "启动"}</Button>
             </div>
           )}
         </CardContent>
