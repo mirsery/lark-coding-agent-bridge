@@ -299,6 +299,90 @@ describe('Bridge command contracts', () => {
     expect(root?.profiles.claude?.access.allowedUsers).not.toContain('ou-alice');
   });
 
+  it('opens a group pre-restricted to specific members with no window where everyone is allowed', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/invite group restricted @Alice', {
+        chatId: 'oc-group-restricted',
+        scope: 'oc-group-restricted',
+        chatMode: 'group',
+        mentions: [mention('ou-alice', 'Alice')],
+      }),
+    ).resolves.toBe(true);
+
+    let root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-group-restricted');
+    expect(root?.profiles.claude?.access.chatAllowedUsers).toEqual({
+      'oc-group-restricted': ['ou-alice'],
+    });
+
+    // /invite member appends to the same chat's list.
+    await expect(
+      h.run('/invite member @Bob', {
+        chatId: 'oc-group-restricted',
+        scope: 'oc-group-restricted',
+        chatMode: 'group',
+        mentions: [mention('ou-bob', 'Bob')],
+      }),
+    ).resolves.toBe(true);
+    root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.chatAllowedUsers?.['oc-group-restricted']).toEqual([
+      'ou-alice',
+      'ou-bob',
+    ]);
+
+    // /remove member removes just that one person, leaving the rest.
+    await expect(
+      h.run('/remove member @Alice', {
+        chatId: 'oc-group-restricted',
+        scope: 'oc-group-restricted',
+        chatMode: 'group',
+        mentions: [mention('ou-alice', 'Alice')],
+      }),
+    ).resolves.toBe(true);
+    root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.chatAllowedUsers?.['oc-group-restricted']).toEqual(['ou-bob']);
+  });
+
+  it('refuses /invite member for a group that is not in allowedChats yet', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/invite member @Alice', {
+        chatId: 'oc-group-not-added',
+        scope: 'oc-group-not-added',
+        chatMode: 'group',
+        mentions: [mention('ou-alice', 'Alice')],
+      }),
+    ).resolves.toBe(true);
+
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.chatAllowedUsers?.['oc-group-not-added']).toBeUndefined();
+  });
+
+  it('drops the per-chat member list when the chat is removed from allowedChats', async () => {
+    const h = await createHarness();
+
+    await h.run('/invite group restricted @Alice', {
+      chatId: 'oc-group-cleanup',
+      scope: 'oc-group-cleanup',
+      chatMode: 'group',
+      mentions: [mention('ou-alice', 'Alice')],
+    });
+    let root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.chatAllowedUsers?.['oc-group-cleanup']).toEqual(['ou-alice']);
+
+    await h.run('/remove group', {
+      chatId: 'oc-group-cleanup',
+      scope: 'oc-group-cleanup',
+      chatMode: 'group',
+    });
+    root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).not.toContain('oc-group-cleanup');
+    expect(root?.profiles.claude?.access.chatAllowedUsers?.['oc-group-cleanup']).toBeUndefined();
+  });
+
   it('adds every known bot group through /invite all group', async () => {
     const h = await createHarness();
     h.controls.knownChats = [

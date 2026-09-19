@@ -83,6 +83,62 @@ describe('access policy', () => {
     expect(canUseGroup(allowed, ownerControls, 'chat_other', 'ou_other').ok).toBe(false);
   });
 
+  it('keeps a chat open to everyone when it has no chatAllowedUsers entry', () => {
+    const profile = profileWithAccess({ allowedChats: ['chat_allowed'] });
+    expect(canUseGroup(profile, ownerControls, 'chat_allowed', 'ou_stranger')).toEqual({
+      ok: true,
+      reason: 'allowed-chat',
+    });
+  });
+
+  it('restricts a chat to its member allowlist once chatAllowedUsers has an entry for it', () => {
+    const profile = profileWithAccess({
+      allowedChats: ['chat_allowed'],
+      chatAllowedUsers: { chat_allowed: ['ou_member'] },
+    });
+
+    expect(canUseGroup(profile, ownerControls, 'chat_allowed', 'ou_member')).toEqual({
+      ok: true,
+      reason: 'allowed-chat-user',
+    });
+    expect(canUseGroup(profile, ownerControls, 'chat_allowed', 'ou_stranger')).toEqual({
+      ok: false,
+      reason: 'denied-chat-user',
+    });
+  });
+
+  it('rejects everyone but admin/owner when a chat is pre-restricted with zero members — no open window', () => {
+    const profile = profileWithAccess({
+      allowedChats: ['chat_allowed'],
+      admins: ['ou_admin'],
+      chatAllowedUsers: { chat_allowed: [] },
+    });
+
+    expect(canUseGroup(profile, ownerControls, 'chat_allowed', 'ou_stranger')).toEqual({
+      ok: false,
+      reason: 'denied-chat-user',
+    });
+    // Admin and owner still bypass the per-chat restriction.
+    expect(canUseGroup(profile, ownerControls, 'chat_allowed', 'ou_admin')).toEqual({
+      ok: true,
+      reason: 'allowed-admin',
+    });
+    expect(canUseGroup(profile, ownerControls, 'chat_allowed', 'ou_owner')).toEqual({
+      ok: true,
+      reason: 'owner',
+    });
+  });
+
+  it('does not let chatAllowedUsers open a chat that is not itself in allowedChats', () => {
+    const profile = profileWithAccess({
+      chatAllowedUsers: { chat_not_allowed: ['ou_member'] },
+    });
+    expect(canUseGroup(profile, ownerControls, 'chat_not_allowed', 'ou_member')).toEqual({
+      ok: false,
+      reason: 'denied-chat',
+    });
+  });
+
   it('lets admins use groups before the chat is allowlisted', () => {
     const profile = profileWithAccess({ admins: ['ou_admin'] });
 

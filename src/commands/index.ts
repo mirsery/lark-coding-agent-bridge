@@ -1536,10 +1536,11 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  const kind = tokens.find((token) => /^(user|admin|group)$/.test(token)) as
+  const kind = tokens.find((token) => /^(user|admin|group|member)$/.test(token)) as
     | 'user'
     | 'admin'
     | 'group'
+    | 'member'
     | undefined;
   if (!kind) {
     await reply(
@@ -1547,7 +1548,9 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
       '用法：\n' +
         '• `/invite user @某人` — 加入允许私聊\n' +
         '• `/invite admin @某人` — 加入管理员\n' +
-        '• `/invite group` — 把当前群加入响应群名单\n' +
+        '• `/invite group` — 把当前群加入响应群名单（群内所有人可用）\n' +
+        '• `/invite group restricted @某人...` — 把当前群加入响应群名单，且只对 @ 到的人生效（一步到位，不会有"先开放给所有人"的窗口期）\n' +
+        '• `/invite member @某人` — 只把这个人加进当前群的专属名单（当前群需已在响应群名单里）\n' +
         '• `/invite all group` — 把 bot 所在的所有群一键加入',
     );
     return;
@@ -1559,6 +1562,50 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     const chatId = ctx.msg.chatId;
+    const restricted = tokens.includes('restricted');
+
+    if (restricted) {
+      const targets = mentionTargets(ctx);
+      let alreadyChat = false;
+      let added: string[] = [];
+      let already: string[] = [];
+      await saveAccessConfig(ctx, (current) => {
+        const chats = new Set(current.allowedChats);
+        alreadyChat = chats.has(chatId);
+        chats.add(chatId);
+        const memberMap = { ...(current.chatAllowedUsers ?? {}) };
+        const existing = new Set(memberMap[chatId] ?? []);
+        added = [];
+        already = [];
+        for (const target of targets) {
+          if (existing.has(target.openId)) {
+            already.push(target.name ?? target.openId);
+          } else {
+            existing.add(target.openId);
+            added.push(target.name ?? target.openId);
+          }
+        }
+        memberMap[chatId] = [...existing];
+        return {
+          ...current,
+          allowedChats: [...chats],
+          chatAllowedUsers: memberMap,
+        };
+      });
+      const parts: string[] = [
+        alreadyChat
+          ? '✅ 当前群已在响应名单里，已切换为仅名单模式。'
+          : `✅ 已把当前群（\`${chatId}\`）加入响应群名单，且设为仅名单模式。`,
+      ];
+      if (added.length > 0) parts.push(`已放行：${added.join('、')}。`);
+      if (already.length > 0) parts.push(`_${already.join('、')} 已经在名单里，跳过。_`);
+      if (targets.length === 0) {
+        parts.push('_当前没有 @ 任何人，这个群现在只有 admin/owner 能用，之后用 `/invite member @某人` 追加。_');
+      }
+      await reply(ctx, parts.join('\n'));
+      return;
+    }
+
     let already = false;
     await saveAccessConfig(ctx, (current) => {
       const list = new Set(current.allowedChats);
@@ -1574,6 +1621,52 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     await reply(ctx, `✅ 已把当前群（\`${chatId}\`）加入响应群名单。`);
+    return;
+  }
+
+  if (kind === 'member') {
+    if (ctx.chatMode === 'p2p') {
+      await reply(ctx, '❌ `/invite member` 只能在群里发，在私聊里没有 chat_id 可以加。');
+      return;
+    }
+    const chatId = ctx.msg.chatId;
+    const targets = mentionTargets(ctx);
+    if (targets.length === 0) {
+      await reply(ctx, '❌ 没检测到 @ 的用户。请像这样发：`/invite member @某人`。');
+      return;
+    }
+    let chatAllowed = false;
+    let added: string[] = [];
+    let already: string[] = [];
+    await saveAccessConfig(ctx, (current) => {
+      chatAllowed = current.allowedChats.includes(chatId);
+      if (!chatAllowed) return current;
+      const memberMap = { ...(current.chatAllowedUsers ?? {}) };
+      const existing = new Set(memberMap[chatId] ?? []);
+      added = [];
+      already = [];
+      for (const target of targets) {
+        if (existing.has(target.openId)) {
+          already.push(target.name ?? target.openId);
+        } else {
+          existing.add(target.openId);
+          added.push(target.name ?? target.openId);
+        }
+      }
+      memberMap[chatId] = [...existing];
+      return { ...current, chatAllowedUsers: memberMap };
+    });
+    if (!chatAllowed) {
+      await reply(
+        ctx,
+        '❌ 当前群还不在响应群名单里，先 `/invite group` 或 `/invite group restricted @某人` 再加成员。',
+      );
+      return;
+    }
+    const parts: string[] = [];
+    if (added.length > 0) parts.push(`✅ 已把 ${added.join('、')} 加入当前群的专属名单。`);
+    if (already.length > 0) parts.push(`_${already.join('、')} 已经在名单里，跳过。_`);
+    await reply(ctx, parts.join('\n'));
     return;
   }
 
@@ -1615,10 +1708,11 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
 
 async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
   const tokens = args.trim().split(/\s+/).filter(Boolean).map((token) => token.toLowerCase());
-  const kind = tokens.find((token) => /^(user|admin|group)$/.test(token)) as
+  const kind = tokens.find((token) => /^(user|admin|group|member)$/.test(token)) as
     | 'user'
     | 'admin'
     | 'group'
+    | 'member'
     | undefined;
   if (!kind) {
     await reply(
@@ -1626,7 +1720,8 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
       '用法：\n' +
         '• `/remove user @某人` — 移出用户白名单\n' +
         '• `/remove admin @某人` — 移出管理员\n' +
-        '• `/remove group` — 把当前群移出响应群名单',
+        '• `/remove group` — 把当前群移出响应群名单\n' +
+        '• `/remove member @某人` — 把这个人移出当前群的专属名单',
     );
     return;
   }
@@ -1642,9 +1737,15 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
       const list = new Set(current.allowedChats);
       missing = !list.has(chatId);
       list.delete(chatId);
+      // Drop the now-orphaned per-chat allowlist too, so removing then
+      // re-adding a group later doesn't silently resurrect an old member
+      // list the operator no longer remembers configuring.
+      const memberMap = { ...(current.chatAllowedUsers ?? {}) };
+      delete memberMap[chatId];
       return {
         ...current,
         allowedChats: [...list],
+        chatAllowedUsers: memberMap,
       };
     });
     if (missing) {
@@ -1652,6 +1753,50 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     await reply(ctx, '✅ 已把当前群移出响应群名单。');
+    return;
+  }
+
+  if (kind === 'member') {
+    if (ctx.chatMode === 'p2p') {
+      await reply(ctx, '❌ `/remove member` 只能在群里发，在私聊里没有 chat_id 可以移除。');
+      return;
+    }
+    const chatId = ctx.msg.chatId;
+    const targets = mentionTargets(ctx);
+    if (targets.length === 0) {
+      await reply(ctx, '请 @ 上要移除的人，例如：`/remove member @某人`。');
+      return;
+    }
+    let hadList = false;
+    let removed: string[] = [];
+    let notThere: string[] = [];
+    await saveAccessConfig(ctx, (current) => {
+      const memberMap = { ...(current.chatAllowedUsers ?? {}) };
+      const existing = memberMap[chatId];
+      hadList = existing !== undefined;
+      if (!hadList) return current;
+      const set = new Set(existing);
+      removed = [];
+      notThere = [];
+      for (const target of targets) {
+        if (set.has(target.openId)) {
+          set.delete(target.openId);
+          removed.push(target.name ?? target.openId);
+        } else {
+          notThere.push(target.name ?? target.openId);
+        }
+      }
+      memberMap[chatId] = [...set];
+      return { ...current, chatAllowedUsers: memberMap };
+    });
+    if (!hadList) {
+      await reply(ctx, '✅ 当前群不是仅名单模式，没有专属名单，无需移除。');
+      return;
+    }
+    const parts: string[] = [];
+    if (removed.length > 0) parts.push(`✅ 已把 ${removed.join('、')} 移出当前群的专属名单。`);
+    if (notThere.length > 0) parts.push(`${notThere.join('、')} 本来就不在名单里，无需移除。`);
+    await reply(ctx, parts.join('\n'));
     return;
   }
 

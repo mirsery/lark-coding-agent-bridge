@@ -175,8 +175,10 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |
 | `/invite group` | Allow the current group to use the bot |
+| `/invite group restricted @name...` | Allow the current group, limited to the named people only |
+| `/invite member @name` | Add a person to the current group's member allowlist |
 | `/invite all group` | Allow all groups the bot has joined |
-| `/remove user @name`, `/remove admin @name`, `/remove group` | Remove access entries |
+| `/remove user @name`, `/remove admin @name`, `/remove group`, `/remove member @name` | Remove access entries |
 | `/stop` | Stop the current run, including the card stop button |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
 | `/ps` | List local bridge processes |
@@ -271,10 +273,22 @@ To let other people or groups in, add them to one of three lists:
 | List | Controls | Add | Remove |
 |------|----------|-----|--------|
 | **Allowed users** | who can DM the bot | `/invite user @them` | `/remove user @them` |
-| **Allowed chats** | which groups the bot answers in (for **everyone** in them) | `/invite group` (current group) / `/invite all group` (every group the bot is in) | `/remove group` (current group) |
+| **Allowed chats** | which groups the bot answers in (for **everyone** in them, unless restricted — see below) | `/invite group` (current group) / `/invite all group` (every group the bot is in) | `/remove group` (current group) |
 | **Admins** | who can change settings, and use the bot in any group | `/invite admin @them` | `/remove admin @them` |
 
 > `/invite` and `/remove` can only be run by **you (the creator) and admins**. The `@` in the command points at the *target person* (not the bot) — the bot resolves the mention to their identity, so you never deal with raw IDs.
+
+### Restricting a group to specific members
+
+`/invite group` opens a group to everyone in it. To open a group but limit it to a few named people instead, use a per-chat member allowlist:
+
+```bash
+/invite group restricted @Alice @Bob   # adds the group AND its member list in one step
+/invite member @Carol                  # adds another person to an already-restricted group
+/remove member @Alice                  # removes just that one person
+```
+
+`/invite group restricted` is atomic — the group only ever exists in either "not added yet" or "added, already limited to these people" state. There's no in-between moment where the group is open to everyone while you're still adding names, and you can even run it with no names at all to lock the group down to admins/owner only, then add people afterward with `/invite member`. Once a group has any member list (even an empty one), `/invite group` alone won't reopen it to everyone — remove the whole group and re-add it with plain `/invite group` to go back to open-to-all. `/remove group` also clears that group's member list.
 
 ### Two identities that bypass everything
 
@@ -286,6 +300,7 @@ To let other people or groups in, add them to one of three lists:
 - **Just me** → nothing to do; this is the default.
 - **Let a teammate DM the bot** → `/invite user @them`
 - **Open a work group to everyone in it** → send `/invite group` inside that group
+- **Open a work group to only a few people in it** → `/invite group restricted @them @others` inside that group
 - **First-time setup, onboard every group the bot is already in** → `/invite all group` pulls them all into the list at once; trim with `/remove group` afterwards
 - **Add a co-admin** → `/invite admin @them`
 

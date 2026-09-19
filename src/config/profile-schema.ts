@@ -29,6 +29,17 @@ export interface ProfileAccess {
    * priority over `requireMentionInGroup` for the chats it lists.
    */
   chatRequireMention?: Record<string, boolean>;
+  /**
+   * Per-chat member allowlist, keyed by chat_id. When a chat_id is present
+   * here — even with an empty array — only admins/owner and the listed
+   * senders may use the bot in that chat; the normal `allowedChats`
+   * membership no longer opens it to everyone. A chat_id absent from this
+   * map keeps the existing behavior: everyone in an `allowedChats` chat can
+   * use the bot. Presence of the key (not array length) is what flips a
+   * chat into restricted mode, so a chat can be created pre-restricted with
+   * zero members and never pass through an "open to everyone" window.
+   */
+  chatAllowedUsers?: Record<string, string[]>;
 }
 
 export interface SandboxConfig {
@@ -343,6 +354,7 @@ function normalizeAccess(
   legacyRequireMentionInGroup: boolean | undefined,
 ): ProfileAccess {
   const chatRequireMention = normalizeChatMentionMap(access?.chatRequireMention);
+  const chatAllowedUsers = normalizeChatUserMap(access?.chatAllowedUsers);
   return {
     allowedUsers: stringArray(access?.allowedUsers),
     allowedChats: stringArray(access?.allowedChats),
@@ -350,6 +362,7 @@ function normalizeAccess(
     requireMentionInGroup: access?.requireMentionInGroup ?? legacyRequireMentionInGroup ?? true,
     // Omit when empty so configs without per-chat overrides stay clean.
     ...(Object.keys(chatRequireMention).length > 0 ? { chatRequireMention } : {}),
+    ...(Object.keys(chatAllowedUsers).length > 0 ? { chatAllowedUsers } : {}),
   };
 }
 
@@ -359,6 +372,20 @@ function normalizeChatMentionMap(input: unknown): Record<string, boolean> {
   const out: Record<string, boolean> = {};
   for (const [chatId, value] of Object.entries(input as Record<string, unknown>)) {
     if (chatId && typeof value === 'boolean') out[chatId] = value;
+  }
+  return out;
+}
+
+/**
+ * Keep only string→string[] entries; drop anything malformed. A chat_id
+ * mapped to `[]` is kept (not dropped) — the empty array is the "restricted,
+ * no members yet" state, distinct from the chat_id being absent entirely.
+ */
+function normalizeChatUserMap(input: unknown): Record<string, string[]> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const out: Record<string, string[]> = {};
+  for (const [chatId, value] of Object.entries(input as Record<string, unknown>)) {
+    if (chatId && Array.isArray(value)) out[chatId] = stringArray(value);
   }
   return out;
 }

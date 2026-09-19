@@ -19,9 +19,11 @@ export interface AccessDecision {
     | 'allowed-user'
     | 'allowed-admin'
     | 'allowed-chat'
+    | 'allowed-chat-user'
     | 'comment-mention'
     | 'denied-user'
     | 'denied-chat'
+    | 'denied-chat-user'
     | 'denied-admin';
 }
 
@@ -53,8 +55,15 @@ export function canUseGroup(
   if (isCreator(controls, senderId)) return allow('owner');
   if (profile.mode === 'team') return allow('allowed-team');
   if (profile.access.admins.includes(senderId)) return allow('allowed-admin');
-  if (profile.access.allowedChats.includes(chatId)) return allow('allowed-chat');
-  return deny('denied-chat');
+  if (!profile.access.allowedChats.includes(chatId)) return deny('denied-chat');
+  // Presence of the chat_id key — not array length — is what puts a chat in
+  // restricted mode, so a chat can be created pre-restricted with zero
+  // members and never pass through an "open to everyone" window.
+  const memberAllowlist = profile.access.chatAllowedUsers?.[chatId];
+  if (memberAllowlist !== undefined) {
+    return memberAllowlist.includes(senderId) ? allow('allowed-chat-user') : deny('denied-chat-user');
+  }
+  return allow('allowed-chat');
 }
 
 /**
