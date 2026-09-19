@@ -95,13 +95,13 @@ describe('profile-aware account and config commands', () => {
     const h = await createHarness();
 
     await h.command('/config submit', {
-      model: 'claude-opus-4-8',
+      model: 'claude-opus-5',
       message_reply: 'text',
     });
     const withModel = await waitForRoot(h.rootDir, (candidate) =>
-      candidate.profiles.claude?.preferences.model === 'claude-opus-4-8',
+      candidate.profiles.claude?.preferences.model === 'claude-opus-5',
     );
-    expect(withModel.profiles.claude?.preferences.model).toBe('claude-opus-4-8');
+    expect(withModel.profiles.claude?.preferences.model).toBe('claude-opus-5');
 
     await h.command('/config submit', {
       model: 'default',
