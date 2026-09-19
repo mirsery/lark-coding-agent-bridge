@@ -201,6 +201,10 @@ describe('markdown stream startup failures', () => {
     expect(h.channel.sent).toHaveLength(1);
     expect(lastMarkdown(h.channel)).toContain('FINAL_SENTINEL');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_final' });
+
+    // A successful run marks the triggering question itself as answered,
+    // alongside (not instead of) the Typing reaction's own add/remove cycle.
+    await waitFor(() => reactionTypesAdded(h.channel).includes('DONE'));
   });
 
   it('opens no progress stream for a final-only round', async () => {
@@ -426,6 +430,10 @@ describe('markdown stream startup failures', () => {
     expect(finalJson).toContain('FINAL_SENTINEL');
     expect(finalJson).not.toContain('progress update');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_card_final' });
+
+    // Card mode never gets a Typing reaction, but a successful run should
+    // still mark the question as answered with a DONE reaction.
+    await waitFor(() => reactionTypesAdded(h.channel).includes('DONE'));
   });
 });
 
@@ -634,6 +642,14 @@ function message(messageId: string, content: string): NormalizedMessage {
     mentionedBot: false,
     createTime: 1760000001000,
   } as unknown as NormalizedMessage;
+}
+
+function reactionTypesAdded(channel: FakeLarkChannel): string[] {
+  return channel.rawClient.im.v1.messageReaction.create.mock.calls.map(
+    (call) =>
+      (call[0] as { data?: { reaction_type?: { emoji_type?: string } } })?.data?.reaction_type
+        ?.emoji_type ?? '',
+  );
 }
 
 function lastMarkdown(channel: FakeLarkChannel): string {

@@ -32,6 +32,7 @@ import {
   markInterrupted,
   reduce,
   type RunState,
+  type Terminal,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
@@ -71,7 +72,7 @@ import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
 import { lookupMessageThreadId } from './thread-id';
-import { addWorkingReaction, removeReaction } from './reaction';
+import { addDoneReaction, addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
 import {
@@ -1095,6 +1096,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const reactionPromise =
     cotEnabled || replyMode === 'card' ? undefined : addWorkingReaction(channel, lastMsg.messageId);
 
+  // Captured from whichever branch below actually runs, so the `finally`
+  // block can decide whether to mark the triggering message "answered"
+  // without needing to know which reply mode produced the run.
+  let runTerminal: Terminal | undefined;
+
   try {
     if (cotEnabled) {
       const cotPublisher = new CotPublisher({
@@ -1123,6 +1129,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           async () => {},
         );
         await cotDone;
+        runTerminal = finalState.terminal;
         if (cotPublisher.degradedReason) {
           await sendCotDegradedNotice({
             channel,
@@ -1216,6 +1223,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           cardRenderOptions,
         });
       }
+      runTerminal = latestState.terminal;
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
       let producerStarted = false;
@@ -1279,6 +1287,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           cardRenderOptions,
         });
       }
+      runTerminal = latestState.terminal;
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -1303,12 +1312,14 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         sendOpts,
         cardRenderOptions,
       });
+      runTerminal = finalState.terminal;
     }
   } catch (err) {
     log.fail('stream', err);
   } finally {
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
+    if (runTerminal === 'done') void addDoneReaction(channel, lastMsg.messageId);
   }
 }
 
