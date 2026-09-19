@@ -431,9 +431,12 @@ describe('markdown stream startup failures', () => {
     expect(finalJson).not.toContain('progress update');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_card_final' });
 
-    // Card mode never gets a Typing reaction, but a successful run should
-    // still mark the question as answered with a DONE reaction.
+    // Card mode gets both reactions now: Typing as an instant ack (the card's
+    // own footer only shows *inside* the card, not in the bare message list),
+    // and DONE once the run succeeds.
+    await waitFor(() => reactionTypesAdded(h.channel).includes('Typing'));
     await waitFor(() => reactionTypesAdded(h.channel).includes('DONE'));
+    await waitFor(() => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0);
   });
 });
 

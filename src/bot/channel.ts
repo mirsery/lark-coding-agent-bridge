@@ -1089,12 +1089,14 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       : {}),
   };
 
-  // For non-card modes Claude's output doesn't surface visually until either
-  // a first streamed token (markdown mode) or the whole run ends (text mode).
-  // Add a "Typing" reaction to the triggering message as an instant ack, but
-  // never let that outbound API call block agent event draining.
-  const reactionPromise =
-    cotEnabled || replyMode === 'card' ? undefined : addWorkingReaction(channel, lastMsg.messageId);
+  // Add a "Typing" reaction to the triggering message as an instant ack that
+  // the bot noticed it, never letting that outbound API call block agent
+  // event draining. Card mode's own footer ("🧠 正在思考…") already gives this
+  // feedback *inside* the card, but the reaction is what shows up in the bare
+  // chat message list — useful when scrolling back, or for onlookers who
+  // haven't opened the card. COT mode posts its own separate bubble, so it
+  // stays excluded.
+  const reactionPromise = cotEnabled ? undefined : addWorkingReaction(channel, lastMsg.messageId);
 
   // Captured from whichever branch below actually runs, so the `finally`
   // block can decide whether to mark the triggering message "answered"
