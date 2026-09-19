@@ -254,7 +254,7 @@ function MeetingPreflightPanel({ pre, checking, onRecheck }: {
 
   const isScope = pre.status === "scope-missing";
   return (
-    <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+    <div className="space-y-3 rounded-xl border border-destructive/40 bg-destructive/5 p-3">
       <div className="flex items-center gap-2">
         <Badge variant="destructive">
           {isScope ? "缺少应用权限" : pre.status === "not-in-beta" ? "内测未开通" : "权限状态未知"}
@@ -293,7 +293,7 @@ function MeetingPreflightPanel({ pre, checking, onRecheck }: {
             </Button>
             <p className="text-xs text-muted-foreground">开通后点「重新检查」；生效后需重启该 profile。</p>
           </div>
-          <div className="rounded-md border bg-white p-2">
+          <div className="rounded-xl border bg-white p-2">
             <QRCodeSVG value={pre.consoleUrl} size={96} />
           </div>
         </div>
@@ -307,7 +307,7 @@ function MeetingPreflightPanel({ pre, checking, onRecheck }: {
             </Button>
             <p className="text-xs text-muted-foreground">开通后点「重新检查」。</p>
           </div>
-          <div className="rounded-md border bg-white p-2">
+          <div className="rounded-xl border bg-white p-2">
             <QRCodeSVG value={pre.betaChatUrl} size={96} />
           </div>
         </div>
@@ -482,7 +482,7 @@ function MeetingCard({ profile, cfg, onChange }: {
                 {!live.push.hooked && live.push.reason && (
                   <p className="text-xs text-destructive">{live.push.reason}</p>
                 )}
-                <div className="divide-y rounded-md border">
+                <div className="divide-y rounded-xl border">
                   {live.sessions.length === 0 && (
                     <p className="px-3 py-2 text-xs text-muted-foreground">（暂无）</p>
                   )}
@@ -583,7 +583,7 @@ function AllowedChats({
   return (
     <div className="space-y-2">
       <Label>允许响应的群（{ids.length}）</Label>
-      <div className="divide-y rounded-md border">
+      <div className="divide-y rounded-xl border">
         {ids.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">（暂无）</p>}
         {ids.map((id) => {
           const override = chatRequireMention[id];
@@ -691,7 +691,7 @@ function BotChatsPane({ profile, open, added, onPick }: {
         <p className="text-sm text-muted-foreground">没有找到群。确认该 profile 在线，且 bot 已被拉进群聊。</p>
       )}
       {chats && chats.length > 0 && (
-        <div className="max-h-[46vh] divide-y overflow-y-auto rounded-md border">
+        <div className="max-h-[46vh] divide-y overflow-y-auto rounded-xl border">
           {chats.map((c) => (
             <div key={c.id} className="flex items-center gap-2 px-3 py-2">
               <div className="min-w-0 flex-1">
@@ -841,7 +841,7 @@ function MyChatsPane({ profile, open, added, onPick }: {
           {pendingPull ? "把 bot 拉进群需要授权「添加群成员」权限。" : "列出「我的群」需要授权「查看群」权限。"}
         </p>
         <div className="flex flex-col items-center gap-2">
-          <div className="rounded-lg border bg-white p-3"><QRCodeSVG value={login.verificationUrl} size={160} /></div>
+          <div className="rounded-2xl border bg-white p-3"><QRCodeSVG value={login.verificationUrl} size={160} /></div>
           <a href={login.verificationUrl} target="_blank" rel="noreferrer" className="break-all text-sm text-primary underline">
             在浏览器打开授权
           </a>
@@ -887,7 +887,7 @@ function MyChatsPane({ profile, open, added, onPick }: {
         <p className="text-sm text-muted-foreground">{query.trim() ? "没搜到匹配的群。" : "没找到你所在的群。"}</p>
       )}
       {chats && chats.length > 0 && (
-        <div className="max-h-[46vh] divide-y overflow-y-auto rounded-md border">
+        <div className="max-h-[46vh] divide-y overflow-y-auto rounded-xl border">
           {chats.map((c) => (
             <div key={c.id} className="flex items-center gap-2 px-3 py-2">
               <div className="min-w-0 flex-1">
@@ -926,7 +926,7 @@ function AccessList({ label, placeholder, ids, onAdd, onRemove }: {
   return (
     <div className="space-y-2">
       <Label>{label}（{ids.length}）</Label>
-      <div className="rounded-md border divide-y">
+      <div className="rounded-xl border divide-y">
         {ids.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">（暂无）</p>}
         {ids.map((id) => (
           <div key={id} className="flex items-center gap-2 px-3 py-2">

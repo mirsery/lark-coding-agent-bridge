@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft } from "lucide-react";
 import { apiGet, apiPost } from "@/lib/api";
 import type { BotInfo, ProfileInfo } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -26,7 +25,7 @@ function uptime(ms: number): string {
   return `${Math.floor(h / 24)}d${h % 24}h`;
 }
 
-export function ProfileDetail({ profile, onBack }: { profile: string; onBack: () => void }) {
+export function ProfileDetail({ profile, onChanged }: { profile: string; onChanged?: () => void }) {
   const [info, setInfo] = useState<ProfileInfo | null>(null);
   const [bots, setBots] = useState<BotInfo[]>([]);
   const [confirm, setConfirm] = useState(false);
@@ -55,6 +54,7 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
       toast.success(`已停止 ${profile}`);
       setConfirm(false);
       setTimeout(loadRuntime, 500);
+      onChanged?.();
     } catch (e) {
       toast.error(String((e as Error).message ?? e));
     } finally {
@@ -68,6 +68,7 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
       await apiPost("/api/profiles/start", { profile });
       toast.success(`已启动 ${profile}`);
       setTimeout(loadRuntime, 500);
+      onChanged?.();
     } catch (e) {
       toast.error(String((e as Error).message ?? e));
     } finally {
@@ -80,10 +81,7 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="icon" onClick={onBack} aria-label="返回">
-          <ArrowLeft />
-        </Button>
+      <div className="glass sticky -top-6 z-10 -mx-6 flex items-center gap-3 rounded-none border-x-0 border-t-0 px-6 py-4">
         <h1 className="text-2xl font-semibold">{profile}</h1>
         {info && <Badge variant="secondary">{info.agentKind}</Badge>}
         {running ? (
@@ -109,7 +107,7 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
           {hostedHere && bots.length > 0 ? (
             <div className="space-y-2">
               {bots.map((b) => (
-                <div key={b.id} className="rounded-md border px-3 py-2 text-sm">
+                <div key={b.id} className="rounded-xl border px-3 py-2 text-sm">
                   <span className="font-medium">{b.botName ?? "（连接中）"}</span>
                   <span className="text-muted-foreground"> · pid {b.pid} · 运行 {uptime(b.uptimeMs)} · v{b.version}</span>
                 </div>

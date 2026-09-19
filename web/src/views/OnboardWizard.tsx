@@ -162,7 +162,7 @@ export function OnboardWizard({ onCreated }: { onCreated: (profile: string) => v
   return (
     <div className="space-y-4">
       <div className="flex flex-col items-center gap-3 py-2">
-        <div className="flex size-[232px] items-center justify-center rounded-lg border bg-white p-4">
+        <div className="flex size-[232px] items-center justify-center rounded-2xl border bg-white p-4">
           {qr ? (
             <QRCodeSVG value={qr.qrUrl} size={200} />
           ) : (

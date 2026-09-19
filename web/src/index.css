@@ -3,48 +3,91 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.53 0.2 262);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.53 0.2 262);
-  --success: oklch(0.6 0.13 155);
+  --radius: 1rem;
+
+  /* Base surfaces. Slightly tinted instead of pure white/black so glass
+     panels floating on top have something to refract. */
+  --background: oklch(0.97 0.004 260);
+  --foreground: oklch(0.19 0.01 260);
+
+  /* Glass panel: translucent + blurred, with its own inset highlight and
+     shadow so it reads as a physical sheet of material rather than a flat
+     tinted rectangle. */
+  --glass-bg: oklch(1 0 0 / 62%);
+  --glass-bg-strong: oklch(1 0 0 / 78%);
+  --glass-border: oklch(1 0 0 / 55%);
+  --glass-highlight: oklch(1 0 0 / 85%);
+  --glass-shadow: oklch(0.2 0.02 260 / 12%);
+  --glass-blur: 24px;
+  --glass-saturate: 180%;
+
+  --card: var(--glass-bg);
+  --card-foreground: var(--foreground);
+  --popover: oklch(1 0 0 / 92%);
+  --popover-foreground: var(--foreground);
+
+  --primary: oklch(0.55 0.19 263);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.94 0.006 260 / 80%);
+  --secondary-foreground: oklch(0.28 0.01 260);
+  --muted: oklch(0.94 0.006 260 / 70%);
+  --muted-foreground: oklch(0.48 0.012 260);
+  --accent: oklch(0.93 0.01 263 / 70%);
+  --accent-foreground: oklch(0.3 0.02 263);
+  --destructive: oklch(0.577 0.22 27);
+  --border: oklch(0.2 0.02 260 / 10%);
+  --input: oklch(0.2 0.02 260 / 12%);
+  --ring: oklch(0.55 0.19 263 / 55%);
+  --success: oklch(0.62 0.15 155);
+
+  /* Sidebar gets its own, slightly heavier material than content cards —
+     matches System Settings / Mail, where the sidebar reads as a distinct
+     layer from the content pane behind it. */
+  --sidebar-bg: oklch(0.95 0.006 260 / 55%);
+  --sidebar-border: oklch(0.2 0.02 260 / 8%);
+
+  --app-bg-from: oklch(0.93 0.02 250);
+  --app-bg-via: oklch(0.96 0.015 265);
+  --app-bg-to: oklch(0.94 0.02 200);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.62 0.19 262);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 12%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.62 0.19 262);
-  --success: oklch(0.7 0.14 155);
+  --background: oklch(0.19 0.012 260);
+  --foreground: oklch(0.96 0.004 260);
+
+  --glass-bg: oklch(0.32 0.014 260 / 55%);
+  --glass-bg-strong: oklch(0.32 0.014 260 / 72%);
+  --glass-border: oklch(1 0 0 / 10%);
+  --glass-highlight: oklch(1 0 0 / 14%);
+  --glass-shadow: oklch(0 0 0 / 45%);
+  --glass-blur: 28px;
+  --glass-saturate: 160%;
+
+  --card: var(--glass-bg);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.24 0.014 260 / 94%);
+  --popover-foreground: var(--foreground);
+
+  --primary: oklch(0.68 0.17 263);
+  --primary-foreground: oklch(0.15 0.02 260);
+  --secondary: oklch(0.3 0.012 260 / 70%);
+  --secondary-foreground: oklch(0.94 0.004 260);
+  --muted: oklch(0.3 0.012 260 / 60%);
+  --muted-foreground: oklch(0.68 0.012 260);
+  --accent: oklch(0.34 0.02 263 / 60%);
+  --accent-foreground: oklch(0.94 0.01 263);
+  --destructive: oklch(0.704 0.19 22);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.68 0.17 263 / 55%);
+  --success: oklch(0.68 0.14 155);
+
+  --sidebar-bg: oklch(0.16 0.012 260 / 55%);
+  --sidebar-border: oklch(1 0 0 / 8%);
+
+  --app-bg-from: oklch(0.14 0.03 255);
+  --app-bg-via: oklch(0.17 0.02 265);
+  --app-bg-to: oklch(0.12 0.03 220);
 }
 
 @theme inline {
@@ -67,21 +110,98 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-success: var(--success);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 8px);
+  --radius-md: calc(var(--radius) - 4px);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-xl: calc(var(--radius) + 6px);
 }
 
 @layer base {
   * {
     border-color: var(--border);
   }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
   body {
-    background-color: var(--background);
     color: var(--foreground);
     font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
       -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
+    /* Soft, blurry wallpaper-like backdrop so glass panels have depth to
+       refract — a flat background defeats the point of a translucent panel. */
+    background:
+      radial-gradient(ellipse 60% 50% at 15% 0%, var(--app-bg-from), transparent 60%),
+      radial-gradient(ellipse 60% 50% at 85% 15%, var(--app-bg-to), transparent 60%),
+      var(--app-bg-via);
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
+}
+
+@layer utilities {
+  /* The core material: apply to any panel that should read as a sheet of
+     glass floating over the wallpaper (cards, dialogs, popovers, toolbars,
+     the sidebar). Backdrop blur + saturation boost is what actually gives
+     the "glass" read; the inset highlight + outer shadow give it edges and
+     thickness so it doesn't look like a flat translucent rectangle. */
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    border: 1px solid var(--glass-border);
+    box-shadow:
+      inset 0 1px 0 0 var(--glass-highlight),
+      0 8px 30px -8px var(--glass-shadow);
+  }
+  .glass-strong {
+    background: var(--glass-bg-strong);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    border: 1px solid var(--glass-border);
+    box-shadow:
+      inset 0 1px 0 0 var(--glass-highlight),
+      0 8px 30px -8px var(--glass-shadow);
+  }
+  /* Sidebar material — a touch heavier/more saturated than card glass, and
+     only bordered on the trailing edge, matching how macOS sidebars sit
+     beside (not on top of) the content pane. */
+  .sidebar-glass {
+    background: var(--sidebar-bg);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    border-right: 1px solid var(--sidebar-border);
+  }
+  /* Spring-like ease for anything that should feel native rather than
+     linear-web — approximates macOS's UIKit/AppKit spring curves closely
+     enough for hover/press/open transitions without pulling in a JS
+     animation library for a small admin console. */
+  .ease-spring {
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+@layer base {
+  ::selection {
+    background: color-mix(in oklch, var(--primary) 30%, transparent);
+  }
+  /* Thin, unobtrusive scrollbars — the chunky default browser scrollbar reads
+     very "web app", not "native panel". */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--foreground) 22%, transparent) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: color-mix(in oklch, var(--foreground) 22%, transparent);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
   }
 }
