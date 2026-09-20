@@ -63,6 +63,7 @@ import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
+import { createRunsMonitor } from './runs-monitor';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
@@ -367,6 +368,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     });
   });
 
+  // The console's tasks panel reads live runs / queue depth and issues the
+  // same interrupt the IM /stop command uses. Late-bound like `meeting`
+  // because all three sources live only inside this channel instance.
+  controls.runsMonitor = createRunsMonitor({ activeRuns, pending, ...(runs ? { runs } : {}) });
+
   // Counter for stdout reconnect escalation; reset on `reconnected`.
   let consecutiveReconnects = 0;
 
@@ -568,6 +574,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       // reconnect would be surprising.
       meetingManager?.dispose();
       controls.meeting = undefined;
+      controls.runsMonitor = undefined;
       pending.cancelAll();
       // Stop the agents first, then report — the notice goes out over this
       // channel, so it has to happen before `channel.disconnect()`. Doing it

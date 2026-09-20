@@ -236,4 +236,57 @@ describe('ui server (supervisor-backed)', () => {
     const res = await get('/api/profiles/qr/status?sessionId=nope', handle.token);
     expect(res.status).toBe(404);
   });
+
+  it('lists runs from a hosted profile via its runsMonitor', async () => {
+    online.get('claude').runsMonitor = {
+      snapshot: () => [
+        {
+          scope: 'oc_chat_a',
+          source: 'im',
+          chatId: 'oc_chat_a',
+          promptPreview: '写周报',
+          startedAt: Date.now() - 5_000,
+          queueDepth: 1,
+        },
+      ],
+      interrupt: () => true,
+    };
+    online.get('claude').knownChats = [{ id: 'oc_chat_a', name: '研发群' }];
+
+    const { runs } = await json(await get('/api/runs', handle.token));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      profile: 'claude',
+      scope: 'oc_chat_a',
+      chatName: '研发群',
+      promptPreview: '写周报',
+      queueDepth: 1,
+      source: 'im',
+      status: 'running',
+    });
+    expect(runs[0].elapsedMs).toBeGreaterThanOrEqual(5_000);
+  });
+
+  it('stops a hosted run and rejects stop for a non-hosted profile', async () => {
+    const interrupted: string[] = [];
+    online.get('claude').runsMonitor = {
+      snapshot: () => [],
+      interrupt: (scope: string) => {
+        interrupted.push(scope);
+        return true;
+      },
+    };
+
+    const ok = await post('/api/runs/stop', handle.token, { profile: 'claude', scope: 'oc_chat_a' });
+    expect(ok.status).toBe(200);
+    expect(await json(ok)).toEqual({ ok: true, interrupted: true });
+    expect(interrupted).toEqual(['oc_chat_a']);
+
+    // 'work' is on disk but not hosted here → observe-only.
+    const denied = await post('/api/runs/stop', handle.token, { profile: 'work', scope: 'oc_x' });
+    expect(denied.status).toBe(409);
+
+    const missing = await post('/api/runs/stop', handle.token, { profile: 'claude' });
+    expect(missing.status).toBe(400);
+  });
 });
