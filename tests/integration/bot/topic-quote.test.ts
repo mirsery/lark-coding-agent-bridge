@@ -242,6 +242,9 @@ describe('topic message quote handling', () => {
         params: expect.objectContaining({
           container_id_type: 'thread',
           container_id: 'omt_topic',
+          // Without this, Feishu returns the v1-canonical fallback body for
+          // CardKit 2.0 cards instead of the real schema-2.0 DSL (issue #213).
+          card_msg_content_type: 'user_card_content',
         }),
       }),
     );

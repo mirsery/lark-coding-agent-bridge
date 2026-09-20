@@ -191,6 +191,11 @@ export async function fetchTopicContext(
           container_id: threadId,
           sort_type: 'ByCreateTimeAsc',
           page_size: 50,
+          // Without this, Feishu returns the v1-canonical fallback body for
+          // CardKit 2.0 cards ("请升级至最新版本客户端") instead of the real
+          // schema-2.0 DSL — see fetchQuotedContext/fetchSubTreeItems below,
+          // which already request it via fetchRawMessage's default.
+          card_msg_content_type: 'user_card_content',
           ...(pageToken ? { page_token: pageToken } : {}),
         },
       });
