@@ -46,6 +46,11 @@ export class PendingQueue {
     return 1;
   }
 
+  /** Messages currently queued for a scope (0 when nothing is queued). */
+  depth(scope: string): number {
+    return this.map.get(scope)?.messages.length ?? 0;
+  }
+
   cancel(scope: string): NormalizedMessage[] {
     const entry = this.map.get(scope);
     if (!entry) return [];

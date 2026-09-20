@@ -7,6 +7,7 @@ import { claudeCapability, codexCapability } from '../agent/capability';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
+import type { RunsMonitor } from '../bot/runs-monitor';
 import {
   accountCurrentCard,
   accountFailureCard,
@@ -112,6 +113,9 @@ export interface Controls {
   /** In-meeting agent manager; present only while the channel is connected and
    * `meeting.enabled` is on. Late-bound by startChannel. */
   meeting?: MeetingManager;
+  /** Live-run view + interrupt for the web console's tasks panel; present only
+   * while the channel is connected. Late-bound by startChannel. */
+  runsMonitor?: RunsMonitor;
 }
 
 export interface CommandContext {

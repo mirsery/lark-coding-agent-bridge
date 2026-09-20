@@ -31,7 +31,7 @@ export interface RunRecord {
  * Guards against a pid that got reused by an unrelated long-lived process,
  * which would otherwise pin a dead record in the file forever.
  */
-const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+export const RUN_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 type RunMap = Record<string, RunRecord>;
 
@@ -47,6 +47,22 @@ function isRunRecord(x: unknown): x is RunRecord {
     typeof r.startedAt === 'number' &&
     typeof r.ownerPid === 'number'
   );
+}
+
+/**
+ * Read a profile's runs file without constructing a registry — the observer
+ * path for profiles some *other* process hosts. Never mutates the file.
+ */
+export async function readRunRecords(path: string): Promise<RunRecord[]> {
+  try {
+    const raw = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+    return Object.values(raw).filter(isRunRecord);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      log.warn('run-registry', 'read-failed', { path, err: String(err) });
+    }
+    return [];
+  }
 }
 
 /**
@@ -101,7 +117,7 @@ export class RunRegistry {
     const orphans = Object.values(this.data).filter((r) => {
       if (r.ownerPid === this.pid) return false;
       if (!isAlive(r.ownerPid)) return true;
-      return now - r.startedAt > STALE_AFTER_MS;
+      return now - r.startedAt > RUN_STALE_AFTER_MS;
     });
     if (orphans.length === 0) return [];
     for (const r of orphans) delete this.data[r.runId];
@@ -123,6 +139,11 @@ export class RunRegistry {
 
   size(): number {
     return Object.keys(this.data).length;
+  }
+
+  /** Non-mutating snapshot of the records this process owns. */
+  listOwn(): RunRecord[] {
+    return Object.values(this.data).filter((r) => r.ownerPid === this.pid);
   }
 
   async flush(): Promise<void> {

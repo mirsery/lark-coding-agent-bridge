@@ -3,6 +3,9 @@ import type { AgentRun } from '../agent/types';
 export interface RunHandle {
   run: AgentRun;
   interrupted: boolean;
+  /** When the run was registered — the in-memory fallback for elapsed-time
+   * display when no durable RunRecord exists (e.g. comment runs). */
+  startedAt: number;
 }
 
 export class ActiveRuns {
@@ -22,12 +25,12 @@ export class ActiveRuns {
     };
   }
 
-  register(chatId: string, run: AgentRun): RunHandle {
+  register(chatId: string, run: AgentRun, startedAt: number = Date.now()): RunHandle {
     if (this.handles.has(chatId)) {
       throw new Error(`run already active for scope: ${chatId}`);
     }
     this.reservations.delete(chatId);
-    const handle: RunHandle = { run, interrupted: false };
+    const handle: RunHandle = { run, interrupted: false, startedAt };
     this.handles.set(chatId, handle);
     return handle;
   }
@@ -63,6 +66,11 @@ export class ActiveRuns {
 
   snapshot(): RunHandle[] {
     return [...this.handles.values()];
+  }
+
+  /** Scope → handle pairs, for views that need to know *which* scope runs. */
+  entries(): Array<{ scope: string; handle: RunHandle }> {
+    return [...this.handles.entries()].map(([scope, handle]) => ({ scope, handle }));
   }
 
   scopes(): string[] {

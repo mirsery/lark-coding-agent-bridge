@@ -23,6 +23,7 @@ import {
   userLoginStart,
 } from './api';
 import { activateProfile, listBots, listProfiles } from './fleet';
+import { listRuns, stopRun } from './runs';
 import { onboardCreate, onboardState, onboardValidate } from './onboard';
 import { finishQrRegistration, qrStatus, startQrRegistration } from './qr-register';
 import {
@@ -144,6 +145,17 @@ async function route(
   // --- online channels ---
   if (path === '/api/bots' && g) {
     sendJson(res, 200, { bots: listBots(sup, deps.version, Date.now()) });
+    return;
+  }
+
+  // --- runs (tasks panel) ---
+  if (path === '/api/runs' && g) {
+    sendJson(res, 200, { runs: await listRuns(sup, deps.rootDir) });
+    return;
+  }
+  if (path === '/api/runs/stop' && p) {
+    const body = (await readJsonBody(req)) as { profile?: string; scope?: string };
+    sendJson(res, 200, stopRun(sup, body));
     return;
   }
 
