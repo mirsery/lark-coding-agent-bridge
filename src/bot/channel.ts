@@ -66,6 +66,8 @@ import { ActiveRuns, type RunHandle } from './active-runs';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
+import { reportInterruptedRuns } from './interrupted-notice';
+import { RunRegistry } from '../runtime/run-registry';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
@@ -173,6 +175,30 @@ function stringifyArgs(args: unknown[]): string {
     .join(' ');
 }
 
+/** How long shutdown will wait on interruption notices before giving up. */
+const SHUTDOWN_NOTICE_BUDGET_MS = 5_000;
+
+/**
+ * Await `task`, but never for longer than `ms`. Failures and timeouts are
+ * logged, not thrown — every caller is on a teardown path where the work is
+ * a courtesy, not a requirement.
+ */
+async function withDeadline(task: Promise<void>, ms: number, step: string): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), ms);
+    timer.unref?.();
+  });
+  try {
+    const outcome = await Promise.race([task.then(() => 'done' as const), deadline]);
+    if (outcome === 'timeout') log.warn(step, 'deadline-exceeded', { ms });
+  } catch (err) {
+    log.warn(step, 'failed', { err: String(err) });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export interface BridgeChannel {
   channel: LarkChannel;
   disconnect(): Promise<void>;
@@ -185,12 +211,16 @@ export interface StartChannelDeps {
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
   controls: Controls;
-  appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
+  appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'runsFile'>;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
   const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
   const activeRuns = new ActiveRuns();
+  // Durable twin of `activeRuns`: survives this process so the next one can
+  // see which runs never finished. Absent only in tests that omit appPaths.
+  const runs = deps.appPaths?.runsFile ? new RunRegistry(deps.appPaths.runsFile) : undefined;
+  await runs?.load();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
   const chatModeCache = new ChatModeCache();
@@ -326,6 +356,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           lastRunModelByScope,
           scope,
           mode,
+          runs,
         });
       } catch (err) {
         log.fail('flush', err);
@@ -473,6 +504,18 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   }
 
   await channel.connect();
+
+  // Runs owned by a daemon that is gone — SIGKILL, crash, power loss. Their
+  // cards are frozen mid-stream with nobody left to finish them, so tell the
+  // chat instead. Fire-and-forget: a slow Feishu call must not delay startup.
+  if (runs) {
+    const orphans = runs.takeOrphans();
+    if (orphans.length > 0) {
+      void reportInterruptedRuns(channel, orphans, 'restart').catch((err: unknown) =>
+        log.warn('interrupted-notice', 'sweep-failed', { err: String(err) }),
+      );
+    }
+  }
   const ownerRefresh = createOwnerRefreshController({
     controls,
     source: channel,
@@ -526,17 +569,30 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       meetingManager?.dispose();
       controls.meeting = undefined;
       pending.cancelAll();
-      const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
+      // Stop the agents first, then report — the notice goes out over this
+      // channel, so it has to happen before `channel.disconnect()`. Doing it
+      // after stopAll (rather than before) avoids racing a run that was about
+      // to deliver its real answer.
+      await activeRuns.stopAll().catch((err: unknown) => {
+        log.fail('disconnect', err, { step: 'stopAll' });
+      });
+      if (runs) {
+        // Bounded: launchd is already counting down to SIGKILL, and a hung
+        // Feishu call must not be what stops us from exiting cleanly.
+        await withDeadline(
+          reportInterruptedRuns(channel, runs.takeOwn(), 'shutdown'),
+          SHUTDOWN_NOTICE_BUDGET_MS,
+          'interrupted-notice',
+        );
+        await runs.flush();
+      }
+      const [disconnectResult, ...flushResults] = await Promise.allSettled([
         channel.disconnect(),
-        activeRuns.stopAll(),
         sessions.flush(),
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
         workspaces.flush(),
       ]);
-      if (stopAllResult.status === 'rejected') {
-        log.fail('disconnect', stopAllResult.reason, { step: 'stopAll' });
-      }
       for (const [idx, result] of flushResults.entries()) {
         if (result.status === 'rejected') {
           log.fail('disconnect', result.reason, { step: `flush-${idx}` });
@@ -809,6 +865,7 @@ interface RunBatchDeps {
   lastRunModelByScope: Map<string, string>;
   scope: string;
   mode: ChatMode;
+  runs?: RunRegistry;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -827,6 +884,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     lastRunModelByScope,
     scope,
     mode,
+    runs,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -999,6 +1057,17 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 
   const { execution, cwdRealpath: cwd } = flow;
+  // Written before the first token so a hard kill at any point after this
+  // leaves a trace the next process can act on.
+  runs?.start({
+    runId: execution.runId,
+    scope,
+    chatId,
+    originMessageId: lastMsg.messageId,
+    ...(threadId ? { threadId } : {}),
+    promptPreview: lastMsg.content ?? '',
+    startedAt: Date.now(),
+  });
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
   const handle = execution.handle;
   const eventStream = execution.subscribe();
@@ -1319,6 +1388,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } catch (err) {
     log.fail('stream', err);
   } finally {
+    runs?.finish(execution.runId);
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
     if (runTerminal === 'done') void addDoneReaction(channel, lastMsg.messageId);
