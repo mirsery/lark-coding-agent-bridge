@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { Plus } from "lucide-react";
+import { ListTodo, Plus } from "lucide-react";
 import { apiGet } from "@/lib/api";
 import type { ProfileInfo } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { OnboardWizard } from "./OnboardWizard";
+import { TASKS_VIEW } from "./TasksView";
 
 /**
  * Navigation only — start/stop and every other per-profile action live in
@@ -36,8 +37,23 @@ export function Sidebar({
     return () => clearInterval(t);
   }, [refreshToken]);
 
+  const tasksActive = selected === TASKS_VIEW;
+
   return (
     <aside className="sidebar-glass flex h-full w-64 shrink-0 flex-col">
+      <div className="px-2 pt-4">
+        <button
+          onClick={() => onSelect(TASKS_VIEW)}
+          className={
+            "ease-spring flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-sm transition-colors duration-150 " +
+            (tasksActive ? "bg-primary/15 text-foreground" : "hover:bg-accent")
+          }
+        >
+          <ListTodo className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="min-w-0 flex-1 truncate font-medium">任务</span>
+        </button>
+      </div>
+
       <div className="flex items-center justify-between px-4 pb-2 pt-5">
         <h1 className="text-[15px] font-semibold tracking-tight">Profiles</h1>
         <Button

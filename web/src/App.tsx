@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { Sidebar } from "@/views/Sidebar";
 import { ProfileDetail } from "@/views/ProfileDetail";
 import { OnboardWizard } from "@/views/OnboardWizard";
+import { TASKS_VIEW, TasksView } from "@/views/TasksView";
 
 export function App() {
   const [onboard, setOnboard] = useState<OnboardState | null>(null);
@@ -51,7 +52,9 @@ export function App() {
       <Sidebar selected={selected} onSelect={setSelected} refreshToken={refreshToken} />
       <main className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-3xl p-6 pb-16">
-          {selected ? (
+          {selected === TASKS_VIEW ? (
+            <TasksView />
+          ) : selected ? (
             <ProfileDetail
               profile={selected}
               onChanged={() => { void refresh(); setRefreshToken((t) => t + 1); }}

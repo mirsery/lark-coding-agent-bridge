@@ -70,6 +70,25 @@ export interface KnownChat {
   name: string;
 }
 
+/** One row of the tasks panel (an in-flight agent run, any profile). */
+export interface RunInfo {
+  profile: string;
+  scope: string;
+  /** Empty for runs with no chat (e.g. cloud-doc comment runs). */
+  chatId: string;
+  threadId?: string;
+  /** Absent when unresolvable — show chatId instead. */
+  chatName?: string;
+  promptPreview: string;
+  startedAt: number;
+  elapsedMs: number;
+  /** null = unknowable (run belongs to another process); 0 = known empty. */
+  queueDepth: number | null;
+  source: "im" | "comment";
+  /** orphan = leftover record of a dead process; nothing actually running. */
+  status: "running" | "orphan";
+}
+
 /** Owner user-identity auth status (for the "我的群" picker). */
 export interface UserAuthStatus {
   loggedIn: boolean;
