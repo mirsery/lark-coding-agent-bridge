@@ -200,6 +200,7 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)',
         '- `/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)',
         `- \`/doctor [描述]\` — 把日志和描述交给 ${escapedAgentName} 自助诊断`,
+        '- `/coffee` — 来一杯电子咖啡 ☕',
         '- `/help` — 本帮助',
         '',
         `其他内容直接交给 ${escapedAgentName}。`,
@@ -213,6 +214,55 @@ export function helpCard(agentName = 'Agent'): object {
       { text: '🆕 新会话', value: { cmd: 'new' } },
     ]),
   ]);
+}
+
+/** Fixed schema-2.0 card — same output everywhere `/coffee` is sent, unlike
+ * the ad-hoc cards an agent session would otherwise improvise per-chat. */
+export function coffeeCard(): object {
+  return {
+    schema: '2.0',
+    config: { width_mode: 'default', summary: { content: '☕ Antelope 电子咖啡' } },
+    header: {
+      title: { tag: 'plain_text', content: '☕ Antelope 电子咖啡' },
+      subtitle: { tag: 'plain_text', content: 'Antelope · 不含咖啡因,但管用' },
+      template: 'orange',
+      icon: { tag: 'standard_icon', token: 'gift_outlined' },
+    },
+    body: {
+      direction: 'vertical',
+      padding: '16px 16px 20px 16px',
+      vertical_spacing: '10px',
+      elements: [
+        {
+          tag: 'column_set',
+          columns: [
+            {
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              padding: '24px',
+              background_style: 'orange-50',
+              elements: [
+                { tag: 'markdown', content: '# ☕', text_align: 'center' },
+                { tag: 'markdown', content: '**Antelope 电子咖啡一杯**', text_align: 'center' },
+                {
+                  tag: 'markdown',
+                  content: "<font color='grey'>🦌 Antelope Roast · 现磨现发</font>",
+                  text_align: 'center',
+                  text_size: 'notation',
+                },
+              ],
+            },
+          ],
+        },
+        HR,
+        {
+          tag: 'markdown',
+          content: "<font color='grey'>零卡路里 · 零等待 · 续杯免费 · 熬夜专用</font>",
+        },
+      ],
+    },
+  };
 }
 
 function escapeMd(s: string): string {
