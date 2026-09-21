@@ -1,7 +1,7 @@
 import { modelLabel, supportedModels } from '../agent/models';
 import type { KnownChat } from '../bot/lark-info';
 import type { AgentKind, LarkCliIdentityPreset, ProfileMode } from '../config/profile-schema';
-import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
+import { EFFORT_LEVELS, EFFORT_LEVEL_LABELS, type CotMessagesMode, type EffortLevel, type MessageReplyMode } from '../config/schema';
 
 export interface ConfigFormOpts {
   /** Profile's agent kind — decides which model catalog the picker shows. */
@@ -10,6 +10,8 @@ export interface ConfigFormOpts {
   mode: ProfileMode;
   /** Current model selection (a value from {@link supportedModels}). */
   model: string;
+  /** Current effort level, or `undefined` for "follow the CLI default". Claude-only — ignored for `codex` profiles. */
+  effort: EffortLevel | undefined;
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   cotMessages: CotMessagesMode;
@@ -169,6 +171,30 @@ export function configFormCard(opts: ConfigFormOpts): object {
                 value: m.value,
               })),
             },
+            ...(opts.agentKind === 'claude'
+              ? [
+                  { tag: 'hr' },
+                  {
+                    tag: 'markdown',
+                    content:
+                      '**Effort（推理强度）**\n' +
+                      '_底层 agent 的推理力度,越高越慢越贵,越低越快越便宜_\n' +
+                      '_「跟随默认」= 不传 `--effort`,由 CLI 决定_',
+                  },
+                  {
+                    tag: 'select_static',
+                    name: 'effort',
+                    initial_option: opts.effort ?? '',
+                    options: [
+                      { text: { tag: 'plain_text', content: '跟随默认' }, value: '' },
+                      ...EFFORT_LEVELS.map((level) => ({
+                        text: { tag: 'plain_text', content: EFFORT_LEVEL_LABELS[level] },
+                        value: level,
+                      })),
+                    ],
+                  },
+                ]
+              : []),
             { tag: 'hr' },
             {
               tag: 'markdown',
@@ -347,6 +373,9 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             '✅ **偏好已保存**\n\n' +
             `**运行模式**:\`${opts.mode === 'team' ? '团队版' : '个人版'}\`\n` +
             `**模型**:\`${modelLabel(opts.agentKind, opts.model)}\`\n` +
+            (opts.agentKind === 'claude'
+              ? `**Effort**:\`${opts.effort ? EFFORT_LEVEL_LABELS[opts.effort] : '跟随默认'}\`\n`
+              : '') +
             `**消息回复方式**:${replyLabel}\n` +
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
             `**COT 过程消息**:\`${cotLabel}\`\n` +

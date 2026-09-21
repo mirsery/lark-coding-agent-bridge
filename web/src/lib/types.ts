@@ -45,6 +45,10 @@ export interface ConfigView {
   mode: ProfileMode;
   model: string;
   models: ModelOption[];
+  /** '' means "follow the CLI default" (no `--effort` flag). */
+  effort: string;
+  /** Empty for non-claude profiles — hide the field when this is empty. */
+  effortOptions: ModelOption[];
   messageReply: MessageReply;
   showToolCalls: boolean;
   cotMessages: CotMessages;

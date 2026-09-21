@@ -26,10 +26,12 @@ import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
 import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { coffeeCard, helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
-import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
+import type { AppConfig, AppPreferences, EffortLevel, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
+  EFFORT_LEVELS,
   getAgentStopGraceMs,
   getCotMessages,
+  getEffort,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
@@ -1900,6 +1902,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
       ctx.controls.profileConfig.agentKind,
       ctx.controls.cfg.preferences?.model,
     ),
+    effort: getEffort(ctx.controls.cfg),
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
     cotMessages: getCotMessages(ctx.controls.cfg),
@@ -1964,6 +1967,17 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     ? rawModel
     : normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model);
   const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
+  // Effort field is only rendered (and thus only submitted) for claude
+  // profiles; absent/empty means "follow default", unrecognized keeps
+  // current. `fv.effort` is simply absent for codex forms, which also
+  // resolves to "keep current" (always undefined there).
+  const rawEffort = String(fv.effort ?? '').trim();
+  const effort: EffortLevel | undefined =
+    rawEffort === ''
+      ? undefined
+      : EFFORT_LEVELS.includes(rawEffort as EffortLevel)
+        ? (rawEffort as EffortLevel)
+        : getEffort(ctx.controls.cfg);
   const rawCotMessages = String(fv.cot_messages ?? '').trim();
   const cotMessages =
     rawCotMessages === 'brief'
@@ -2043,6 +2057,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     const nextPreferences: AppPreferences = {
       ...(ctx.controls.cfg.preferences ?? {}),
       model,
+      effort,
       messageReply,
       // Mark the messageReply value as living in the new (post-0.1.27)
       // semantic — `text` now means real plain text, not the lightweight
@@ -2094,6 +2109,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
 
     log.info('command', 'config-saved', {
       mode,
+      effort: effort ?? 'default',
       messageReply,
       showToolCalls,
       cotMessages,
@@ -2113,6 +2129,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         agentKind,
         mode,
         model: modelSelection,
+        effort,
         messageReply,
         showToolCalls,
         cotMessages,
