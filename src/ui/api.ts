@@ -24,7 +24,10 @@ import {
   type MutableProfileState,
 } from '../config/config-ops';
 import {
+  EFFORT_LEVELS,
+  EFFORT_LEVEL_LABELS,
   getCotMessages,
+  getEffort,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
@@ -32,6 +35,7 @@ import {
   getShowToolCalls,
   type AppPreferences,
   type CotMessagesMode,
+  type EffortLevel,
   type MessageReplyMode,
 } from '../config/schema';
 import {
@@ -56,6 +60,10 @@ export interface ConfigView {
   mode: ProfileMode;
   model: string;
   models: { value: string; label: string }[];
+  /** '' means "follow the CLI default" (no `--effort` flag). */
+  effort: string;
+  /** Empty for non-claude profiles — Codex ignores effort, so the console hides the field. */
+  effortOptions: { value: string; label: string }[];
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   cotMessages: CotMessagesMode;
@@ -85,6 +93,11 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
     mode: state.profileConfig.mode,
     model: normalizeModelSelection(agentKind, state.cfg.preferences?.model),
     models: supportedModels(agentKind),
+    effort: getEffort(state.cfg) ?? '',
+    effortOptions:
+      agentKind === 'claude'
+        ? EFFORT_LEVELS.map((level) => ({ value: level, label: EFFORT_LEVEL_LABELS[level] }))
+        : [],
     messageReply: getMessageReplyMode(state.cfg),
     showToolCalls: getShowToolCalls(state.cfg),
     cotMessages: getCotMessages(state.cfg),
@@ -219,6 +232,18 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
     : normalizeModelSelection(agentKind, state.cfg.preferences?.model);
   const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
 
+  // '' (or omitted) means "follow default"; an unrecognized value keeps the
+  // current preference rather than silently discarding it. Non-claude
+  // profiles never render this field client-side, so `fv.effort` is simply
+  // absent there — same "keep current" (always undefined) outcome.
+  const rawEffort = typeof fv.effort === 'string' ? fv.effort.trim() : '';
+  const effort: EffortLevel | undefined =
+    rawEffort === ''
+      ? undefined
+      : EFFORT_LEVELS.includes(rawEffort as EffortLevel)
+        ? (rawEffort as EffortLevel)
+        : getEffort(state.cfg);
+
   const messageReply: MessageReplyMode =
     fv.messageReply === 'markdown' || fv.messageReply === 'text' || fv.messageReply === 'card'
       ? fv.messageReply
@@ -266,6 +291,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
     nextPreferences: {
       ...(state.cfg.preferences ?? {}),
       model,
+      effort,
       messageReply,
       messageReplyMigrated: true,
       showToolCalls,

@@ -5,6 +5,7 @@ const base: ConfigFormOpts = {
   agentKind: 'claude',
   mode: 'personal',
   model: 'default',
+  effort: undefined,
   messageReply: 'markdown',
   showToolCalls: false,
   cotMessages: 'off',

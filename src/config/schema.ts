@@ -71,6 +71,14 @@ export type CotMessagesMode = 'off' | 'brief' | 'detailed';
 /** Claude Code `--effort` levels, in the CLI's own order. */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** Display labels for {@link EffortLevel}, for `/config` and the web console. */
+export const EFFORT_LEVEL_LABELS: Record<EffortLevel, string> = {
+  low: '低（low）',
+  medium: '中（medium）',
+  high: '高（high）',
+  xhigh: '很高（xhigh）',
+  max: '最高（max）',
+};
 
 /**
  * Access control settings. Empty lists are fail-closed in the v2 policy:
@@ -227,6 +235,17 @@ export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
 /** Resolve the show-tool-calls preference with default fallback. */
 export function getShowToolCalls(cfg: AppConfig): boolean {
   return cfg.preferences?.showToolCalls !== false;
+}
+
+/**
+ * Resolve the stored effort preference, or `undefined` for "follow the CLI
+ * default" (unset, or a value outside {@link EFFORT_LEVELS} — e.g. hand-edited
+ * config, or a level a future CLI drops). Callers that need the agent-kind
+ * gating (Codex ignores this) should go through `resolveEffortArg` instead.
+ */
+export function getEffort(cfg: AppConfig): EffortLevel | undefined {
+  const raw = cfg.preferences?.effort;
+  return EFFORT_LEVELS.includes(raw as EffortLevel) ? (raw as EffortLevel) : undefined;
 }
 
 export function getCotMessages(cfg: AppConfig): CotMessagesMode {
