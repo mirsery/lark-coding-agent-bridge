@@ -51,6 +51,28 @@ function collapsedAccessPanel(title: string, elements: object[]): object {
   };
 }
 
+/**
+ * Tinted "section card" wrapping a group of form fields — same column_set
+ * pattern the submit buttons already use inside the form, so interactive
+ * children (select/input) remain collected by form submit.
+ */
+function sectionBlock(background: string, elements: object[]): object {
+  return {
+    tag: 'column_set',
+    columns: [
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        padding: '10px 12px 12px 12px',
+        background_style: background,
+        vertical_spacing: '8px',
+        elements,
+      },
+    ],
+  };
+}
+
 function atMentionLine(openIds: string[]): string {
   if (openIds.length === 0) return '_（暂无）_';
   return openIds.map((id) => `<at id="${id}"></at>`).join('  ');
@@ -139,159 +161,162 @@ export function configFormCard(opts: ConfigFormOpts): object {
           tag: 'form',
           name: 'config_form',
           elements: [
-            { tag: 'markdown', content: '🧠 **模型与推理**' },
-            {
-              tag: 'markdown',
-              content:
-                '**运行模式**\n' +
-                '_个人版=仅白名单可用、可带个人授权；团队版=任何人 @ 可用、强制应用身份_',
-            },
-            {
-              tag: 'select_static',
-              name: 'deploy_mode',
-              initial_option: opts.mode,
-              options: [
-                { text: { tag: 'plain_text', content: '个人版(默认)' }, value: 'personal' },
-                { text: { tag: 'plain_text', content: '团队版' }, value: 'team' },
-              ],
-            },
-            {
-              tag: 'markdown',
-              content: '\n**模型**\n_「跟随默认」= 不指定，由 CLI/账号决定_',
-            },
-            {
-              tag: 'select_static',
-              name: 'model',
-              initial_option: opts.model,
-              options: supportedModels(opts.agentKind).map((m) => ({
-                text: { tag: 'plain_text', content: m.label },
-                value: m.value,
-              })),
-            },
-            ...(opts.agentKind === 'claude'
-              ? [
-                  {
-                    tag: 'markdown',
-                    content:
-                      '\n**Effort（推理强度）**\n_越高越慢越贵；「跟随默认」= 不传 `--effort`_',
-                  },
-                  {
-                    tag: 'select_static',
-                    name: 'effort',
-                    initial_option: opts.effort ?? '',
-                    options: [
-                      { text: { tag: 'plain_text', content: '跟随默认' }, value: '' },
-                      ...EFFORT_LEVELS.map((level) => ({
-                        text: { tag: 'plain_text', content: EFFORT_LEVEL_LABELS[level] },
-                        value: level,
-                      })),
-                    ],
-                  },
-                ]
-              : []),
-            { tag: 'hr' },
-            { tag: 'markdown', content: '💬 **消息展示**' },
-            {
-              tag: 'markdown',
-              content:
-                '**消息回复方式**\n' +
-                '_纯文本=跑完一次性发 / 消息卡片=流式 markdown / 交互卡片=带工具面板与 ⏹ 停止按钮_',
-            },
-            {
-              tag: 'select_static',
-              name: 'message_reply',
-              initial_option: opts.messageReply,
-              options: [
-                { text: { tag: 'plain_text', content: '纯文本' }, value: 'text' },
-                { text: { tag: 'plain_text', content: '消息卡片(默认)' }, value: 'markdown' },
-                { text: { tag: 'plain_text', content: '交互卡片' }, value: 'card' },
-              ],
-            },
-            {
-              tag: 'markdown',
-              content:
-                '\n**工具调用显示**\n_是否展示 bot 跑的命令、读写的文件等过程块_',
-            },
-            {
-              tag: 'select_static',
-              name: 'show_tool_calls',
-              initial_option: opts.showToolCalls ? 'show' : 'hide',
-              options: [
-                { text: { tag: 'plain_text', content: '显示(默认)' }, value: 'show' },
-                { text: { tag: 'plain_text', content: '隐藏' }, value: 'hide' },
-              ],
-            },
-            {
-              tag: 'markdown',
-              content:
-                '\n**COT 过程消息**\n_关闭=只发最终回复 / 简略=过程文本+工具摘要 / 详细=含参数与输出摘要_',
-            },
-            {
-              tag: 'select_static',
-              name: 'cot_messages',
-              initial_option: opts.cotMessages,
-              options: [
-                { text: { tag: 'plain_text', content: '关闭' }, value: 'off' },
-                { text: { tag: 'plain_text', content: '简略' }, value: 'brief' },
-                { text: { tag: 'plain_text', content: '详细' }, value: 'detailed' },
-              ],
-            },
-            { tag: 'hr' },
-            { tag: 'markdown', content: '⚙️ **运行与权限**' },
-            {
-              tag: 'markdown',
-              content:
-                '**并发上限**（1–50，默认 10）\n_全局同时运行的 agent 数，超出 FIFO 排队_',
-            },
-            {
-              tag: 'input',
-              name: 'max_concurrent_runs',
-              default_value: String(opts.maxConcurrentRuns),
-              placeholder: { tag: 'plain_text', content: '10（范围 1-50）' },
-              input_type: 'text',
-            },
-            {
-              tag: 'markdown',
-              content:
-                '\n**run 探活**（分钟，0=关闭，1–120）\n_agent 长时间无输出自动 kill；可被 `/timeout` 按 scope 覆盖_',
-            },
-            {
-              tag: 'input',
-              name: 'run_idle_timeout_minutes',
-              default_value: String(opts.runIdleTimeoutMinutes),
-              placeholder: { tag: 'plain_text', content: '0（关闭）' },
-              input_type: 'text',
-            },
-            {
-              tag: 'markdown',
-              content:
-                '\n**群里需要 @ bot**\n_是=群内仅 @ 触发；否=群内任意消息都触发。私聊永远不需要 @，`@全员` 永远不响应_',
-            },
-            {
-              tag: 'select_static',
-              name: 'require_mention_in_group',
-              initial_option: opts.requireMentionInGroup ? 'yes' : 'no',
-              options: [
-                { text: { tag: 'plain_text', content: '是(默认)' }, value: 'yes' },
-                { text: { tag: 'plain_text', content: '否' }, value: 'no' },
-              ],
-            },
-            {
-              tag: 'markdown',
-              content:
-                '\n**lark-cli 身份策略**\n_只允许应用身份=不碰个人资源；允许用户身份=可用已授权的个人日历/邮箱/云盘_' +
-                (teamMode ? teamOverrideNote : ''),
-            },
-            {
-              tag: 'select_static',
-              name: 'lark_cli_identity',
-              initial_option: opts.larkCliIdentity,
-              options: [
-                { text: { tag: 'plain_text', content: '只允许应用身份' }, value: 'bot-only' },
-                { text: { tag: 'plain_text', content: '允许用户身份' }, value: 'user-default' },
-              ],
-            },
-            { tag: 'hr' },
+            sectionBlock('blue-50', [
+              { tag: 'markdown', content: '🧠 **模型与推理**' },
+              {
+                tag: 'markdown',
+                content:
+                  '**运行模式**\n' +
+                  '<font color="grey">个人版=仅白名单可用、可带个人授权；团队版=任何人 @ 可用、强制应用身份</font>',
+              },
+              {
+                tag: 'select_static',
+                name: 'deploy_mode',
+                initial_option: opts.mode,
+                options: [
+                  { text: { tag: 'plain_text', content: '个人版(默认)' }, value: 'personal' },
+                  { text: { tag: 'plain_text', content: '团队版' }, value: 'team' },
+                ],
+              },
+              {
+                tag: 'markdown',
+                content: '**模型**\n<font color="grey">「跟随默认」= 不指定，由 CLI/账号决定</font>',
+              },
+              {
+                tag: 'select_static',
+                name: 'model',
+                initial_option: opts.model,
+                options: supportedModels(opts.agentKind).map((m) => ({
+                  text: { tag: 'plain_text', content: m.label },
+                  value: m.value,
+                })),
+              },
+              ...(opts.agentKind === 'claude'
+                ? [
+                    {
+                      tag: 'markdown',
+                      content:
+                        '**Effort（推理强度）**\n<font color="grey">越高越慢越贵；「跟随默认」= 不传 --effort</font>',
+                    },
+                    {
+                      tag: 'select_static',
+                      name: 'effort',
+                      initial_option: opts.effort ?? '',
+                      options: [
+                        { text: { tag: 'plain_text', content: '跟随默认' }, value: '' },
+                        ...EFFORT_LEVELS.map((level) => ({
+                          text: { tag: 'plain_text', content: EFFORT_LEVEL_LABELS[level] },
+                          value: level,
+                        })),
+                      ],
+                    },
+                  ]
+                : []),
+            ]),
+            sectionBlock('turquoise-50', [
+              { tag: 'markdown', content: '💬 **消息展示**' },
+              {
+                tag: 'markdown',
+                content:
+                  '**消息回复方式**\n' +
+                  '<font color="grey">纯文本=跑完一次性发 / 消息卡片=流式 markdown / 交互卡片=带工具面板与 ⏹ 停止按钮</font>',
+              },
+              {
+                tag: 'select_static',
+                name: 'message_reply',
+                initial_option: opts.messageReply,
+                options: [
+                  { text: { tag: 'plain_text', content: '纯文本' }, value: 'text' },
+                  { text: { tag: 'plain_text', content: '消息卡片(默认)' }, value: 'markdown' },
+                  { text: { tag: 'plain_text', content: '交互卡片' }, value: 'card' },
+                ],
+              },
+              {
+                tag: 'markdown',
+                content:
+                  '**工具调用显示**\n<font color="grey">是否展示 bot 跑的命令、读写的文件等过程块</font>',
+              },
+              {
+                tag: 'select_static',
+                name: 'show_tool_calls',
+                initial_option: opts.showToolCalls ? 'show' : 'hide',
+                options: [
+                  { text: { tag: 'plain_text', content: '显示(默认)' }, value: 'show' },
+                  { text: { tag: 'plain_text', content: '隐藏' }, value: 'hide' },
+                ],
+              },
+              {
+                tag: 'markdown',
+                content:
+                  '**COT 过程消息**\n<font color="grey">关闭=只发最终回复 / 简略=过程文本+工具摘要 / 详细=含参数与输出摘要</font>',
+              },
+              {
+                tag: 'select_static',
+                name: 'cot_messages',
+                initial_option: opts.cotMessages,
+                options: [
+                  { text: { tag: 'plain_text', content: '关闭' }, value: 'off' },
+                  { text: { tag: 'plain_text', content: '简略' }, value: 'brief' },
+                  { text: { tag: 'plain_text', content: '详细' }, value: 'detailed' },
+                ],
+              },
+            ]),
+            sectionBlock('violet-50', [
+              { tag: 'markdown', content: '⚙️ **运行与权限**' },
+              {
+                tag: 'markdown',
+                content:
+                  '**并发上限**（1–50，默认 10）\n<font color="grey">全局同时运行的 agent 数，超出 FIFO 排队</font>',
+              },
+              {
+                tag: 'input',
+                name: 'max_concurrent_runs',
+                default_value: String(opts.maxConcurrentRuns),
+                placeholder: { tag: 'plain_text', content: '10（范围 1-50）' },
+                input_type: 'text',
+              },
+              {
+                tag: 'markdown',
+                content:
+                  '**run 探活**（分钟，0=关闭，1–120）\n<font color="grey">agent 长时间无输出自动 kill；可被 /timeout 按 scope 覆盖</font>',
+              },
+              {
+                tag: 'input',
+                name: 'run_idle_timeout_minutes',
+                default_value: String(opts.runIdleTimeoutMinutes),
+                placeholder: { tag: 'plain_text', content: '0（关闭）' },
+                input_type: 'text',
+              },
+              {
+                tag: 'markdown',
+                content:
+                  '**群里需要 @ bot**\n<font color="grey">是=群内仅 @ 触发；否=群内任意消息都触发。私聊永远不需要 @，@全员 永远不响应</font>',
+              },
+              {
+                tag: 'select_static',
+                name: 'require_mention_in_group',
+                initial_option: opts.requireMentionInGroup ? 'yes' : 'no',
+                options: [
+                  { text: { tag: 'plain_text', content: '是(默认)' }, value: 'yes' },
+                  { text: { tag: 'plain_text', content: '否' }, value: 'no' },
+                ],
+              },
+              {
+                tag: 'markdown',
+                content:
+                  '**lark-cli 身份策略**\n<font color="grey">只允许应用身份=不碰个人资源；允许用户身份=可用已授权的个人日历/邮箱/云盘</font>' +
+                  (teamMode ? teamOverrideNote : ''),
+              },
+              {
+                tag: 'select_static',
+                name: 'lark_cli_identity',
+                initial_option: opts.larkCliIdentity,
+                options: [
+                  { text: { tag: 'plain_text', content: '只允许应用身份' }, value: 'bot-only' },
+                  { text: { tag: 'plain_text', content: '允许用户身份' }, value: 'user-default' },
+                ],
+              },
+            ]),
             collapsedAccessPanel('🔒 **访问控制**（点击展开）', accessElements),
             {
               tag: 'column_set',
