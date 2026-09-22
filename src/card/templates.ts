@@ -183,53 +183,127 @@ export function resumeCard(cwd: string, entries: ResumeEntry[]): object {
   return shell('🔁 恢复历史会话', elements);
 }
 
+/**
+ * Tinted section block for the help card — the same `column_set` + tinted
+ * column the `/config` card uses, so the two read as one family instead of
+ * "the old card and the new card".
+ */
+function helpSection(background: string, title: string, lines: string[]): object {
+  return {
+    tag: 'column_set',
+    columns: [
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        padding: '10px 12px 12px 12px',
+        background_style: background,
+        vertical_spacing: '6px',
+        elements: [
+          { tag: 'markdown', content: `**${title}**` },
+          { tag: 'markdown', content: lines.join('\n') },
+        ],
+      },
+    ],
+  };
+}
+
+/** One row of callback buttons, laid out as equal-width columns. */
+function helpButtonRow(buttons: Array<{ text: string; cmd: string; primary?: boolean }>): object {
+  return {
+    tag: 'column_set',
+    horizontal_spacing: '8px',
+    columns: buttons.map((button) => ({
+      tag: 'column',
+      width: 'weighted',
+      weight: 1,
+      elements: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: button.text },
+          ...(button.primary ? { type: 'primary' } : {}),
+          width: 'fill',
+          behaviors: [{ type: 'callback', value: { cmd: button.cmd } }],
+        },
+      ],
+    })),
+  };
+}
+
+/**
+ * `/help` — grouped by what you are trying to do rather than by one long
+ * alphabetical list. The command set outgrew a single bullet list once the
+ * git / knowledge / scheduler commands landed; grouping is what keeps it
+ * scannable on a phone.
+ */
 export function helpCard(agentName = 'Agent'): object {
   const escapedAgentName = escapeMd(agentName);
-  return shell('💡 使用帮助', [
-    divMd(
-      [
-        '**命令列表**',
-        '',
-        '- `/new` `/reset` — 清空当前 chat 的会话',
-        '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
-        '- `/resume [N]` — 列出并恢复历史会话（最多 N 条）',
-        '- `/cd <path>` — 切换工作目录（会重置 session）',
-        '- `/ws list|save <name>|use <name>|remove <name>` — 工作目录',
-        '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
-        '- `/config` — 调整偏好、访问控制和 lark-cli 身份策略',
-        '- `/status` — 当前状态',
-        '- `/stop` — 结束当前正在跑的任务（也可点卡片底部 ⏹ 终止 按钮）',
-        '- `/stop comment:<scopeHash>` — 管理员停止云文档评论任务',
-        '- `/timeout [N|off|default]` — 当前 session 的探活分钟数,`/config` 改全局默认',
-        '- `/timeout comment:<scopeHash> N` — 管理员设置云文档评论任务探活',
-        '- `/memory [add|forget|clear]` — 跨会话记忆，`--global` 写到全局',
-        '- `/skills [show <名字>]` — 可复用的 skill 目录，agent 按需读取',
-        '- `/knowledge [bind|sync]` — 记忆与 skill 的 git 同步',
-        '- `/diff [staged|<ref>]` — 看当前工作目录的改动，长 patch 会附带文件',
-        '- `/worktree [add|use|remove]` — 任务级 worktree，创建后会话自动切过去',
-        '- `/pr [编号|链接]` — 当前分支的 PR、CI 与评审状态',
-        '- `/cron add <时间> | <任务>` — 定时任务；`list|show|run|pause|resume|remove` 管理',
-        '- `/ps` — 列出本机所有 bot,标识当前正在回复的那个',
-        '- `/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)',
-        '- `/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)',
-        `- \`/doctor [描述]\` — 把日志和描述交给 ${escapedAgentName} 自助诊断`,
-        '- `/coffee` — 来一杯电子咖啡 ☕',
-        '- `/help` — 本帮助',
-        '',
-        `其他内容直接交给 ${escapedAgentName}。`,
-      ].join('\n'),
-    ),
-    HR,
-    actions([
-      { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
-      { text: '🔁 恢复会话', value: { cmd: 'resume' } },
-      { text: '📂 工作目录', value: { cmd: 'ws.list' } },
-      { text: '🔍 改动', value: { cmd: 'diff' } },
-      { text: '📚 知识库', value: { cmd: 'knowledge' } },
-      { text: '⏰ 定时任务', value: { cmd: 'cron.list' } },
-      { text: '🆕 新会话', value: { cmd: 'new' } },
-    ]),
-  ]);
+  return {
+    schema: '2.0',
+    config: { width_mode: 'fill', summary: { content: '使用帮助' } },
+    header: {
+      title: { tag: 'plain_text', content: '使用帮助' },
+      subtitle: { tag: 'plain_text', content: `其他内容直接交给 ${agentName}` },
+      template: 'blue',
+      icon: { tag: 'standard_icon', token: 'help_outlined' },
+    },
+    body: {
+      direction: 'vertical',
+      padding: '12px 12px 16px 12px',
+      vertical_spacing: '10px',
+      elements: [
+        helpSection('blue-50', '🗣 会话', [
+          '`/new` `/reset` — 清空当前会话',
+          '`/new chat [名字]` — 新建群 + 新会话，自动拉你进群',
+          '`/resume [N]` — 列出并恢复历史会话',
+          '`/stop` — 结束正在跑的任务（也可点卡片上的 ⏹ 终止）',
+          '`/timeout [N|off|default]` — 本会话的探活分钟数',
+        ]),
+        helpSection('turquoise-50', '📂 工作目录与 Git', [
+          '`/cd <路径>` — 切换工作目录（会重置会话）',
+          '`/ws list|save|use|remove <名字>` — 命名工作目录',
+          '`/diff [staged|<ref>]` — 看改动，长 patch 附带文件',
+          '`/worktree [add|use|remove]` — 任务级 worktree，会话自动跟着切',
+          '`/pr [编号|链接]` — 当前分支的 PR、CI 与评审状态',
+        ]),
+        helpSection('violet-50', '🧠 记忆与 skills', [
+          '`/memory [add|forget|clear]` — 跨会话记忆，`--global` 写到全局',
+          '`/skills [show <名字>]` — skill 索引，agent 按需读取正文',
+          '`/knowledge [bind|sync]` — 记忆与 skill 的 git 同步',
+        ]),
+        helpSection('orange-50', '⏰ 定时任务', [
+          '`/cron add <时间> | <任务>` — 新建，如 `0 9 * * 1-5`、`@daily`、`in 30m`',
+          '`/cron list|show|run|pause|resume|remove` — 管理已有任务',
+        ]),
+        helpSection('grey-50', '⚙️ 运维与诊断', [
+          '`/status` — 当前 profile、会话、工作目录、git、知识库状态',
+          '`/config` — 偏好、访问控制、lark-cli 身份策略',
+          '`/account` — 查看当前应用；`/account change` 换 appId/secret',
+          '`/ps` · `/exit <id|#>` — 列出 / 关掉本机的 bot',
+          '`/reconnect` — 强制重连（网络抖动后没反应时用）',
+          `\`/doctor [描述]\` — 把日志交给 ${escapedAgentName} 自助诊断`,
+        ]),
+        { tag: 'hr' },
+        helpButtonRow([
+          { text: '📊 状态', cmd: 'status', primary: true },
+          { text: '📚 知识库', cmd: 'knowledge' },
+          { text: '⏰ 定时任务', cmd: 'cron.list' },
+        ]),
+        helpButtonRow([
+          { text: '🔍 改动', cmd: 'diff' },
+          { text: '📂 工作目录', cmd: 'ws.list' },
+          { text: '🆕 新会话', cmd: 'new' },
+        ]),
+        {
+          tag: 'markdown',
+          content:
+            "<font color='grey'>管理员专用：`/invite` `/remove` 管访问名单 · " +
+            '`/stop comment:<hash>`、`/timeout comment:<hash> N` 管云文档评论任务 · ' +
+            "`/coffee` 来一杯 ☕</font>",
+        },
+      ],
+    },
+  };
 }
 
 /** Fixed schema-2.0 card — same output everywhere `/coffee` is sent, unlike
