@@ -115,35 +115,36 @@ export function configFormCard(opts: ConfigFormOpts): object {
   return {
     schema: '2.0',
     config: { summary: { content: '偏好设置' } },
+    header: {
+      title: { tag: 'plain_text', content: '偏好设置' },
+      subtitle: { tag: 'plain_text', content: '写入当前 profile · 提交后立即生效' },
+      template: 'blue',
+      icon: { tag: 'standard_icon', token: 'setting_outlined' },
+    },
     body: {
+      direction: 'vertical',
+      padding: '12px 12px 16px 12px',
+      vertical_spacing: '8px',
       elements: [
-        {
-          tag: 'markdown',
-          content:
-            '⚙️ **偏好设置**\n\n' +
-            '调整 bot 的行为偏好。改完点提交后写入当前 profile 配置；消息和访问控制设置立即生效。',
-        },
         ...(opts.consoleUrl
           ? [
               {
                 tag: 'markdown',
-                content:
-                  `🖥️ **Web 控制台**（本机 127.0.0.1，可管理所有 profile 的启动/停止与配置）\n` +
-                  `[${opts.consoleUrl}](${opts.consoleUrl})`,
+                content: `🖥️ Web 控制台（本机）：[${opts.consoleUrl}](${opts.consoleUrl})`,
               },
+              { tag: 'hr' },
             ]
           : []),
-        { tag: 'hr' },
         {
           tag: 'form',
           name: 'config_form',
           elements: [
+            { tag: 'markdown', content: '🧠 **模型与推理**' },
             {
               tag: 'markdown',
               content:
                 '**运行模式**\n' +
-                '_个人版(默认):Bot 是你一个人的助手,只有你和白名单用户能用,可携带你的个人授权访问文档/日历等_\n' +
-                '_团队版:Bot 是团队共用的助手,任何人 @ 即可使用(不做白名单校验);为避免他人借 Bot 动用你的个人权限,此模式下 CLI 强制只用应用(bot)身份,不使用个人授权_',
+                '_个人版=仅白名单可用、可带个人授权；团队版=任何人 @ 可用、强制应用身份_',
             },
             {
               tag: 'select_static',
@@ -154,13 +155,9 @@ export function configFormCard(opts: ConfigFormOpts): object {
                 { text: { tag: 'plain_text', content: '团队版' }, value: 'team' },
               ],
             },
-            { tag: 'hr' },
             {
               tag: 'markdown',
-              content:
-                '**模型**\n' +
-                '_底层 agent 运行使用的模型_\n' +
-                '_「跟随默认」= 不指定,由 CLI/账号决定_',
+              content: '\n**模型**\n_「跟随默认」= 不指定，由 CLI/账号决定_',
             },
             {
               tag: 'select_static',
@@ -173,13 +170,10 @@ export function configFormCard(opts: ConfigFormOpts): object {
             },
             ...(opts.agentKind === 'claude'
               ? [
-                  { tag: 'hr' },
                   {
                     tag: 'markdown',
                     content:
-                      '**Effort（推理强度）**\n' +
-                      '_底层 agent 的推理力度,越高越慢越贵,越低越快越便宜_\n' +
-                      '_「跟随默认」= 不传 `--effort`,由 CLI 决定_',
+                      '\n**Effort（推理强度）**\n_越高越慢越贵；「跟随默认」= 不传 `--effort`_',
                   },
                   {
                     tag: 'select_static',
@@ -196,13 +190,12 @@ export function configFormCard(opts: ConfigFormOpts): object {
                 ]
               : []),
             { tag: 'hr' },
+            { tag: 'markdown', content: '💬 **消息展示**' },
             {
               tag: 'markdown',
               content:
                 '**消息回复方式**\n' +
-                '_纯文本:agent 跑完一次性发出,不流式,体感最轻_\n' +
-                '_消息卡片:轻量流式 markdown 卡片,飞书原生打字机动画_\n' +
-                '_交互卡片:带标题栏、工具面板、⏹ 停止按钮与署名行的完整卡片_',
+                '_纯文本=跑完一次性发 / 消息卡片=流式 markdown / 交互卡片=带工具面板与 ⏹ 停止按钮_',
             },
             {
               tag: 'select_static',
@@ -217,9 +210,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
-                '\n**工具调用显示**\n' +
-                '_显示:可以看到 bot 跑了什么命令、读了哪些文件等过程_\n' +
-                '_隐藏:只看 agent 最终的文字答复,跳过所有工具块_',
+                '\n**工具调用显示**\n_是否展示 bot 跑的命令、读写的文件等过程块_',
             },
             {
               tag: 'select_static',
@@ -233,10 +224,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
-                '\n**COT 过程消息**\n' +
-                '_关闭:只发送最终回复_\n' +
-                '_简略:展示 agent 过程文本和工具摘要_\n' +
-                '_详细:额外展示工具参数和输出摘要_',
+                '\n**COT 过程消息**\n_关闭=只发最终回复 / 简略=过程文本+工具摘要 / 详细=含参数与输出摘要_',
             },
             {
               tag: 'select_static',
@@ -248,41 +236,36 @@ export function configFormCard(opts: ConfigFormOpts): object {
                 { text: { tag: 'plain_text', content: '详细' }, value: 'detailed' },
               ],
             },
+            { tag: 'hr' },
+            { tag: 'markdown', content: '⚙️ **运行与权限**' },
             {
               tag: 'markdown',
               content:
-                '\n**并发上限**\n' +
-                '_全局同时运行的 agent 进程数(主要影响话题群多话题并行场景)_\n' +
-                '_默认 10,范围 1-50。超出的请求会 FIFO 排队_',
+                '**并发上限**（1–50，默认 10）\n_全局同时运行的 agent 数，超出 FIFO 排队_',
             },
             {
               tag: 'input',
               name: 'max_concurrent_runs',
               default_value: String(opts.maxConcurrentRuns),
-              placeholder: { tag: 'plain_text', content: '10' },
+              placeholder: { tag: 'plain_text', content: '10（范围 1-50）' },
               input_type: 'text',
             },
             {
               tag: 'markdown',
               content:
-                '\n**run 探活(分钟)**\n' +
-                '_agent 长时间没输出时自动 kill,防止假死_\n' +
-                '_0 = 关闭(默认),范围 1-120。可被 `/timeout` 在单个 scope 覆盖_',
+                '\n**run 探活**（分钟，0=关闭，1–120）\n_agent 长时间无输出自动 kill；可被 `/timeout` 按 scope 覆盖_',
             },
             {
               tag: 'input',
               name: 'run_idle_timeout_minutes',
               default_value: String(opts.runIdleTimeoutMinutes),
-              placeholder: { tag: 'plain_text', content: '0' },
+              placeholder: { tag: 'plain_text', content: '0（关闭）' },
               input_type: 'text',
             },
             {
               tag: 'markdown',
               content:
-                '\n**群里需要 @ bot**\n' +
-                '_是(默认):群和话题群里,不 @ bot 的消息不会触发回复,bot 不接群里聊天_\n' +
-                '_否:任何消息都会发给 agent(0.1.21 及更早版本的行为)_\n' +
-                '_私聊永远不需要 @;`@全员` 永远不响应_',
+                '\n**群里需要 @ bot**\n_是=群内仅 @ 触发；否=群内任意消息都触发。私聊永远不需要 @，`@全员` 永远不响应_',
             },
             {
               tag: 'select_static',
@@ -296,9 +279,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
-                '\n**lark-cli 身份策略**\n' +
-                '_只允许应用身份:使用 bot/app 能力,不访问个人资源_\n' +
-                '_允许用户身份:保留应用身份,并允许已授权用户访问个人日历、邮箱、云盘等资源_' +
+                '\n**lark-cli 身份策略**\n_只允许应用身份=不碰个人资源；允许用户身份=可用已授权的个人日历/邮箱/云盘_' +
                 (teamMode ? teamOverrideNote : ''),
             },
             {
@@ -360,37 +341,77 @@ export function configSavedCard(opts: ConfigFormOpts): object {
         ? '消息卡片'
         : '纯文本';
   const summarize = (list: string[]): string =>
-    list.length === 0 ? '_(空)_' : `${list.length} 项`;
+    list.length === 0 ? '无' : `${list.length} 项`;
   const cotLabel = cotMessagesLabel(opts.cotMessages);
+  const kvBlock = (title: string, rows: [string, string][]): object => ({
+    tag: 'column_set',
+    columns: [
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        padding: '8px 10px',
+        background_style: 'grey-50',
+        elements: [
+          {
+            tag: 'markdown',
+            content:
+              `${title}\n` + rows.map(([k, v]) => `${k}：**${v}**`).join('\n'),
+          },
+        ],
+      },
+    ],
+  });
   return {
     schema: '2.0',
     config: { summary: { content: '偏好已保存' } },
+    header: {
+      title: { tag: 'plain_text', content: '偏好已保存' },
+      subtitle: { tag: 'plain_text', content: '下条消息开始生效' },
+      template: 'green',
+      icon: { tag: 'standard_icon', token: 'done_outlined' },
+    },
     body: {
+      direction: 'vertical',
+      padding: '12px 12px 16px 12px',
+      vertical_spacing: '8px',
       elements: [
-        {
-          tag: 'markdown',
-          content:
-            '✅ **偏好已保存**\n\n' +
-            `**运行模式**:\`${opts.mode === 'team' ? '团队版' : '个人版'}\`\n` +
-            `**模型**:\`${modelLabel(opts.agentKind, opts.model)}\`\n` +
-            (opts.agentKind === 'claude'
-              ? `**Effort**:\`${opts.effort ? EFFORT_LEVEL_LABELS[opts.effort] : '跟随默认'}\`\n`
-              : '') +
-            `**消息回复方式**:${replyLabel}\n` +
-            `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
-            `**COT 过程消息**:\`${cotLabel}\`\n` +
-            `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
-            `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +
-            `**群里需要 @ bot**:\`${opts.requireMentionInGroup ? '是' : '否'}\`\n\n` +
-            `**lark-cli 身份策略**:\`${opts.mode === 'team' ? '只允许应用身份(团队版强制)' : opts.larkCliIdentity === 'user-default' ? '允许用户身份' : '只允许应用身份'}\`\n\n` +
-            '🔒 **访问控制**' +
-            (opts.mode === 'team' ? '（_团队版下不生效,任何人可用_）' : '') +
-            '\n' +
-            `**允许私聊的用户**:${summarize(opts.allowedUsers)}\n` +
-            `**允许响应的群**:${summarize(opts.allowedChats)}\n` +
-            `**管理员**:${summarize(opts.admins)}\n\n` +
-            '下条消息开始生效。',
-        },
+        kvBlock('🧠 **模型与推理**', [
+          ['运行模式', opts.mode === 'team' ? '团队版' : '个人版'],
+          ['模型', modelLabel(opts.agentKind, opts.model)],
+          ...(opts.agentKind === 'claude'
+            ? ([['Effort', opts.effort ? EFFORT_LEVEL_LABELS[opts.effort] : '跟随默认']] as [
+                string,
+                string,
+              ][])
+            : []),
+        ]),
+        kvBlock('💬 **消息展示**', [
+          ['消息回复方式', replyLabel],
+          ['工具调用显示', opts.showToolCalls ? '显示' : '隐藏'],
+          ['COT 过程消息', cotLabel],
+        ]),
+        kvBlock('⚙️ **运行与权限**', [
+          ['并发上限', String(opts.maxConcurrentRuns)],
+          ['run 探活', opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'],
+          ['群里需要 @ bot', opts.requireMentionInGroup ? '是' : '否'],
+          [
+            'lark-cli 身份策略',
+            opts.mode === 'team'
+              ? '只允许应用身份(团队版强制)'
+              : opts.larkCliIdentity === 'user-default'
+                ? '允许用户身份'
+                : '只允许应用身份',
+          ],
+        ]),
+        kvBlock(
+          '🔒 **访问控制**' + (opts.mode === 'team' ? '（团队版下不生效）' : ''),
+          [
+            ['允许私聊的用户', summarize(opts.allowedUsers)],
+            ['允许响应的群', summarize(opts.allowedChats)],
+            ['管理员', summarize(opts.admins)],
+          ],
+        ),
       ],
     },
   };
