@@ -201,3 +201,38 @@ describe('scheduled job runs', () => {
     expect(sent).toHaveLength(0);
   });
 });
+
+describe('scheduled runs and knowledge', () => {
+  it('carries the originating chat’s memory and the skill index into the prompt', async () => {
+    mocks.startRunFlow.mockResolvedValue(flowEmitting(answer));
+    const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { KnowledgeStore } = await import('../../../src/knowledge/store');
+
+    const dir = await mkdtemp(join(tmpdir(), 'lcb-cron-knowledge-'));
+    const store = new KnowledgeStore(join(dir, 'knowledge'));
+    await store.ensure();
+    await store.addMemory({ kind: 'chat', scopeId: 'oc_chat' }, '这个群关注 eur 区域');
+    await mkdir(join(store.skillsDir, 'sweep'), { recursive: true });
+    await writeFile(join(store.skillsDir, 'sweep', 'SKILL.md'), '---\nname: sweep\ndescription: 巡检\n---\n');
+
+    const deps = makeDeps();
+    (deps as { controls: { knowledge?: unknown } }).controls.knowledge = store;
+
+    await runScheduledJob(deps, job());
+
+    const prompt = mocks.startRunFlow.mock.calls[0]?.[0]?.prompt as string;
+    expect(prompt).toContain('<bridge_knowledge>');
+    expect(prompt).toContain('这个群关注 eur 区域');
+    expect(prompt).toContain('sweep');
+    expect(prompt).toContain('看一下昨天的日志');
+  });
+
+  it('runs without a knowledge store at all', async () => {
+    mocks.startRunFlow.mockResolvedValue(flowEmitting(answer));
+    await runScheduledJob(makeDeps(), job());
+    const prompt = mocks.startRunFlow.mock.calls[0]?.[0]?.prompt as string;
+    expect(prompt).not.toContain('bridge_knowledge');
+  });
+});

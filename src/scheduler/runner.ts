@@ -6,6 +6,8 @@ import { recordRunSessionEvent, startRunFlow } from '../bot/run-flow';
 import { renderCard, type RunCardRenderOptions } from '../card/run-renderer';
 import type { RunState } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
+import { promptSection } from '../agent/prompt';
+import { buildKnowledgeContext } from '../knowledge/inject';
 import type { Controls } from '../commands';
 import { getMessageReplyMode, getRunIdleTimeoutMs, getShowToolCalls } from '../config/schema';
 import { log } from '../core/logger';
@@ -83,7 +85,7 @@ export async function runScheduledJob(
       chatId: job.chatId,
       ...(job.threadId ? { threadId: job.threadId } : {}),
     },
-    prompt: buildJobPrompt(job, startedAt),
+    prompt: await buildJobPrompt(deps, job, startedAt),
     attachments: [],
     access,
     capability,
@@ -249,9 +251,26 @@ export function formatTime(epochMs: number): string {
 /**
  * Frame the ask so the agent knows it is running unattended: nobody is waiting
  * to answer a clarifying question, and the reply lands in a chat as-is.
+ *
+ * The job's own chat memory and the profile's skill index come along too: a
+ * scheduled run has no conversation to pick context up from, so without this it
+ * would be the one place the bot forgets everything it was taught.
  */
-function buildJobPrompt(job: ScheduledJob, firedAt: number): string {
+async function buildJobPrompt(
+  deps: JobRunnerDeps,
+  job: ScheduledJob,
+  firedAt: number,
+): Promise<string> {
+  const store = deps.controls.knowledge;
+  // Chat memory is keyed by the *originating* chat's scope, not the job's own
+  // `cron:<id>` scope — the job should inherit what that conversation taught
+  // the bot, which is where it was created.
+  const originScope = job.threadId ? `${job.chatId}:${job.threadId}` : job.chatId;
+  const knowledge = store
+    ? await buildKnowledgeContext({ store, scopeId: originScope }).catch(() => undefined)
+    : undefined;
   return [
+    ...(knowledge ? [promptSection('bridge_knowledge', knowledge), ''] : []),
     `[定时任务 ${job.id}]`,
     `本次运行由 bridge 调度器在 ${formatTime(firedAt)} 触发（${scheduleLabel(job)}），没有人在旁边等着回答追问。`,
     '请直接完成任务并给出可以直接发到群里的结论；需要澄清的地方按最合理的假设推进，并在结论里说明假设。',
