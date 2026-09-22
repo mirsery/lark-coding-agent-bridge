@@ -15,6 +15,7 @@ import {
 import {
   buildAgentPrompt,
   type BridgePromptInteractiveCard,
+  type BridgePromptKnowledge,
   type BridgePromptMention,
   type BridgePromptQuotedMessage,
   type BridgePromptTopicMessage,
@@ -69,6 +70,8 @@ import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { reportInterruptedRuns } from './interrupted-notice';
 import { RunRegistry } from '../runtime/run-registry';
+import { buildKnowledgeContext } from '../knowledge/inject';
+import { KnowledgeStore } from '../knowledge/store';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
@@ -212,7 +215,10 @@ export interface StartChannelDeps {
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
   controls: Controls;
-  appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'runsFile'>;
+  appPaths?: Pick<
+    AppPaths,
+    'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'runsFile' | 'knowledgeDir'
+  >;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -222,6 +228,19 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // see which runs never finished. Absent only in tests that omit appPaths.
   const runs = deps.appPaths?.runsFile ? new RunRegistry(deps.appPaths.runsFile) : undefined;
   await runs?.load();
+  // Cross-session memory + skills. Absent only in tests that omit appPaths,
+  // where every run simply gets no knowledge block.
+  const knowledge = deps.appPaths?.knowledgeDir
+    ? new KnowledgeStore(deps.appPaths.knowledgeDir)
+    : undefined;
+  if (knowledge) {
+    controls.knowledge = knowledge;
+    // Create the skeleton up front so `/skills` has a directory to point at and
+    // `/knowledge bind` has something to commit.
+    await knowledge.ensure().catch((err: unknown) =>
+      log.warn('knowledge', 'ensure-failed', { err: String(err) }),
+    );
+  }
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
   const chatModeCache = new ChatModeCache();
@@ -358,6 +377,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           scope,
           mode,
           runs,
+          ...(knowledge ? { knowledge } : {}),
         });
       } catch (err) {
         log.fail('flush', err);
@@ -873,6 +893,7 @@ interface RunBatchDeps {
   scope: string;
   mode: ChatMode;
   runs?: RunRegistry;
+  knowledge?: KnowledgeStore;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -892,6 +913,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     scope,
     mode,
     runs,
+    knowledge,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -986,6 +1008,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       ]
     : undefined;
 
+  // Memory and the skill index are read fresh on every run: `/memory add` in
+  // the middle of a conversation has to take effect on the next message, not
+  // the next restart.
+  const knowledgeContext = knowledge
+    ? await buildKnowledgeContext({ store: knowledge, scopeId: scope }).catch((err: unknown) => {
+        log.warn('knowledge', 'build-failed', { scope, err: String(err) });
+        return undefined;
+      })
+    : undefined;
+
   const prompt = buildPrompt(
     batch,
     attachments,
@@ -993,6 +1025,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     topicContext,
     channel.botIdentity,
     extraInstructions,
+    knowledgeContext,
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
@@ -1919,6 +1952,7 @@ function buildPrompt(
   topicContext: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
   extraInstructions?: string[],
+  knowledge?: BridgePromptKnowledge,
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -1963,6 +1997,7 @@ function buildPrompt(
         ? [...BRIDGE_AGENT_INSTRUCTIONS, ...extraInstructions]
         : BRIDGE_AGENT_INSTRUCTIONS,
     userInput: userPart,
+    ...(knowledge ? { knowledge } : {}),
     ...(topicContext.length > 0 ? { topicContext: topicContext.map(toPromptTopicMessage) } : {}),
     quotedMessages: quotes.map(toPromptQuote),
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),

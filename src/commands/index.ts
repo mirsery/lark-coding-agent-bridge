@@ -8,6 +8,14 @@ import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agen
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { RunsMonitor } from '../bot/runs-monitor';
+import type { KnowledgeStore, MemoryScope } from '../knowledge/store';
+import {
+  bindKnowledgeRemote,
+  knowledgeRemoteUrl,
+  knowledgeRepoStatus,
+  syncKnowledge,
+  unbindKnowledgeRemote,
+} from '../knowledge/sync';
 import {
   accountCurrentCard,
   accountFailureCard,
@@ -29,6 +37,9 @@ import {
   coffeeCard,
   diffCard,
   helpCard,
+  knowledgeCard,
+  memoryCard,
+  skillsCard,
   pullRequestCard,
   resumeCard,
   statusCard,
@@ -44,7 +55,7 @@ import {
 } from '../git/diff';
 import { isGitError } from '../git/exec';
 import { checksLabel, parsePrArg, readPullRequest, reviewLabel } from '../git/pr';
-import { describeRepoStatus, readRepoStatus, type GitRepoStatus } from '../git/status';
+import { describeRepoStatus, isDirty, readRepoStatus, type GitRepoStatus } from '../git/status';
 import { addWorktree, listWorktrees, matchWorktree, removeWorktree } from '../git/worktree';
 import type { AppConfig, AppPreferences, EffortLevel, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
@@ -138,6 +149,9 @@ export interface Controls {
   /** Live-run view + interrupt for the web console's tasks panel; present only
    * while the channel is connected. Late-bound by startChannel. */
   runsMonitor?: RunsMonitor;
+  /** Cross-session memory + skills for this profile, backing `/memory`,
+   * `/skills` and `/knowledge`. Late-bound by startChannel. */
+  knowledge?: KnowledgeStore;
 }
 
 export interface CommandContext {
@@ -215,6 +229,9 @@ const handlers: Record<string, Handler> = {
   '/diff': handleDiff,
   '/worktree': handleWorktree,
   '/pr': handlePr,
+  '/memory': handleMemory,
+  '/skills': handleSkills,
+  '/knowledge': handleKnowledge,
   '/coffee': handleCoffee,
 };
 
@@ -239,6 +256,9 @@ const ADMIN_COMMANDS = new Set([
   '/diff',
   '/worktree',
   '/pr',
+  // Binding / syncing the knowledge repo moves content between machines and
+  // rewrites what every chat in this profile sees.
+  '/knowledge',
   // Joining a meeting makes the bot visible to every participant and exposes
   // meeting content to the agent — owner/admin only.
   '/meeting',
@@ -874,6 +894,7 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
     larkCliStatus: await larkCliStatus(ctx),
     ...(await gitStatusLine(cwd)),
+    ...(await knowledgeStatusLine(ctx)),
     activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
     activeScopes: ctx.activeRuns.scopes().filter((scope) => !scope.startsWith('comment:')),
     activeCommentScopes: ctx.activeRuns.scopes().filter((scope) => scope.startsWith('comment:')),
@@ -1658,6 +1679,261 @@ async function handlePr(args: string, ctx: CommandContext): Promise<void> {
     },
     commandReplyOptions(ctx),
   );
+}
+
+// ─── knowledge: /memory, /skills, /knowledge ──────────────────────────────
+
+function requireKnowledge(ctx: CommandContext): KnowledgeStore | undefined {
+  return ctx.controls.knowledge;
+}
+
+/** Knowledge summary for the `/status` card; silent when the store is absent. */
+async function knowledgeStatusLine(ctx: CommandContext): Promise<{ knowledge?: string }> {
+  const store = ctx.controls.knowledge;
+  if (!store) return {};
+  try {
+    const [chat, profile, skills, repo] = await Promise.all([
+      store.listMemories({ kind: 'chat', scopeId: ctx.scope }),
+      store.listMemories({ kind: 'profile' }),
+      store.listSkills(),
+      knowledgeRepoStatus(store),
+    ]);
+    if (chat.length + profile.length + skills.length === 0 && !repo) return {};
+    const sync = repo?.upstream
+      ? `同步 ↑${repo.upstream.ahead} ↓${repo.upstream.behind}`
+      : repo
+        ? '未绑定远端'
+        : '未启用同步';
+    return {
+      knowledge: `记忆 ${chat.length}(本会话)/${profile.length}(全局) · skills ${skills.length} · ${sync}`,
+    };
+  } catch (err) {
+    log.warn('knowledge', 'status-line-failed', { err: String(err) });
+    return {};
+  }
+}
+
+async function handleMemory(args: string, ctx: CommandContext): Promise<void> {
+  const store = requireKnowledge(ctx);
+  if (!store) {
+    await reply(ctx, '当前 bridge 没有启用知识库（缺少 profile 数据目录）。');
+    return;
+  }
+  const trimmed = args.trim();
+  const [sub = '', ...rest] = trimmed.split(/\s+/);
+  const restText = trimmed.slice(sub.length).trim();
+
+  switch (sub) {
+    case '':
+    case 'list':
+      return memoryList(ctx, store);
+    case 'add':
+      return memoryAdd(restText, ctx, store);
+    case 'forget':
+    case 'rm':
+      return memoryForget(rest[0] ?? '', ctx, store);
+    case 'clear':
+      return memoryClear(restText, ctx, store);
+    default:
+      await reply(
+        ctx,
+        [
+          '**记忆**',
+          '',
+          '`/memory` — 看当前生效的记忆',
+          '`/memory add <内容>` — 记到本会话',
+          '`/memory add --global <内容>` — 记到全局（管理员）',
+          '`/memory forget <id>` — 删一条',
+          '`/memory clear [--global]` — 清空一个范围',
+        ].join('\n'),
+      );
+  }
+}
+
+async function memoryList(ctx: CommandContext, store: KnowledgeStore): Promise<void> {
+  const [chat, profile] = await Promise.all([
+    store.listMemories({ kind: 'chat', scopeId: ctx.scope }),
+    store.listMemories({ kind: 'profile' }),
+  ]);
+  await ctx.channel.send(
+    ctx.msg.chatId,
+    { card: memoryCard({ chat, profile, dir: store.dir }) },
+    commandReplyOptions(ctx),
+  );
+}
+
+async function memoryAdd(args: string, ctx: CommandContext, store: KnowledgeStore): Promise<void> {
+  const global = /^--global\b/.test(args);
+  const text = global ? args.replace(/^--global\b/, '').trim() : args.trim();
+  if (!text) {
+    await reply(ctx, '用法：`/memory add <要记住的内容>`（加 `--global` 记到全局）');
+    return;
+  }
+  // Global memory reaches every chat this profile serves, so it is an admin
+  // action; a note about the current conversation is not.
+  if (global && !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) {
+    await reply(ctx, '❌ 全局记忆仅管理员可写，去掉 `--global` 可以记到本会话。');
+    return;
+  }
+
+  const scope: MemoryScope = global ? { kind: 'profile' } : { kind: 'chat', scopeId: ctx.scope };
+  const entry = await store.addMemory(scope, text);
+  log.info('knowledge', 'memory-added', { scope: global ? 'profile' : ctx.scope, id: entry.id });
+  await reply(
+    ctx,
+    `🧠 已记住（${global ? '全局' : '本会话'}）：${entry.text}\n\n\`/memory forget ${entry.id}\` 可以撤销。`,
+  );
+}
+
+async function memoryForget(id: string, ctx: CommandContext, store: KnowledgeStore): Promise<void> {
+  if (!id) {
+    await reply(ctx, '用法：`/memory forget <id>`（id 在 `/memory` 列表里）');
+    return;
+  }
+  if (await store.removeMemory({ kind: 'chat', scopeId: ctx.scope }, id)) {
+    await reply(ctx, `🗑 已删除本会话记忆 \`${id}\`。`);
+    return;
+  }
+  // Falling through to profile scope only for admins keeps a group member from
+  // deleting a global rule by guessing an id.
+  if (canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) {
+    if (await store.removeMemory({ kind: 'profile' }, id)) {
+      await reply(ctx, `🗑 已删除全局记忆 \`${id}\`。`);
+      return;
+    }
+  }
+  await reply(ctx, `没找到 \`${id}\`。`);
+}
+
+async function memoryClear(args: string, ctx: CommandContext, store: KnowledgeStore): Promise<void> {
+  const global = /^--global\b/.test(args.trim());
+  if (global && !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) {
+    await reply(ctx, '❌ 全局记忆仅管理员可改。');
+    return;
+  }
+  const scope: MemoryScope = global ? { kind: 'profile' } : { kind: 'chat', scopeId: ctx.scope };
+  const removed = await store.clearMemories(scope);
+  await reply(ctx, removed === 0 ? '本来就没有记忆。' : `🗑 已清空 ${removed} 条${global ? '全局' : '本会话'}记忆。`);
+}
+
+async function handleSkills(args: string, ctx: CommandContext): Promise<void> {
+  const store = requireKnowledge(ctx);
+  if (!store) {
+    await reply(ctx, '当前 bridge 没有启用知识库（缺少 profile 数据目录）。');
+    return;
+  }
+  const trimmed = args.trim();
+  const [sub = '', ...rest] = trimmed.split(/\s+/);
+
+  if (sub === 'show' || sub === 'cat') {
+    const name = rest.join(' ').trim();
+    const skill = name ? await store.readSkill(name) : undefined;
+    if (!skill) {
+      await reply(ctx, `没找到 skill \`${name || '(未指定)'}\`，用 \`/skills\` 看看列表。`);
+      return;
+    }
+    const body = skill.body.length > 3000 ? `${skill.body.slice(0, 3000)}\n\n…（截断，完整内容见 ${skill.summary.path}）` : skill.body;
+    await reply(ctx, body);
+    return;
+  }
+
+  const skills = await store.listSkills();
+  await ctx.channel.send(
+    ctx.msg.chatId,
+    { card: skillsCard(skills.map(({ name, description }) => ({ name, description })), store.skillsDir) },
+    commandReplyOptions(ctx),
+  );
+}
+
+async function handleKnowledge(args: string, ctx: CommandContext): Promise<void> {
+  const store = requireKnowledge(ctx);
+  if (!store) {
+    await reply(ctx, '当前 bridge 没有启用知识库（缺少 profile 数据目录）。');
+    return;
+  }
+  const trimmed = args.trim();
+  const [sub = '', ...rest] = trimmed.split(/\s+/);
+
+  switch (sub) {
+    case '':
+    case 'status':
+      return knowledgeStatus(ctx, store);
+    case 'bind':
+      return knowledgeBind(rest[0] ?? '', ctx, store);
+    case 'unbind': {
+      const result = await unbindKnowledgeRemote(store);
+      await reply(ctx, isGitError(result) ? `❌ ${result.error}` : '✓ 已解除远端绑定，本地内容保留。');
+      return;
+    }
+    case 'sync':
+      return knowledgeSync(ctx, store);
+    default:
+      await reply(
+        ctx,
+        [
+          '**知识库**',
+          '',
+          '`/knowledge` — 当前状态（记忆条数、skill 数、同步状态）',
+          '`/knowledge bind <git 仓库地址>` — 绑定远端并拉取已有内容',
+          '`/knowledge sync` — 提交本地改动、拉取远端、推上去',
+          '`/knowledge unbind` — 解除绑定（本地内容保留）',
+        ].join('\n'),
+      );
+  }
+}
+
+async function knowledgeStatus(ctx: CommandContext, store: KnowledgeStore): Promise<void> {
+  const [chat, profile, skills, repo, remote] = await Promise.all([
+    store.listMemories({ kind: 'chat', scopeId: ctx.scope }),
+    store.listMemories({ kind: 'profile' }),
+    store.listSkills(),
+    knowledgeRepoStatus(store),
+    knowledgeRemoteUrl(store),
+  ]);
+  await ctx.channel.send(
+    ctx.msg.chatId,
+    {
+      card: knowledgeCard({
+        dir: store.dir,
+        chatMemories: chat.length,
+        profileMemories: profile.length,
+        skills: skills.length,
+        ...(remote ? { remote } : {}),
+        ...(repo?.branch ? { branch: repo.branch } : {}),
+        ...(repo?.upstream ? { ahead: repo.upstream.ahead, behind: repo.upstream.behind } : {}),
+        ...(repo ? { dirty: isDirty(repo) } : {}),
+      }),
+    },
+    commandReplyOptions(ctx),
+  );
+}
+
+async function knowledgeBind(url: string, ctx: CommandContext, store: KnowledgeStore): Promise<void> {
+  if (!url) {
+    await reply(ctx, '用法：`/knowledge bind <git 仓库地址>`');
+    return;
+  }
+  const result = await bindKnowledgeRemote(store, url);
+  if (isGitError(result)) {
+    await reply(ctx, `❌ 绑定失败：${result.error}`);
+    return;
+  }
+  log.info('knowledge', 'remote-bound', { scope: ctx.scope });
+  await reply(ctx, `🔗 已绑定远端。${result.note ?? '远端已有的记忆和 skill 都拉下来了。'}\n\n之后用 \`/knowledge sync\` 同步。`);
+}
+
+async function knowledgeSync(ctx: CommandContext, store: KnowledgeStore): Promise<void> {
+  const result = await syncKnowledge(store);
+  if (isGitError(result)) {
+    await reply(ctx, `❌ ${result.error}`);
+    return;
+  }
+  const parts = [
+    result.committed > 0 ? `提交了 ${result.committed} 个文件` : '本地没有新改动',
+    result.pulled ? '已拉取远端' : '',
+    result.pushed ? '已推送' : '',
+  ].filter(Boolean);
+  await reply(ctx, `🔄 ${parts.join('，')}。${result.note ?? ''}`.trim());
 }
 
 // ─── /account ─────────────────────────────────────────────────────────────

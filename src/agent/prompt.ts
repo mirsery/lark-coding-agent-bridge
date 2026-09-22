@@ -72,10 +72,23 @@ export interface BridgePromptAttachment {
   rejectionReason?: string;
 }
 
+/**
+ * Bridge-managed memory and the skill index, injected on every run. Kept out of
+ * `instructions` so the agent can tell "what this deployment always knows" from
+ * "what this particular turn needs".
+ */
+export interface BridgePromptKnowledge {
+  profileMemory?: string[];
+  chatMemory?: string[];
+  skills?: Array<{ name: string; description: string; path: string }>;
+  truncated?: boolean;
+}
+
 export interface BuildAgentPromptInput {
   context: BridgePromptContext;
   instructions?: string[];
   userInput: string;
+  knowledge?: BridgePromptKnowledge;
   topicContext?: BridgePromptTopicMessage[];
   quotedMessages?: BridgePromptQuotedMessage[];
   interactiveCards?: BridgePromptInteractiveCard[];
@@ -89,6 +102,7 @@ export function buildAgentPrompt(input: BuildAgentPromptInput): string {
     input.instructions && input.instructions.length > 0
       ? promptSection('bridge_instructions', input.instructions)
       : undefined,
+    input.knowledge ? promptSection('bridge_knowledge', input.knowledge) : undefined,
     input.topicContext && input.topicContext.length > 0
       ? promptSection('topic_context', input.topicContext)
       : undefined,

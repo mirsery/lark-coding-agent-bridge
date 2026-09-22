@@ -181,6 +181,9 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/remove user @name`, `/remove admin @name`, `/remove group`, `/remove member @name` | Remove access entries |
 | `/stop` | Stop the current run, including the card stop button |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
+| `/memory [add\|forget\|clear]` | Cross-session memory; `--global` writes profile-wide |
+| `/skills [show <name>]` | The skill index the agent reads on demand |
+| `/knowledge [bind\|sync\|unbind]` | Git sync for memory and skills |
 | `/diff [staged\|<ref>]` | Show the working tree's changes, with the full patch attached when long |
 | `/worktree [add\|use\|remove]` | Manage task worktrees; the session follows the new one |
 | `/pr [number\|url]` | Pull request, CI and review status for the current branch |
@@ -191,6 +194,51 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/help` | Help card |
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
+
+## Memory and skills
+
+Each profile owns a knowledge directory the bot carries across sessions, so a rule you teach it in one conversation is not gone the moment the session resets.
+
+Every run injects a `<bridge_knowledge>` block containing:
+
+- **Profile memory** — notes that apply to every chat this profile serves.
+- **Chat memory** — notes scoped to the current chat or topic. On a conflict, the chat's notes win.
+- **A skill index** — name, one-line description, and the path of every `SKILL.md`. Only the index. The agent opens a skill's body itself when the task calls for it, so a dozen skills cost a few dozen tokens per turn instead of thousands.
+
+```text
+/memory                       # what is in effect here
+/memory add <text>            # remember it for this chat
+/memory add --global <text>   # remember it profile-wide (admins)
+/memory forget <id>
+/memory clear [--global]
+/skills                       # the skill index
+/skills show <name>
+```
+
+Anyone allowed to use the bot in a chat can write that chat's notes; profile-wide memory and the knowledge repository are admin-only, and a member cannot delete a global note by guessing its id.
+
+### Where it lives, and syncing it
+
+```text
+~/.lark-channel/profiles/<profile>/knowledge/
+  MEMORY.md                 # profile-wide notes
+  chats/<scope>.md          # per-chat notes
+  skills/<name>/SKILL.md    # reusable instructions
+```
+
+It is plain Markdown at `0600`, editable in any editor — and that is the point: the directory is meant to be a git repository.
+
+```text
+/knowledge                       # counts, remote, sync state
+/knowledge bind <git-url>        # bind a remote and pull what is already there
+/knowledge sync                  # commit local edits, pull, push
+/knowledge unbind                # keep the content, drop the remote
+```
+
+Binding merges instead of overwriting, so notes written before you had a remote survive. The same repository can back several profiles and several machines — `/knowledge sync` on each is what moves content between them, and `gh`/`git` credentials stay the ones already on that machine. `/status` shows the counts and the sync state in one line.
+
+Skills are read by both Claude and Codex through the same index, so one file serves whichever agent a profile runs. Automatic periodic syncing is not wired yet — run `/knowledge sync`, or schedule it once the scheduler lands.
+
 
 ## Git awareness
 
@@ -271,6 +319,7 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/active-profile` | Last selected profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | Session state |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
+| `~/.lark-channel/profiles/<profile>/knowledge/` | Memory and skills (optionally a git repo) |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |

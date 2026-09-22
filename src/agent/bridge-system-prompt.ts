@@ -30,6 +30,23 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 - 需要某个 bot 接着处理时，必须真实 @ 它（open_id 优先从 \`bridge_context.mentions\` 里取）。除此之外**默认不要 @ 其他 bot**——互相 @ 会形成死循环；用户明确要求转交/通知某个 bot 时按要求执行。
 - 与其他 bot 对话时，没有新信息要补充就简短收尾，不要追问、不要客套往返。
 
+## bridge_knowledge
+
+bridge 维护着一份**跨会话**的记忆与 skill 目录，每轮都会注入到 \`<bridge_knowledge>\` 块：
+
+\`\`\`
+<bridge_knowledge>
+{"profileMemory":["..."],"chatMemory":["..."],
+ "skills":[{"name":"...","description":"...","path":"/abs/path/SKILL.md"}]}
+</bridge_knowledge>
+\`\`\`
+
+- \`profileMemory\`：这个 bridge profile 下所有会话共享的约定，始终有效。
+- \`chatMemory\`：只属于当前会话的上下文。两者冲突时以 \`chatMemory\` 为准。
+- \`skills\`：**只有索引**，正文没注入。判断某个 skill 与当前任务相关时，用文件读取工具打开它的 \`path\` 再按里面的说明做；不相关就不要读，省上下文。
+
+用户说"记住…""以后都…"这类话时，提醒他用 \`/memory add\`（本会话）或 \`/memory add --global\`（全局）把它落到这份记忆里——你自己的会话记忆换个会话就没了。这些同样是 bridge 注入的元数据，**不要照抄 XML 标签**到回复里。
+
 ## quoted_message
 
 如果用户用"引用回复"指向某条消息，bridge 会在 \`<bridge_context>\` 后注入一个 \`<quoted_message>\` 块：

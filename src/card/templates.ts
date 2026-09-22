@@ -75,6 +75,8 @@ export interface StatusInfo {
   larkCliStatus?: 'app' | 'user-ready' | 'user-missing' | 'check-failed';
   /** One-line git summary of `cwd`; absent when it is not a repository. */
   git?: string;
+  /** One-line knowledge summary (memory counts, skills, sync state). */
+  knowledge?: string;
   activeRun: boolean;
   activeScopes?: string[];
   activeCommentScopes?: string[];
@@ -105,6 +107,7 @@ export function statusCard(info: StatusInfo): object {
     `🧩 **profile**: ${escapeMd(info.profileName)}`,
     `📁 **cwd**: ${cwdLine}`,
     ...(info.git ? [`🌿 **git**: ${info.git}`] : []),
+    ...(info.knowledge ? [`📚 **knowledge**: ${info.knowledge}`] : []),
     `🔗 **session**: ${sessionLine}`,
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
     `🛡 **${escapeMd(info.runtimeAccess.label)}**: ${escapeMd(info.runtimeAccess.value)}`,
@@ -199,6 +202,9 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/stop comment:<scopeHash>` — 管理员停止云文档评论任务',
         '- `/timeout [N|off|default]` — 当前 session 的探活分钟数,`/config` 改全局默认',
         '- `/timeout comment:<scopeHash> N` — 管理员设置云文档评论任务探活',
+        '- `/memory [add|forget|clear]` — 跨会话记忆，`--global` 写到全局',
+        '- `/skills [show <名字>]` — 可复用的 skill 目录，agent 按需读取',
+        '- `/knowledge [bind|sync]` — 记忆与 skill 的 git 同步',
         '- `/diff [staged|<ref>]` — 看当前工作目录的改动，长 patch 会附带文件',
         '- `/worktree [add|use|remove]` — 任务级 worktree，创建后会话自动切过去',
         '- `/pr [编号|链接]` — 当前分支的 PR、CI 与评审状态',
@@ -218,6 +224,7 @@ export function helpCard(agentName = 'Agent'): object {
       { text: '🔁 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作目录', value: { cmd: 'ws.list' } },
       { text: '🔍 改动', value: { cmd: 'diff' } },
+      { text: '📚 知识库', value: { cmd: 'knowledge' } },
       { text: '🆕 新会话', value: { cmd: 'new' } },
     ]),
   ]);
@@ -430,6 +437,109 @@ export function pullRequestCard(view: PullRequestCardView): object {
   elements.push(actions([{ text: '刷新', value: { cmd: `pr.${view.number}` }, style: 'primary' }]));
 
   return shell(`\u{1f500} PR #${view.number}`, elements);
+}
+
+export interface MemoryEntryView {
+  id: string;
+  text: string;
+}
+
+export interface MemoryCardView {
+  chat: MemoryEntryView[];
+  profile: MemoryEntryView[];
+  /** Where the notes live on disk, so a power user can edit them directly. */
+  dir: string;
+}
+
+export function memoryCard(view: MemoryCardView): object {
+  const elements: object[] = [];
+
+  const section = (title: string, entries: MemoryEntryView[], scopeHint: string): void => {
+    elements.push(divMd(`**${title}**（${entries.length}）`));
+    if (entries.length === 0) {
+      elements.push(divMd(`<font color='grey'>暂无。${scopeHint}</font>`));
+      return;
+    }
+    for (const entry of entries) {
+      elements.push(divMd(`\`${escapeCode(entry.id)}\` ${escapeMd(entry.text)}`));
+      elements.push(
+        actions([{ text: '删除', value: { cmd: 'memory.forget', arg: entry.id }, style: 'danger' }]),
+      );
+    }
+  };
+
+  section('本会话记忆', view.chat, '用 `/memory add <内容>` 添加。');
+  elements.push(HR);
+  section('全局记忆', view.profile, '管理员可用 `/memory add --global <内容>` 添加。');
+  elements.push(HR);
+  elements.push(divMd(`<font color='grey'>存放在 \`${escapeCode(view.dir)}\`，可直接用编辑器改</font>`));
+
+  return shell('\u{1f9e0} 记忆', elements);
+}
+
+export interface SkillView {
+  name: string;
+  description: string;
+}
+
+export function skillsCard(skills: SkillView[], dir: string): object {
+  const elements: object[] = [];
+  if (skills.length === 0) {
+    elements.push(divMd('还没有 skill。'));
+    elements.push(
+      divMd(`在 \`${escapeCode(dir)}\` 下新建 \`<名字>/SKILL.md\` 就行，或者用 \`/knowledge bind <仓库地址>\` 从现成的仓库同步一份。`),
+    );
+    return shell('\u{1f9f0} Skills', elements);
+  }
+
+  elements.push(divMd(`共 **${skills.length}** 个，agent 会按需读取正文。`));
+  elements.push(HR);
+  for (const skill of skills) {
+    elements.push(
+      divMd(
+        `**${escapeMd(skill.name)}**${skill.description ? `\n<font color='grey'>${escapeMd(skill.description)}</font>` : ''}`,
+      ),
+    );
+  }
+  return shell('\u{1f9f0} Skills', elements);
+}
+
+export interface KnowledgeStatusView {
+  dir: string;
+  chatMemories: number;
+  profileMemories: number;
+  skills: number;
+  remote?: string;
+  branch?: string;
+  ahead?: number;
+  behind?: number;
+  dirty?: boolean;
+}
+
+export function knowledgeCard(view: KnowledgeStatusView): object {
+  const lines = [
+    `📁 **目录**：\`${escapeCode(view.dir)}\``,
+    `🧠 **记忆**：本会话 ${view.chatMemories} · 全局 ${view.profileMemories}`,
+    `🧰 **skills**：${view.skills}`,
+  ];
+  if (view.remote) {
+    const divergence =
+      view.ahead !== undefined && view.behind !== undefined ? ` ↑${view.ahead} ↓${view.behind}` : '';
+    lines.push(`🔗 **远端**：\`${escapeCode(view.remote)}\``);
+    lines.push(`🌿 **分支**：\`${escapeCode(view.branch ?? '?')}\`${divergence}${view.dirty ? ' · 有未同步改动' : ''}`);
+  } else {
+    lines.push("🔗 **远端**：<font color='grey'>未绑定，用 `/knowledge bind <仓库地址>` 开启同步</font>");
+  }
+
+  return shell('\u{1f4da} 知识库', [
+    divMd(lines.join('\n')),
+    HR,
+    actions([
+      { text: '同步', value: { cmd: 'knowledge.sync' }, style: 'primary' },
+      { text: '记忆', value: { cmd: 'memory' } },
+      { text: 'Skills', value: { cmd: 'skills' } },
+    ]),
+  ]);
 }
 
 function escapeMd(s: string): string {

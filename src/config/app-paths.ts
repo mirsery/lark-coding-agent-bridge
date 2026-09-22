@@ -16,6 +16,8 @@ export interface AppPaths {
   sessionsFile: string;
   workspacesFile: string;
   runsFile: string;
+  /** Bridge-managed memory + skills for this profile (optionally a git repo). */
+  knowledgeDir: string;
   secretsFile: string;
   keystoreSaltFile: string;
   secretsGetterScript: string;
@@ -60,6 +62,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     sessionsFile: join(profileDir, 'sessions.json'),
     workspacesFile: join(profileDir, 'workspaces.json'),
     runsFile: join(profileDir, 'runs.json'),
+    knowledgeDir: join(profileDir, 'knowledge'),
     secretsFile: join(profileDir, 'secrets.enc'),
     keystoreSaltFile: join(profileDir, '.keystore.salt'),
     secretsGetterScript: join(rootDir, 'secrets-getter'),

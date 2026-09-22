@@ -140,3 +140,35 @@ function readSection(prompt: string, tag: string): unknown {
 function count(input: string, needle: string): number {
   return input.split(needle).length - 1;
 }
+
+describe('knowledge injection', () => {
+  it('emits a bridge_knowledge section ahead of the user input', () => {
+    const prompt = buildAgentPrompt({
+      context: {
+        chatId: 'oc_group',
+        chatType: 'group',
+        senderId: 'ou_user',
+        source: 'im',
+      },
+      knowledge: {
+        profileMemory: ['提交信息不要带 AI 署名'],
+        chatMemory: ['这个群里 deploy 指的是 staging'],
+        skills: [{ name: 'deploy', description: '发布步骤', path: '/k/skills/deploy/SKILL.md' }],
+      },
+      userInput: '发一下',
+    });
+
+    expect(prompt).toContain('<bridge_knowledge>');
+    expect(prompt).toContain('profileMemory');
+    expect(prompt).toContain('/k/skills/deploy/SKILL.md');
+    expect(prompt.indexOf('<bridge_knowledge>')).toBeLessThan(prompt.indexOf('<user_input>'));
+  });
+
+  it('omits the section entirely when there is no knowledge', () => {
+    const prompt = buildAgentPrompt({
+      context: { chatId: 'oc_group', chatType: 'group', senderId: 'ou_user', source: 'im' },
+      userInput: 'hi',
+    });
+    expect(prompt).not.toContain('bridge_knowledge');
+  });
+});

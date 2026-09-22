@@ -181,6 +181,9 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/remove user @某人`, `/remove admin @某人`, `/remove group`, `/remove member @某人` | 移除访问控制条目 |
 | `/stop` | 停止当前 run，也可点卡片停止按钮 |
 | `/timeout [N\|off\|default]` | 设置或清除当前会话的 idle watchdog |
+| `/memory [add\|forget\|clear]` | 跨会话记忆，`--global` 写到全局 |
+| `/skills [show <名字>]` | agent 按需读取的 skill 索引 |
+| `/knowledge [bind\|sync\|unbind]` | 记忆与 skill 的 git 同步 |
 | `/diff [staged\|<ref>]` | 查看工作目录的改动，patch 过长时附带完整文件 |
 | `/worktree [add\|use\|remove]` | 管理任务级 worktree，会话自动跟着切 |
 | `/pr [编号\|链接]` | 当前分支的 PR、CI 与评审状态 |
@@ -191,6 +194,51 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/help` | 帮助卡片 |
 
 私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
+
+## 记忆与 skills
+
+每个 profile 有一份跨会话的知识目录——你在一次对话里教会它的约定，不会因为会话重置就消失。
+
+每轮运行都会注入一个 `<bridge_knowledge>` 块：
+
+- **全局记忆**：这个 profile 下所有会话共享的约定。
+- **会话记忆**：只属于当前会话／话题的上下文。两者冲突时以会话记忆为准。
+- **skill 索引**：每个 `SKILL.md` 的名字、一句话描述和路径——**只有索引**。正文由 agent 在需要时自己打开，所以十几个 skill 每轮只花几十 token，而不是几千。
+
+```text
+/memory                       # 当前生效的记忆
+/memory add <内容>            # 记到本会话
+/memory add --global <内容>   # 记到全局（管理员）
+/memory forget <id>
+/memory clear [--global]
+/skills                       # skill 索引
+/skills show <名字>
+```
+
+能在某个会话里用 bot 的人都能写这个会话的记忆；全局记忆和知识仓库是管理员权限，普通成员也无法靠猜 id 删掉一条全局记忆。
+
+### 存在哪里，怎么同步
+
+```text
+~/.lark-channel/profiles/<profile>/knowledge/
+  MEMORY.md                 # 全局记忆
+  chats/<scope>.md          # 按会话的记忆
+  skills/<名字>/SKILL.md    # 可复用的指令
+```
+
+全是 `0600` 的纯 Markdown，随便哪个编辑器都能改——这正是设计目的：这个目录就是一个 git 仓库。
+
+```text
+/knowledge                       # 条数、远端、同步状态
+/knowledge bind <git 地址>       # 绑定远端并拉取已有内容
+/knowledge sync                  # 提交本地改动、拉取、推送
+/knowledge unbind                # 解绑但保留本地内容
+```
+
+绑定是合并而不是覆盖，所以绑之前写的记忆不会丢。同一个仓库可以给多个 profile、多台机器共用——靠各自的 `/knowledge sync` 搬运内容，凭据用的还是那台机器上已有的 git 配置。`/status` 里有一行展示条数与同步状态。
+
+Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两种 agent。定时自动同步还没接上——先手动 `/knowledge sync`，等调度层落地后可以排成定时任务。
+
 
 ## Git 能力
 
@@ -271,6 +319,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/active-profile` | 最近选择的 profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | 会话状态 |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | agent-aware 会话索引 |
+| `~/.lark-channel/profiles/<profile>/knowledge/` | 记忆与 skills（可作为 git 仓库同步） |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |
