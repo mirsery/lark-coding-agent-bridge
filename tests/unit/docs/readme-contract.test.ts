@@ -31,6 +31,21 @@ describe('README runtime contract', () => {
     }
   });
 
+  it('documents the git surface in both languages', async () => {
+    const docs = await readDocs();
+
+    for (const phrase of [
+      '/diff staged',
+      '/worktree add',
+      '/pr [number|url]',
+      'Git awareness',
+      'Git 能力',
+      'GitHub CLI',
+    ]) {
+      expect(docs).toContain(phrase);
+    }
+  });
+
   it('keeps CLI help aligned with profile-aware service and first-run workspace flags', async () => {
     const [cli, help, configCard] = await Promise.all([
       readFile(new URL('../../../src/cli/index.ts', import.meta.url), 'utf8'),

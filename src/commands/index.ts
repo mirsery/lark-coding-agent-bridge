@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute } from 'node:path';
+import { basename, dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
@@ -25,7 +25,27 @@ import {
 import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
 import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
-import { coffeeCard, helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
+import {
+  coffeeCard,
+  diffCard,
+  helpCard,
+  pullRequestCard,
+  resumeCard,
+  statusCard,
+  worktreeCard,
+  workspacesCard,
+} from '../card/templates';
+import {
+  describeDiffTarget,
+  parseDiffTarget,
+  previewPatch,
+  readDiffPatch,
+  readDiffStat,
+} from '../git/diff';
+import { isGitError } from '../git/exec';
+import { checksLabel, parsePrArg, readPullRequest, reviewLabel } from '../git/pr';
+import { describeRepoStatus, readRepoStatus, type GitRepoStatus } from '../git/status';
+import { addWorktree, listWorktrees, matchWorktree, removeWorktree } from '../git/worktree';
 import type { AppConfig, AppPreferences, EffortLevel, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   EFFORT_LEVELS,
@@ -192,6 +212,9 @@ const handlers: Record<string, Handler> = {
   '/invite': handleInvite,
   '/remove': handleRemove,
   '/meeting': handleMeeting,
+  '/diff': handleDiff,
+  '/worktree': handleWorktree,
+  '/pr': handlePr,
   '/coffee': handleCoffee,
 };
 
@@ -211,6 +234,11 @@ const ADMIN_COMMANDS = new Set([
   '/ws',
   '/invite',
   '/remove',
+  // These read repository contents into the chat and create directories on the
+  // host, so they sit at the same level as /cd and /ws.
+  '/diff',
+  '/worktree',
+  '/pr',
   // Joining a meeting makes the bot visible to every participant and exposes
   // meeting content to the agent — owner/admin only.
   '/meeting',
@@ -845,6 +873,7 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     agentName: ctx.agent.displayName,
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
     larkCliStatus: await larkCliStatus(ctx),
+    ...(await gitStatusLine(cwd)),
     activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
     activeScopes: ctx.activeRuns.scopes().filter((scope) => !scope.startsWith('comment:')),
     activeCommentScopes: ctx.activeRuns.scopes().filter((scope) => scope.startsWith('comment:')),
@@ -1359,6 +1388,276 @@ async function handleHelp(_args: string, ctx: CommandContext): Promise<void> {
 
 async function handleCoffee(_args: string, ctx: CommandContext): Promise<void> {
   await ctx.channel.send(ctx.msg.chatId, { card: coffeeCard() }, commandReplyOptions(ctx));
+}
+
+// ─── git: /diff, /worktree, /pr ───────────────────────────────────────────
+
+/**
+ * Git summary for the `/status` card. Silent when the cwd is not a repository
+ * (or git is missing) — `/status` must stay useful for non-code workspaces.
+ */
+async function gitStatusLine(cwd: string | undefined): Promise<{ git?: string }> {
+  if (!cwd) return {};
+  const status = await readRepoStatus(cwd).catch(() => undefined);
+  return status ? { git: describeRepoStatus(status) } : {};
+}
+
+/** Resolve the repo the current session points at, or reply why we cannot. */
+async function requireRepo(
+  ctx: CommandContext,
+): Promise<{ cwd: string; status: GitRepoStatus } | undefined> {
+  const cwd = effectiveWorkspaceCwd(ctx);
+  if (!cwd) {
+    await reply(ctx, '当前会话没有工作目录，先用 `/cd <路径>` 指一个。');
+    return undefined;
+  }
+  const status = await readRepoStatus(cwd).catch(() => undefined);
+  if (!status) {
+    await reply(ctx, `\`${cwd}\` 不是 git 仓库（或本机没有装 git）。`);
+    return undefined;
+  }
+  return { cwd, status };
+}
+
+async function handleDiff(args: string, ctx: CommandContext): Promise<void> {
+  const repo = await requireRepo(ctx);
+  if (!repo) return;
+
+  const target = parseDiffTarget(args);
+  if (isGitError(target)) {
+    await reply(ctx, `❌ ${target.error}`);
+    return;
+  }
+
+  const summary = await readDiffStat(repo.cwd, target);
+  if (isGitError(summary)) {
+    await reply(ctx, `❌ ${summary.error}`);
+    return;
+  }
+
+  const patch = await readDiffPatch(repo.cwd, target);
+  const patchText = isGitError(patch) ? '' : patch.patch;
+  const preview = previewPatch(patchText);
+  // Anything that did not fit inline goes out as a real .patch file — reading a
+  // long diff as chat text is hopeless, and the file can be opened elsewhere.
+  const attach = preview.omittedLines > 0 && patchText.length > 0;
+
+  await ctx.channel.send(
+    ctx.msg.chatId,
+    {
+      card: diffCard({
+        scope: describeDiffTarget(target),
+        files: summary.files,
+        added: summary.added,
+        removed: summary.removed,
+        untracked: summary.untracked,
+        preview: preview.text,
+        omittedLines: preview.omittedLines,
+        attached: attach,
+      }),
+    },
+    commandReplyOptions(ctx),
+  );
+
+  if (!attach) return;
+  const name = `${basename(repo.status.root)}-${target.kind === 'ref' ? target.ref.replace(/[^\w.-]+/g, '-') : target.kind}.patch`;
+  await ctx.channel
+    .send(
+      ctx.msg.chatId,
+      { file: { source: Buffer.from(patchText, 'utf8'), fileName: name } },
+      commandReplyOptions(ctx),
+    )
+    .catch(async (err: unknown) => {
+      log.warn('git', 'patch-upload-failed', { err: String(err) });
+      await reply(ctx, '完整 patch 发送失败，可以在本地用 `git diff` 查看。');
+    });
+}
+
+async function handleWorktree(args: string, ctx: CommandContext): Promise<void> {
+  const trimmed = args.trim();
+  const [sub = '', ...rest] = trimmed.split(/\s+/);
+  switch (sub) {
+    case '':
+    case 'list':
+      return worktreeList(ctx);
+    case 'add':
+      return worktreeAdd(rest[0] ?? '', rest[1], ctx);
+    case 'use':
+      return worktreeUse(rest.join(' '), ctx);
+    case 'remove':
+    case 'rm':
+      return worktreeRemove(rest.filter((token) => token !== '--force').join(' '), rest.includes('--force'), ctx);
+    default:
+      await reply(
+        ctx,
+        [
+          '**worktree**',
+          '',
+          '`/worktree` — 列出当前仓库的 worktree',
+          '`/worktree add <分支> [起点]` — 新建 worktree 并把本会话切过去',
+          '`/worktree use <分支|路径>` — 切到已有的 worktree',
+          '`/worktree remove <分支|路径> [--force]` — 删除',
+        ].join('\n'),
+      );
+  }
+}
+
+async function worktreeList(ctx: CommandContext): Promise<void> {
+  const repo = await requireRepo(ctx);
+  if (!repo) return;
+  const entries = await listWorktrees(repo.cwd);
+  if (isGitError(entries)) {
+    await reply(ctx, `❌ ${entries.error}`);
+    return;
+  }
+  await ctx.channel.send(
+    ctx.msg.chatId,
+    {
+      card: worktreeCard(
+        entries.map((entry) => ({
+          path: entry.path,
+          ...(entry.branch ? { branch: entry.branch } : {}),
+          ...(entry.head ? { head: entry.head } : {}),
+          main: entry.main,
+          current: entry.path === repo.status.root,
+        })),
+      ),
+    },
+    commandReplyOptions(ctx),
+  );
+}
+
+async function worktreeAdd(branch: string, base: string | undefined, ctx: CommandContext): Promise<void> {
+  if (!branch) {
+    await reply(ctx, '用法：`/worktree add <分支> [起点]`');
+    return;
+  }
+  const repo = await requireRepo(ctx);
+  if (!repo) return;
+
+  const created = await addWorktree({
+    cwd: repo.cwd,
+    repoRoot: repo.status.root,
+    branch,
+    ...(base ? { base } : {}),
+  });
+  if (isGitError(created)) {
+    await reply(ctx, `❌ 新建 worktree 失败：${created.error}`);
+    return;
+  }
+
+  // Creating a worktree for a task and then working in the old directory is
+  // never what anyone means, so the session moves with it — same as `/cd`.
+  const resolved = await resolveWorkingDirectory(created.path);
+  if (!resolved.ok) {
+    await reply(ctx, `worktree 已创建在 \`${created.path}\`，但切换失败：${resolved.userVisible}`);
+    return;
+  }
+  ctx.activeRuns.interrupt(ctx.scope);
+  ctx.workspaces.setCwd(ctx.scope, resolved.cwdRealpath);
+  ctx.sessions.clear(ctx.scope);
+  log.info('git', 'worktree-added', { scope: ctx.scope, branch: created.branch });
+  await reply(
+    ctx,
+    [
+      `🌿 已创建 worktree 并切过去：`,
+      `- 分支：\`${created.branch}\`${created.existingBranch ? '（已存在的分支）' : '（新建分支）'}`,
+      `- 路径：\`${resolved.cwdRealpath}\``,
+      '',
+      '会话已重置，接下来的对话都在这个 worktree 里。',
+    ].join('\n'),
+  );
+}
+
+async function worktreeUse(needle: string, ctx: CommandContext): Promise<void> {
+  if (!needle) {
+    await reply(ctx, '用法：`/worktree use <分支|路径>`');
+    return;
+  }
+  const repo = await requireRepo(ctx);
+  if (!repo) return;
+  const entries = await listWorktrees(repo.cwd);
+  if (isGitError(entries)) {
+    await reply(ctx, `❌ ${entries.error}`);
+    return;
+  }
+  const match = matchWorktree(entries, needle);
+  if (!match) {
+    await reply(ctx, `没找到叫 \`${needle}\` 的 worktree，用 \`/worktree\` 看看列表。`);
+    return;
+  }
+  const resolved = await resolveWorkingDirectory(match.path);
+  if (!resolved.ok) {
+    await reply(ctx, resolved.userVisible);
+    return;
+  }
+  ctx.activeRuns.interrupt(ctx.scope);
+  ctx.workspaces.setCwd(ctx.scope, resolved.cwdRealpath);
+  ctx.sessions.clear(ctx.scope);
+  await reply(ctx, `✓ 已切到 \`${resolved.cwdRealpath}\`（分支 \`${match.branch ?? '游离'}\`），会话已重置。`);
+}
+
+async function worktreeRemove(needle: string, force: boolean, ctx: CommandContext): Promise<void> {
+  if (!needle) {
+    await reply(ctx, '用法：`/worktree remove <分支|路径> [--force]`');
+    return;
+  }
+  const repo = await requireRepo(ctx);
+  if (!repo) return;
+  const entries = await listWorktrees(repo.cwd);
+  if (isGitError(entries)) {
+    await reply(ctx, `❌ ${entries.error}`);
+    return;
+  }
+  const match = matchWorktree(entries, needle);
+  if (!match) {
+    await reply(ctx, `没找到叫 \`${needle}\` 的 worktree。`);
+    return;
+  }
+  if (match.main) {
+    await reply(ctx, '这是主 checkout，不能删。');
+    return;
+  }
+  // Removing the tree the session is standing in would leave every later run
+  // pointing at a path that no longer exists.
+  if (match.path === repo.status.root) {
+    await reply(ctx, '当前会话正在这个 worktree 里，先 `/worktree use <别的>` 或 `/cd` 出去再删。');
+    return;
+  }
+  const removed = await removeWorktree(repo.cwd, match.path, { force });
+  if (isGitError(removed)) {
+    await reply(ctx, `❌ 删除失败：${removed.error}${force ? '' : '\n有未提交改动时可以加 `--force`。'}`);
+    return;
+  }
+  log.info('git', 'worktree-removed', { scope: ctx.scope, path: match.path });
+  await reply(ctx, `🗑 已删除 worktree \`${match.path}\`。`);
+}
+
+async function handlePr(args: string, ctx: CommandContext): Promise<void> {
+  const repo = await requireRepo(ctx);
+  if (!repo) return;
+  const lookup = parsePrArg(args);
+  if (isGitError(lookup)) {
+    await reply(ctx, `❌ ${lookup.error}`);
+    return;
+  }
+  const pr = await readPullRequest(repo.cwd, lookup);
+  if (isGitError(pr)) {
+    await reply(ctx, `❌ ${pr.error}`);
+    return;
+  }
+  await ctx.channel.send(
+    ctx.msg.chatId,
+    {
+      card: pullRequestCard({
+        ...pr,
+        checksLabel: checksLabel(pr.checks),
+        failingChecks: pr.checks.failing,
+        reviewLabel: reviewLabel(pr.reviewDecision),
+      }),
+    },
+    commandReplyOptions(ctx),
+  );
 }
 
 // ─── /account ─────────────────────────────────────────────────────────────

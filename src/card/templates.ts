@@ -73,6 +73,8 @@ export interface StatusInfo {
     value: string;
   };
   larkCliStatus?: 'app' | 'user-ready' | 'user-missing' | 'check-failed';
+  /** One-line git summary of `cwd`; absent when it is not a repository. */
+  git?: string;
   activeRun: boolean;
   activeScopes?: string[];
   activeCommentScopes?: string[];
@@ -102,6 +104,7 @@ export function statusCard(info: StatusInfo): object {
     `🧭 **scope**: ${scopeLine}`,
     `🧩 **profile**: ${escapeMd(info.profileName)}`,
     `📁 **cwd**: ${cwdLine}`,
+    ...(info.git ? [`🌿 **git**: ${info.git}`] : []),
     `🔗 **session**: ${sessionLine}`,
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
     `🛡 **${escapeMd(info.runtimeAccess.label)}**: ${escapeMd(info.runtimeAccess.value)}`,
@@ -196,6 +199,9 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/stop comment:<scopeHash>` — 管理员停止云文档评论任务',
         '- `/timeout [N|off|default]` — 当前 session 的探活分钟数,`/config` 改全局默认',
         '- `/timeout comment:<scopeHash> N` — 管理员设置云文档评论任务探活',
+        '- `/diff [staged|<ref>]` — 看当前工作目录的改动，长 patch 会附带文件',
+        '- `/worktree [add|use|remove]` — 任务级 worktree，创建后会话自动切过去',
+        '- `/pr [编号|链接]` — 当前分支的 PR、CI 与评审状态',
         '- `/ps` — 列出本机所有 bot,标识当前正在回复的那个',
         '- `/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)',
         '- `/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)',
@@ -211,6 +217,7 @@ export function helpCard(agentName = 'Agent'): object {
       { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
       { text: '🔁 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作目录', value: { cmd: 'ws.list' } },
+      { text: '🔍 改动', value: { cmd: 'diff' } },
       { text: '🆕 新会话', value: { cmd: 'new' } },
     ]),
   ]);
@@ -263,6 +270,166 @@ export function coffeeCard(): object {
       ],
     },
   };
+}
+
+export interface DiffFileView {
+  path: string;
+  added: number;
+  removed: number;
+  binary: boolean;
+}
+
+export interface DiffCardView {
+  scope: string;
+  files: DiffFileView[];
+  added: number;
+  removed: number;
+  untracked: string[];
+  /** Inline excerpt of the patch; empty when there is nothing to show. */
+  preview: string;
+  omittedLines: number;
+  /** True when the full patch is being sent as a separate file message. */
+  attached: boolean;
+}
+
+/** Cap on files listed inline — a long list is unreadable on a phone. */
+const DIFF_FILE_LIMIT = 15;
+
+export function diffCard(view: DiffCardView): object {
+  const elements: object[] = [];
+  elements.push(
+    divMd(`${view.scope} · **${view.files.length}** 个文件 <font color='green'>+${view.added}</font> <font color='red'>-${view.removed}</font>`),
+  );
+
+  if (view.files.length === 0 && view.untracked.length === 0) {
+    elements.push(divMd('没有改动。'));
+    return shell('\u{1f50d} 改动', elements);
+  }
+
+  if (view.files.length > 0) {
+    elements.push(HR);
+    const shown = view.files.slice(0, DIFF_FILE_LIMIT);
+    elements.push(
+      divMd(
+        shown
+          .map((f) =>
+            f.binary
+              ? `\`${escapeCode(f.path)}\` (二进制)`
+              : `\`${escapeCode(f.path)}\` <font color='green'>+${f.added}</font> <font color='red'>-${f.removed}</font>`,
+          )
+          .join('\n'),
+      ),
+    );
+    if (view.files.length > shown.length) {
+      elements.push(divMd(`<font color='grey'>… 还有 ${view.files.length - shown.length} 个文件</font>`));
+    }
+  }
+
+  if (view.untracked.length > 0) {
+    elements.push(
+      divMd(
+        `<font color='grey'>未跟踪 ${view.untracked.length} 个：${view.untracked
+          .slice(0, 5)
+          .map((p) => escapeMd(p))
+          .join('、')}${view.untracked.length > 5 ? ' …' : ''}</font>`,
+      ),
+    );
+  }
+
+  if (view.preview) {
+    elements.push(HR);
+    elements.push(divMd(`\`\`\`diff\n${escapeCode(view.preview)}\n\`\`\``));
+    if (view.omittedLines > 0) {
+      elements.push(
+        divMd(
+          `<font color='grey'>… 还有 ${view.omittedLines} 行${view.attached ? '，完整 patch 见下一条消息' : ''}</font>`,
+        ),
+      );
+    }
+  }
+
+  return shell('\u{1f50d} 改动', elements);
+}
+
+export interface WorktreeView {
+  path: string;
+  branch?: string;
+  head?: string;
+  main: boolean;
+  current: boolean;
+}
+
+export function worktreeCard(entries: WorktreeView[]): object {
+  const elements: object[] = [];
+  if (entries.length === 0) {
+    elements.push(divMd('当前目录不是 git 仓库，或者没有可用的 worktree。'));
+    return shell('\u{1f333} Worktree', elements);
+  }
+
+  entries.forEach((entry, i) => {
+    const label = entry.branch ? `\`${escapeCode(entry.branch)}\`` : `游离 @ ${entry.head ?? '?'}`;
+    const marks = [entry.main ? '主 checkout' : '', entry.current ? '← 当前' : ''].filter(Boolean);
+    elements.push(
+      divMd(`**${label}** ${marks.join(' · ')}\n\`${escapeCode(entry.path)}\``),
+    );
+    elements.push(
+      actions([
+        ...(entry.current
+          ? []
+          : [{ text: '切换到这里', value: { cmd: 'worktree.use', arg: entry.path }, style: 'primary' as const }]),
+        ...(entry.main
+          ? []
+          : [{ text: '删除', value: { cmd: 'worktree.remove', arg: entry.path }, style: 'danger' as const }]),
+      ]),
+    );
+    if (i < entries.length - 1) elements.push(HR);
+  });
+
+  return shell('\u{1f333} Worktree', elements);
+}
+
+export interface PullRequestCardView {
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  isDraft: boolean;
+  headRefName: string;
+  baseRefName: string;
+  author?: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  checksLabel: string;
+  failingChecks: string[];
+  reviewLabel: string;
+  mergeable?: string;
+}
+
+export function pullRequestCard(view: PullRequestCardView): object {
+  const state = view.isDraft ? '草稿' : view.state === 'OPEN' ? '开放' : view.state === 'MERGED' ? '已合并' : '已关闭';
+  const elements: object[] = [
+    divMd(`[#${view.number} ${escapeMd(view.title)}](${view.url})`),
+    divMd(
+      [
+        `\`${escapeCode(view.headRefName)}\` → \`${escapeCode(view.baseRefName)}\``,
+        `${state}${view.author ? ` · @${escapeMd(view.author)}` : ''}`,
+        `${view.changedFiles} 个文件 <font color='green'>+${view.additions}</font> <font color='red'>-${view.deletions}</font>`,
+      ].join('\n'),
+    ),
+    HR,
+    divMd(`**CI**：${view.checksLabel}\n**评审**：${view.reviewLabel}${view.mergeable === 'CONFLICTING' ? '\n**合并**：⚠️ 有冲突' : ''}`),
+  ];
+  if (view.failingChecks.length > 0) {
+    elements.push(
+      divMd(`<font color='red'>失败：${view.failingChecks.map((c) => escapeMd(c)).join('、')}</font>`),
+    );
+  }
+  // `cmd` carries the number as its own segment: the dispatcher turns
+  // `pr.123` into `/pr 123`, so the refresh button keeps pointing at this PR.
+  elements.push(actions([{ text: '刷新', value: { cmd: `pr.${view.number}` }, style: 'primary' }]));
+
+  return shell(`\u{1f500} PR #${view.number}`, elements);
 }
 
 function escapeMd(s: string): string {

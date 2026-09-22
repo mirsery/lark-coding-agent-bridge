@@ -181,6 +181,9 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/remove user @某人`, `/remove admin @某人`, `/remove group`, `/remove member @某人` | 移除访问控制条目 |
 | `/stop` | 停止当前 run，也可点卡片停止按钮 |
 | `/timeout [N\|off\|default]` | 设置或清除当前会话的 idle watchdog |
+| `/diff [staged\|<ref>]` | 查看工作目录的改动，patch 过长时附带完整文件 |
+| `/worktree [add\|use\|remove]` | 管理任务级 worktree，会话自动跟着切 |
+| `/pr [编号\|链接]` | 当前分支的 PR、CI 与评审状态 |
 | `/ps` | 列出本机 bridge 进程 |
 | `/exit <id\|#>` | 停止指定 bridge 进程 |
 | `/reconnect` | 强制 WebSocket 重连 |
@@ -188,6 +191,20 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/help` | 帮助卡片 |
 
 私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
+
+## Git 能力
+
+当会话的工作目录是 git 仓库时，bridge 不再对它一无所知。
+
+- **`/status`** 多一行 git 信息：分支、与上游的偏离（`↑2 ↓1`）、未提交的内容，以及当前目录是不是一个 linked worktree。
+- **`/diff [staged|<ref>]`** 把改动渲染成卡片：逐文件的 `+`/`-` 数、未跟踪文件，以及一段 patch 摘录。`/diff` 是全部未提交改动，`/diff staged` 只看已暂存，`/diff main` 看这个分支相对 `main`（从共同祖先算起）新增了什么。摘录放不下时，完整 patch 会作为 `.patch` 文件紧跟着发出来，随手就能拿去别处打开。
+- **`/worktree`** 管理任务级 worktree。`/worktree add <分支> [起点]` 会在仓库**旁边**创建（`../.worktrees/<仓库>-<分支>`，不放在仓库里面，免得污染父仓库的 status 和文件扫描），然后把会话切过去并重置会话——和 `/cd` 是同一套约定。`/worktree use <分支|路径>` 在已有的之间切换，`/worktree remove <分支|路径> [--force]` 删除。主 checkout 和会话当前所在的那个都受保护。
+- **`/pr [编号|链接]`** 展示当前分支的 PR：标题、`head → base`、评审结论、CI 汇总（含失败的 check 名字），还有一个刷新按钮。
+
+`/pr` 走本机的 [GitHub CLI](https://cli.github.com)，用的是**你自己**的 `gh` 登录态，bridge 不需要也不保存任何 GitHub token。没装 `gh` 或没登录时会直接说明，而不是静默失败。其余能力只依赖 `git`；工作目录不是仓库时，一切照旧。
+
+从聊天里传进来的 ref 会先做校验再交给 git，一条消息不可能变成另一个 git 命令。
+
 
 ## 回复展示与 COT
 

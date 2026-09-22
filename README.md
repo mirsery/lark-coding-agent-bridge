@@ -181,6 +181,9 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/remove user @name`, `/remove admin @name`, `/remove group`, `/remove member @name` | Remove access entries |
 | `/stop` | Stop the current run, including the card stop button |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
+| `/diff [staged\|<ref>]` | Show the working tree's changes, with the full patch attached when long |
+| `/worktree [add\|use\|remove]` | Manage task worktrees; the session follows the new one |
+| `/pr [number\|url]` | Pull request, CI and review status for the current branch |
 | `/ps` | List local bridge processes |
 | `/exit <id\|#>` | Stop a bridge process |
 | `/reconnect` | Force a WebSocket reconnect |
@@ -188,6 +191,20 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/help` | Help card |
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
+
+## Git awareness
+
+When a session's working directory is a git repository, the bridge stops being blind to it.
+
+- **`/status`** gains a git line: branch, divergence from upstream (`↑2 ↓1`), what is uncommitted, and whether the directory is a linked worktree.
+- **`/diff [staged|<ref>]`** renders the change set as a card: per-file `+`/`-` counts, untracked files, and an inline excerpt of the patch. `/diff` alone means everything uncommitted, `/diff staged` only what is staged, and `/diff main` what this branch adds relative to `main` (from their merge base). When the patch does not fit inline, the full thing follows as a `.patch` file you can open anywhere.
+- **`/worktree`** manages task worktrees. `/worktree add <branch> [base]` creates one **beside** the repository (`../.worktrees/<repo>-<branch>`, never inside it, so it cannot pollute the parent repo's own status or file scans), then points the session at it and resets the session — the same contract as `/cd`. `/worktree use <branch|path>` switches between existing ones, `/worktree remove <branch|path> [--force]` deletes one. The main checkout and the tree the session is currently standing in are protected.
+- **`/pr [number|url]`** shows the current branch's pull request — title, `head → base`, review decision, and the CI rollup with the names of failing checks — plus a refresh button.
+
+`/pr` shells out to the [GitHub CLI](https://cli.github.com) and uses **your** `gh` login, so the bridge never needs a GitHub token of its own. With `gh` missing or logged out it says so instead of failing silently. Everything else here only needs `git`; a workspace that is not a repository simply keeps the old behaviour.
+
+Refs that arrive from chat are validated before they reach git, so a message can never turn into a different git command.
+
 
 ## Reply Display and COT
 
