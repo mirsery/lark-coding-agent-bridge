@@ -187,6 +187,8 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/diff [staged\|<ref>]` | 查看工作目录的改动，patch 过长时附带完整文件 |
 | `/worktree [add\|use\|remove]` | 管理任务级 worktree，会话自动跟着切 |
 | `/pr [编号\|链接]` | 当前分支的 PR、CI 与评审状态 |
+| `/cron add <时间> \| <任务>` | 新建定时任务 |
+| `/cron list\|show\|run\|pause\|resume\|remove` | 管理定时任务 |
 | `/ps` | 列出本机 bridge 进程 |
 | `/exit <id\|#>` | 停止指定 bridge 进程 |
 | `/reconnect` | 强制 WebSocket 重连 |
@@ -252,6 +254,26 @@ Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两�
 `/pr` 走本机的 [GitHub CLI](https://cli.github.com)，用的是**你自己**的 `gh` 登录态，bridge 不需要也不保存任何 GitHub token。没装 `gh` 或没登录时会直接说明，而不是静默失败。其余能力只依赖 `git`；工作目录不是仓库时，一切照旧。
 
 从聊天里传进来的 ref 会先做校验再交给 git，一条消息不可能变成另一个 git 命令。
+## 定时任务
+
+`/cron` 按计划执行一段 prompt，并把结果发回创建它的会话——每天巡检日志、发版前自检、或者一个真的会动手的提醒。
+
+```text
+/cron add 0 9 * * 1-5 | 总结昨天 CI 的失败
+/cron add @daily | 扫一遍 error 日志，挑出新增的问题
+/cron add in 30m | 看看那次部署完成没有
+/cron add at 2026-10-01 09:30 | 起草月报
+```
+
+- **时间写法**：标准 5 字段 cron（分 时 日 月 周，支持列表、区间和 `*/步长`）、`@hourly` / `@daily` / `@weekly` / `@monthly` 别名，以及一次性的 `in <时长>` 和 `at <时刻>`。全部按宿主机本地时区计算。`|` 用来分隔时间和任务内容。
+- **每个任务独立 scope**：任务跑在自己的会话 scope（`cron:<id>`）里，工作目录取创建时的当前目录，不会和聊天本身的会话互相干扰。加 `--continue` 可以让多次运行复用同一个会话，默认每次都是新会话。
+- **结果投递**：结果以一条完成后的消息发出（卡片或 markdown，跟随 `/config`），不是实时流——任务触发时不一定有人在看。在话题里创建的任务会回到那个话题里。
+- **权限**：`/cron` 仅管理员可用，并且每次触发都会重新校验创建者的权限——把某人移出名单，他留下的任务也会随之停摆。任务只能在创建它的会话里管理。
+- **触发时机**：只有持有该 profile 的进程会 tick 调度器，所以任务不会重复触发；bridge 没在跑的时候不会执行。错过超过 6 小时的 cron 触发会跳过而不是补跑（笔记本睡过 09:00、10:00 醒来仍会执行）；一次性任务即使迟到也一定会执行。
+- **失败处理**：失败会在会话里报出来，连续失败 5 次自动暂停任务，`/cron resume <id>` 恢复并清空失败计数。
+- **中断**：`/cron pause <id>` 和 `/cron remove <id>` 会顺带中断该任务正在执行的那一次——定时任务跑在自己的 scope 里，聊天里的 `/stop` 够不到它。
+
+任务按 profile 存在 `jobs.json`（见数据目录）。
 
 
 ## 回复展示与 COT
@@ -320,6 +342,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/profiles/<profile>/sessions.json` | 会话状态 |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | agent-aware 会话索引 |
 | `~/.lark-channel/profiles/<profile>/knowledge/` | 记忆与 skills（可作为 git 仓库同步） |
+| `~/.lark-channel/profiles/<profile>/jobs.json` | 定时任务（`/cron`） |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |

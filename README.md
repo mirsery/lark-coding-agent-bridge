@@ -187,6 +187,8 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/diff [staged\|<ref>]` | Show the working tree's changes, with the full patch attached when long |
 | `/worktree [add\|use\|remove]` | Manage task worktrees; the session follows the new one |
 | `/pr [number\|url]` | Pull request, CI and review status for the current branch |
+| `/cron add <when> \| <task>` | Create a scheduled job |
+| `/cron list\|show\|run\|pause\|resume\|remove` | Manage scheduled jobs |
 | `/ps` | List local bridge processes |
 | `/exit <id\|#>` | Stop a bridge process |
 | `/reconnect` | Force a WebSocket reconnect |
@@ -252,6 +254,26 @@ When a session's working directory is a git repository, the bridge stops being b
 `/pr` shells out to the [GitHub CLI](https://cli.github.com) and uses **your** `gh` login, so the bridge never needs a GitHub token of its own. With `gh` missing or logged out it says so instead of failing silently. Everything else here only needs `git`; a workspace that is not a repository simply keeps the old behaviour.
 
 Refs that arrive from chat are validated before they reach git, so a message can never turn into a different git command.
+## Scheduled jobs
+
+`/cron` runs a prompt on a schedule and posts the result back into the chat that created it — a daily log sweep, a pre-release check, a reminder that actually does the work.
+
+```text
+/cron add 0 9 * * 1-5 | summarize yesterday's CI failures
+/cron add @daily | sweep the error log and flag anything new
+/cron add in 30m | check whether the deploy finished
+/cron add at 2026-10-01 09:30 | draft the monthly report
+```
+
+- **Schedule syntax**: standard 5-field cron (`minute hour day-of-month month day-of-week`, with lists, ranges and `*/step`), the `@hourly` / `@daily` / `@weekly` / `@monthly` aliases, plus `in <duration>` and `at <time>` for one-shots. Everything is evaluated in the host machine's local timezone. `|` separates the schedule from the task.
+- **One scope per job**: a job runs under its own session scope (`cron:<id>`) in the working directory that was current when it was created, so it never collides with the chat's own session. `--continue` reuses one conversation across fires; the default starts fresh each time.
+- **Delivery**: the result arrives as one finished message (card or markdown, following `/config`) rather than a live stream — nobody is necessarily watching when a job starts. A job created in a topic replies inside that topic.
+- **Access**: `/cron` is admin-only, and the creator's access is re-checked on every fire — revoking someone's access also disarms the jobs they left behind. Jobs are managed only from the chat that owns them.
+- **Timing**: only the process hosting the profile ticks the scheduler, so a job never double-fires; nothing runs while the bridge is down. A cron fire missed by more than 6 hours is skipped rather than replayed (a laptop that slept through 09:00 and woke at 10:00 still runs it); a one-shot always fires, even late.
+- **Failures**: a failed run is reported in the chat, and five consecutive failures disable the job. `/cron resume <id>` re-arms it and clears the streak.
+- **Stopping**: `/cron pause <id>` and `/cron remove <id>` also interrupt that job's run if one is in flight — a scheduled run owns its own scope, so the chat's `/stop` does not reach it.
+
+Jobs are stored per profile in `jobs.json` (see Data directories).
 
 
 ## Reply Display and COT
@@ -320,6 +342,7 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/profiles/<profile>/sessions.json` | Session state |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
 | `~/.lark-channel/profiles/<profile>/knowledge/` | Memory and skills (optionally a git repo) |
+| `~/.lark-channel/profiles/<profile>/jobs.json` | Scheduled jobs (`/cron`) |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |

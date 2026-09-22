@@ -13,7 +13,7 @@ export interface FingerprintInputV2 {
 }
 
 export interface ResourceScopeDigestInput {
-  source: 'im' | 'card' | 'comment' | 'meeting';
+  source: 'im' | 'card' | 'comment' | 'meeting' | 'cron';
   chatId?: string;
   threadId?: string;
   commentScopeId?: string;

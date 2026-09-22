@@ -26,15 +26,7 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
 import type { RunCardRenderOptions } from '../card/run-renderer';
-import {
-  finalizeIfRunning,
-  initialState,
-  markIdleTimeout,
-  markInterrupted,
-  reduce,
-  type RunState,
-  type Terminal,
-} from '../card/run-state';
+import { initialState, type RunState, type Terminal } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
@@ -63,7 +55,8 @@ import { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
-import { ActiveRuns, type RunHandle } from './active-runs';
+import { ActiveRuns } from './active-runs';
+import { processAgentStream } from './agent-stream';
 import { createRunsMonitor } from './runs-monitor';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
@@ -72,6 +65,8 @@ import { reportInterruptedRuns } from './interrupted-notice';
 import { RunRegistry } from '../runtime/run-registry';
 import { buildKnowledgeContext } from '../knowledge/inject';
 import { KnowledgeStore } from '../knowledge/store';
+import { Scheduler } from '../scheduler/scheduler';
+import { JobStore } from '../scheduler/store';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
@@ -217,7 +212,7 @@ export interface StartChannelDeps {
   controls: Controls;
   appPaths?: Pick<
     AppPaths,
-    'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'runsFile' | 'knowledgeDir'
+    'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'runsFile' | 'knowledgeDir' | 'jobsFile'
   >;
 }
 
@@ -241,6 +236,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       log.warn('knowledge', 'ensure-failed', { err: String(err) }),
     );
   }
+  // Scheduled jobs (`/cron`). Absent only in tests that omit appPaths — the
+  // bridge then simply has no scheduler, and `/cron` says so.
+  const jobs = deps.appPaths?.jobsFile ? new JobStore(deps.appPaths.jobsFile) : undefined;
+  await jobs?.load();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
   const chatModeCache = new ChatModeCache();
@@ -542,6 +541,23 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       );
     }
   }
+  // Scheduler starts only after the WS is up: a job that fires before the
+  // channel can deliver would produce an answer with nowhere to go.
+  let scheduler: Scheduler | undefined;
+  if (jobs) {
+    scheduler = new Scheduler({
+      store: jobs,
+      channel,
+      executor,
+      sessions,
+      ...(sessionCatalog ? { sessionCatalog } : {}),
+      workspaces,
+      controls,
+    });
+    scheduler.start();
+    controls.scheduler = scheduler;
+  }
+
   const ownerRefresh = createOwnerRefreshController({
     controls,
     source: channel,
@@ -593,6 +609,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       // channel down and rebuilds it, and auto-leaving every meeting on a
       // reconnect would be surprising.
       meetingManager?.dispose();
+      scheduler?.stop();
+      controls.scheduler = undefined;
       controls.meeting = undefined;
       controls.runsMonitor = undefined;
       pending.cancelAll();
@@ -619,6 +637,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
         workspaces.flush(),
+        jobs?.flush(),
       ]);
       for (const [idx, result] of flushResults.entries()) {
         if (result.status === 'rejected') {
@@ -1685,131 +1704,6 @@ function outboundLogFields(
     replyTo: input.sendOpts?.replyTo,
     replyInThread: input.sendOpts?.replyInThread === true,
   };
-}
-
-/**
- * Drive the agent's event stream into a stateful RunState, calling `flush`
- * on every state transition. Used by both card and markdown reply modes —
- * the only difference between the two is what `flush` does with the state.
- */
-async function processAgentStream(
-  handle: RunHandle,
-  events: AsyncIterable<AgentEvent>,
-  scope: string,
-  idleTimeoutMs: number | undefined,
-  recordSession: (event: AgentEvent) => void,
-  flush: (state: RunState) => Promise<void>,
-): Promise<RunState> {
-  const runStart = Date.now();
-  let state: RunState = initialState;
-
-  // Idle watchdog: claude going silent for `idleTimeoutMs` is treated as
-  // "presumed hung", we stop() and surface a timeout marker on the card.
-  //
-  // BUT — claude can legitimately be silent for a long time when it's
-  // waiting on a long-running tool call (e.g. `lark-cli` printing an
-  // OAuth URL and blocking until the user clicks authorize). In that
-  // case there's no event stream activity from claude itself, only the
-  // tool subprocess running. We track which tool_use ids haven't matched
-  // a tool_result yet, and pause the watchdog whenever the set is
-  // non-empty.
-  //
-  // The watchdog re-arms when:
-  //  - a tool_result drains the in-flight set to zero, OR
-  //  - any non-tool event arrives while the set is empty.
-  let idleFired = false;
-  let timer: NodeJS.Timeout | undefined;
-  const inFlightTools = new Set<string>();
-  const armOrPauseIdle = (): void => {
-    if (!idleTimeoutMs) return;
-    if (timer) clearTimeout(timer);
-    timer = undefined;
-    if (inFlightTools.size > 0) return;
-    timer = setTimeout(() => {
-      idleFired = true;
-      handle.interrupted = true;
-      log.warn('agent', 'idle-timeout', { scope, idleTimeoutMs });
-      void handle.run.stop().catch(() => {
-        /* stop errors are non-fatal */
-      });
-    }, idleTimeoutMs);
-  };
-  armOrPauseIdle();
-
-  try {
-    for await (const evt of events) {
-      if (handle.interrupted) break;
-
-      // Track tool flight before re-arming the idle timer so the arm step
-      // sees the correct set size. tool_use opens a window; tool_result
-      // closes it. Other event types are bookkept after the if/else.
-      if (evt.type === 'tool_use') {
-        inFlightTools.add(evt.id);
-        log.info('agent', 'tool-in-flight', {
-          tool: evt.name,
-          inFlight: inFlightTools.size,
-        });
-      } else if (evt.type === 'tool_result') {
-        inFlightTools.delete(evt.id);
-        log.info('agent', 'tool-done', { inFlight: inFlightTools.size });
-      }
-      armOrPauseIdle();
-
-      if (evt.type === 'system') {
-        recordSession(evt);
-        continue;
-      }
-      if (evt.type === 'usage') {
-        const { costUsd, inputTokens, outputTokens } = evt;
-        if (costUsd !== undefined || inputTokens !== undefined || outputTokens !== undefined) {
-          log.info('agent', 'usage', {
-            ...(costUsd !== undefined ? { costUsd: Number(costUsd.toFixed(4)) } : {}),
-            ...(inputTokens !== undefined ? { inputTokens } : {}),
-            ...(outputTokens !== undefined ? { outputTokens } : {}),
-          });
-          if (costUsd !== undefined) reportMetric('cost_usd', costUsd);
-          if (inputTokens !== undefined) reportMetric('tokens_in', inputTokens);
-          if (outputTokens !== undefined) reportMetric('tokens_out', outputTokens);
-        }
-        continue;
-      }
-
-      const prevTerminal = state.terminal;
-      const prevFooter = state.footer;
-      state = reduce(state, evt);
-      if (state.footer !== prevFooter || state.terminal !== prevTerminal) {
-        log.info('card', 'transition', { footer: state.footer, terminal: state.terminal });
-      }
-      await flush(state);
-      // Stop iterating as soon as we have a terminal state. Some claude
-      // versions don't close stdout immediately after the result event, which
-      // would leave the for-await waiting forever otherwise.
-      if (state.terminal !== 'running') break;
-    }
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-
-  // If state already reached a terminal event (done/error/etc.) before the
-  // watchdog or interrupt could land, don't clobber it — that real terminal
-  // wins. This avoids "claude finished but flush was slow → timer fired
-  // mid-flush → user sees 'idle_timeout' on a successful run".
-  if (state.terminal === 'running') {
-    if (idleFired) {
-      state = markIdleTimeout(state, Math.round(idleTimeoutMs! / 60_000));
-    } else if (handle.interrupted) {
-      state = markInterrupted(state);
-    } else {
-      state = finalizeIfRunning(state);
-    }
-  }
-  log.info('card', 'final', { scope, terminal: state.terminal, interrupted: handle.interrupted });
-  reportMetric('run_e2e_ms', Date.now() - runStart, { terminal: state.terminal });
-  await flush(state);
-  if (handle.interrupted) {
-    await handle.run.stop();
-  }
-  return state;
 }
 
 async function awaitRenderAwareStream(input: {

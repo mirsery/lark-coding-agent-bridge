@@ -61,6 +61,20 @@ describe('README runtime contract', () => {
     }
   });
 
+  it('documents the scheduler surface in both languages', async () => {
+    const docs = await readDocs();
+
+    for (const phrase of [
+      '/cron add',
+      '/cron resume',
+      'Scheduled jobs',
+      '定时任务',
+      'jobs.json',
+    ]) {
+      expect(docs).toContain(phrase);
+    }
+  });
+
   it('keeps CLI help aligned with profile-aware service and first-run workspace flags', async () => {
     const [cli, help, configCard] = await Promise.all([
       readFile(new URL('../../../src/cli/index.ts', import.meta.url), 'utf8'),

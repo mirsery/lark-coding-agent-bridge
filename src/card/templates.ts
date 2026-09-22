@@ -208,6 +208,7 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/diff [staged|<ref>]` — 看当前工作目录的改动，长 patch 会附带文件',
         '- `/worktree [add|use|remove]` — 任务级 worktree，创建后会话自动切过去',
         '- `/pr [编号|链接]` — 当前分支的 PR、CI 与评审状态',
+        '- `/cron add <时间> | <任务>` — 定时任务；`list|show|run|pause|resume|remove` 管理',
         '- `/ps` — 列出本机所有 bot,标识当前正在回复的那个',
         '- `/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)',
         '- `/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)',
@@ -225,6 +226,7 @@ export function helpCard(agentName = 'Agent'): object {
       { text: '📂 工作目录', value: { cmd: 'ws.list' } },
       { text: '🔍 改动', value: { cmd: 'diff' } },
       { text: '📚 知识库', value: { cmd: 'knowledge' } },
+      { text: '⏰ 定时任务', value: { cmd: 'cron.list' } },
       { text: '🆕 新会话', value: { cmd: 'new' } },
     ]),
   ]);
@@ -540,6 +542,50 @@ export function knowledgeCard(view: KnowledgeStatusView): object {
       { text: 'Skills', value: { cmd: 'skills' } },
     ]),
   ]);
+}
+
+export interface CronJobView {
+  id: string;
+  schedule: string;
+  status: string;
+  lastRun?: string;
+  prompt: string;
+  enabled: boolean;
+}
+
+/**
+ * `/cron list` panel. Each job carries the three actions worth one tap —
+ * run it now, pause/resume it, delete it — so the common edits never need
+ * anyone to retype an id.
+ */
+export function cronCard(jobs: CronJobView[], hint: string): object {
+  const elements: object[] = [];
+
+  if (jobs.length === 0) {
+    elements.push(divMd('本会话还没有定时任务。'));
+    elements.push(divMd(hint));
+    return shell('⏰ 定时任务', elements);
+  }
+
+  jobs.forEach((job, i) => {
+    elements.push(
+      divMd(`**\`${escapeCode(job.id)}\`** · ${job.schedule}\n${job.status}`),
+    );
+    elements.push(divMd(escapeMd(job.prompt)));
+    if (job.lastRun) elements.push(divMd(`<font color='grey'>${escapeMd(job.lastRun)}</font>`));
+    elements.push(
+      actions([
+        { text: '立即运行', value: { cmd: 'cron.run', arg: job.id }, style: 'primary' },
+        job.enabled
+          ? { text: '暂停', value: { cmd: 'cron.pause', arg: job.id } }
+          : { text: '恢复', value: { cmd: 'cron.resume', arg: job.id } },
+        { text: '删除', value: { cmd: 'cron.remove', arg: job.id }, style: 'danger' },
+      ]),
+    );
+    if (i < jobs.length - 1) elements.push(HR);
+  });
+
+  return shell('⏰ 定时任务', elements);
 }
 
 function escapeMd(s: string): string {
