@@ -140,7 +140,7 @@ describe('run card renderer snapshots', () => {
     }) as { body?: { elements?: Array<{ content?: string }> } };
     const elements = card.body?.elements ?? [];
     expect(elements[elements.length - 1]?.content).toBe(
-      "<font color='grey'>Agent: claude | Model: Opus 5 | Provider: anthropic | 赞助商: CC</font>",
+      "<font color='grey'>Agent: claude | Model: Opus 5 | Provider: anthropic | Sponsor: CC</font>",
     );
   });
 

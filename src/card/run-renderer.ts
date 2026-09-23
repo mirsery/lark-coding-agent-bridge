@@ -105,7 +105,7 @@ function byline(meta: RunCardMeta | undefined): object[] {
     meta.model ? `Model: ${meta.model}` : undefined,
     meta.effort ? `Effort: ${meta.effort}` : undefined,
     meta.provider ? `Provider: ${meta.provider}` : undefined,
-    meta.sponsor ? `赞助商: ${meta.sponsor}` : undefined,
+    meta.sponsor ? `Sponsor: ${meta.sponsor}` : undefined,
   ].filter((p): p is string => p !== undefined);
   if (parts.length === 0) return [];
   return [
