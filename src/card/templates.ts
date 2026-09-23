@@ -271,6 +271,9 @@ export function helpCard(agentName = 'Agent'): object {
           '`/skills [show <名字>]` — skill 索引，agent 按需读取正文',
           '`/knowledge [bind|sync]` — 记忆与 skill 的 git 同步',
         ]),
+        helpSection('green-50', '🧪 联调', [
+          '`/joint-debug <单号>` — 把 JIRA 单合入 devops、触发 Jenkins 部署到联调环境（8.221）并走 web 冒烟，如 `/joint-debug ANTELOPE-6747`',
+        ]),
         helpSection('orange-50', '⏰ 定时任务', [
           '`/cron add <时间> | <任务>` — 新建，如 `0 9 * * 1-5`、`@daily`、`in 30m`',
           '`/cron list|show|run|pause|resume|remove` — 管理已有任务',
