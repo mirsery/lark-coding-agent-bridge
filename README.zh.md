@@ -25,18 +25,33 @@
   - Codex CLI：`codex`，安装说明：https://developers.openai.com/codex/cli
 - 一个飞书 / Lark PersonalAgent 应用。首次启动的扫码向导可以帮你创建并绑定。
 
-## 安装
+## 安装（本 fork：源码构建 + npm link）
+
+本仓库是 [`mirsery/lark-coding-agent-bridge`](https://github.com/mirsery/lark-coding-agent-bridge) 的定制 fork，包含卡片 Sponsor 署名、任务面板、联调帮助分组等 npm 包里没有的改动。**不要用 `npm i -g lark-channel-bridge` 安装**，否则跑的是上游发布版，本 fork 的改动全部不生效。
 
 ```bash
-npm i -g lark-channel-bridge
-# 或
-pnpm add -g lark-channel-bridge
+git clone git@github.com:mirsery/lark-coding-agent-bridge.git ~/workspace/lark-coding-agent-bridge
+cd ~/workspace/lark-coding-agent-bridge
+pnpm install        # prepare 脚本会顺带执行一次 build
+pnpm build          # 构建 web 控制台 + dist/
+npm link            # 全局 lark-channel-bridge 软链到本仓库
 ```
+
+确认全局命令指向本仓库，而不是 npm 安装版：
+
+```bash
+readlink -f "$(command -v lark-channel-bridge)"
+# 期望输出：~/workspace/lark-coding-agent-bridge/bin/lark-channel-bridge.mjs
+```
+
+> 如果用 nvm 管理 Node，`npm link` 装在当前 Node 版本的全局目录下。切换 Node 版本后需要重新 `npm link`，并同步更新 launchd plist 里的 node 路径。
 
 ## 首次启动
 
+首次绑定 PersonalAgent 应用时在前台跑，并显式指定 profile 和 agent：
+
 ```bash
-lark-channel-bridge run
+lark-channel-bridge run --profile claude --agent claude
 ```
 
 第一次运行会进入扫码向导：
@@ -44,20 +59,66 @@ lark-channel-bridge run
 1. 终端渲染二维码。
 2. 用飞书 App 扫码。
 3. 选择或创建 PersonalAgent 应用。
-4. 如果终端提示，选择本次要初始化的 agent。
-5. 成功后配置写入 `~/.lark-channel/config.json`。
+4. 成功后配置写入 `~/.lark-channel/config.json`。
 
-没有指定项目目录也可以启动。bridge 会创建一个 profile 托管的默认工作目录；启动后在飞书里发送 `/cd <path>` 切到实际项目。
+如果已经有 PersonalAgent app，可以加 `--app-id cli_xxx` 跳过创建应用流程，命令会提示输入 App Secret。Lark 国际版应用加 `--tenant lark`。
 
-如果已经有 PersonalAgent app，可以在初始化时传 `--app-id` 跳过创建应用流程；命令会提示输入 App Secret。
+确认能在飞书里正常收发消息后，`Ctrl-C` 停掉前台进程，改用下面的后台服务。
+
+## 本机启动方式
+
+本机常驻两个 launchd 用户服务，都随登录自动启动，并由 `KeepAlive` 保活：
+
+| launchd Label | 启动命令 | 作用 |
+|---|---|---|
+| `ai.lark-channel-bridge.bot.claude` | `lark-channel-bridge run --profile claude` | 飞书 bot「CC」，接 Claude Code |
+| `ai.lark-channel-bridge.bot.supervisor` | `lark-channel-bridge run --web-ui` | 本地 web 控制台 |
+
+两个服务都设置了 `LARK_CHANNEL_HOME=~/.lark-channel`，PATH 里带上 nvm 的 Node bin 目录。
+
+首次安装服务：
 
 ```bash
-lark-channel-bridge run --app-id cli_xxx
-# 或直接初始化并启动后台服务
-lark-channel-bridge start --app-id cli_xxx
+lark-channel-bridge start --profile claude   # 生成并加载 ai.lark-channel-bridge.bot.claude
+lark-channel-bridge start --web-ui           # 生成并加载 ai.lark-channel-bridge.bot.supervisor
 ```
 
-Lark 国际版应用可加 `--tenant lark`。
+日常查看与启停：
+
+```bash
+lark-channel-bridge status --profile claude
+lark-channel-bridge restart --profile claude
+lark-channel-bridge stop --profile claude
+```
+
+控制台端口每次启动随机分配，地址（含 token）记录在 `~/.lark-channel/ui.json`。用 `ui` 命令打开或打印：
+
+```bash
+lark-channel-bridge ui           # 在浏览器打开控制台
+lark-channel-bridge ui --print   # 只打印地址
+```
+
+注意：`claude` profile 由自己的 per-profile daemon 托管，控制台拿不到它的运行锁，可能会把它显示为未运行。以 `status --profile claude` 和飞书实际收发为准，详见下文「Web 控制台」。
+
+### 改代码后生效
+
+daemon 只在启动时加载一次 `dist/`，改了源码必须先构建再重启：
+
+```bash
+cd ~/workspace/lark-coding-agent-bridge
+pnpm build
+lark-channel-bridge restart --profile claude
+lark-channel-bridge status --profile claude
+```
+
+判断正在运行的 daemon 是否落后于代码：比较 `git log -1 --format=%ci` 和 `ls -la dist/cli.js` 的时间，构建早于最新提交就说明没生效。重启会让 bot 断线几秒，挑没有任务在跑的时候做，可以先在飞书发 `/show-tasks` 确认。
+
+### 日志与数据
+
+- bot 日志：`~/.lark-channel/profiles/claude/logs/daemon/daemon-{stdout,stderr}.log`
+- 控制台日志：`~/.lark-channel/profiles/supervisor/logs/daemon/`
+- 结构化日志：`~/.lark-channel/profiles/claude/logs/bridge-YYYYMMDD.jsonl`
+- 会话与运行中任务：`~/.lark-channel/profiles/claude/sessions.json`、`runs.json`
 
 ## 后台运行
 

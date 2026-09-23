@@ -25,18 +25,33 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
   - Codex CLI: `codex`, see https://developers.openai.com/codex/cli
 - A Feishu / Lark **PersonalAgent** app. The first-run QR wizard can create and bind one for you.
 
-## Install
+## Install (this fork: build from source + npm link)
+
+This repo is a customized fork, [`mirsery/lark-coding-agent-bridge`](https://github.com/mirsery/lark-coding-agent-bridge), with changes that are not in the npm package: a Sponsor line on reply cards, a task panel, a joint-debug help group, and more. **Do not install with `npm i -g lark-channel-bridge`**: that runs the upstream release and none of this fork's changes take effect.
 
 ```bash
-npm i -g lark-channel-bridge
-# or
-pnpm add -g lark-channel-bridge
+git clone git@github.com:mirsery/lark-coding-agent-bridge.git ~/workspace/lark-coding-agent-bridge
+cd ~/workspace/lark-coding-agent-bridge
+pnpm install        # the prepare script also runs a build
+pnpm build          # builds the web console and dist/
+npm link            # points the global lark-channel-bridge at this checkout
 ```
+
+Check that the global command points at this checkout rather than an npm install:
+
+```bash
+readlink -f "$(command -v lark-channel-bridge)"
+# expected: ~/workspace/lark-coding-agent-bridge/bin/lark-channel-bridge.mjs
+```
+
+> With nvm, `npm link` lives under the current Node version's global directory. After switching Node versions, run `npm link` again and update the node path in the launchd plists.
 
 ## First run
 
+Bind the PersonalAgent app once in the foreground, with an explicit profile and agent:
+
 ```bash
-lark-channel-bridge run
+lark-channel-bridge run --profile claude --agent claude
 ```
 
 The first run opens a QR-code wizard:
@@ -44,20 +59,66 @@ The first run opens a QR-code wizard:
 1. A QR code renders in your terminal.
 2. Scan it with the Feishu / Lark app.
 3. Pick or create a PersonalAgent app.
-4. If prompted, choose which agent to initialize.
-5. Config is written to `~/.lark-channel/config.json`.
+4. Config is written to `~/.lark-channel/config.json`.
 
-You do not need to choose a project directory up front. The bridge creates a profile-managed default working directory; after startup, send `/cd <path>` in Feishu / Lark to switch to a real project.
+If you already have a PersonalAgent app, add `--app-id cli_xxx` to skip app creation; the command prompts for the App Secret. For Lark global apps, add `--tenant lark`.
 
-If you already have a PersonalAgent app, pass `--app-id` during initialization to skip app creation. The command prompts for the App Secret.
+Once the bot can send and receive messages, stop the foreground process with `Ctrl-C` and switch to the background services below.
+
+## How this machine runs it
+
+Two launchd user agents stay resident. Both start at login and are kept alive by `KeepAlive`:
+
+| launchd Label | Command | Purpose |
+|---|---|---|
+| `ai.lark-channel-bridge.bot.claude` | `lark-channel-bridge run --profile claude` | The Feishu bot "CC", backed by Claude Code |
+| `ai.lark-channel-bridge.bot.supervisor` | `lark-channel-bridge run --web-ui` | Local web console |
+
+Both set `LARK_CHANNEL_HOME=~/.lark-channel` and include nvm's Node bin directory on PATH.
+
+Install the services the first time:
 
 ```bash
-lark-channel-bridge run --app-id cli_xxx
-# or initialize and start the background service directly
-lark-channel-bridge start --app-id cli_xxx
+lark-channel-bridge start --profile claude   # writes and loads ai.lark-channel-bridge.bot.claude
+lark-channel-bridge start --web-ui           # writes and loads ai.lark-channel-bridge.bot.supervisor
 ```
 
-For Lark global apps, add `--tenant lark`.
+Day-to-day status and control:
+
+```bash
+lark-channel-bridge status --profile claude
+lark-channel-bridge restart --profile claude
+lark-channel-bridge stop --profile claude
+```
+
+The console picks a random port on every start, and records the URL, token included, in `~/.lark-channel/ui.json`. Open or print it with the `ui` command:
+
+```bash
+lark-channel-bridge ui           # open the console in a browser
+lark-channel-bridge ui --print   # print the URL only
+```
+
+Note: the `claude` profile is hosted by its own per-profile daemon, so the console cannot take its runtime lock and may show it as not running. Trust `status --profile claude` and real Feishu traffic instead; see "Web console" below.
+
+### Applying code changes
+
+The daemon loads `dist/` once at startup, so after editing source you must build before restarting:
+
+```bash
+cd ~/workspace/lark-coding-agent-bridge
+pnpm build
+lark-channel-bridge restart --profile claude
+lark-channel-bridge status --profile claude
+```
+
+To tell whether the running daemon is stale, compare `git log -1 --format=%ci` with `ls -la dist/cli.js`; a build older than the latest commit has not taken effect. A restart drops the bot for a few seconds, so do it when no task is running. Sending `/show-tasks` in Feishu shows what is in flight.
+
+### Logs and data
+
+- Bot logs: `~/.lark-channel/profiles/claude/logs/daemon/daemon-{stdout,stderr}.log`
+- Console logs: `~/.lark-channel/profiles/supervisor/logs/daemon/`
+- Structured logs: `~/.lark-channel/profiles/claude/logs/bridge-YYYYMMDD.jsonl`
+- Sessions and in-flight runs: `~/.lark-channel/profiles/claude/sessions.json`, `runs.json`
 
 ## Background service
 
