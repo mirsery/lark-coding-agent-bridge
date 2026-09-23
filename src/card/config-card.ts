@@ -180,7 +180,8 @@ export function configFormCard(opts: ConfigFormOpts): object {
               },
               {
                 tag: 'markdown',
-                content: '**模型**\n<font color="grey">「跟随默认」= 不指定，由 CLI/账号决定</font>',
+                content:
+                  '**模型**\n<font color="grey">「跟随默认」= 不指定，由 CLI/账号决定；Opus 5.5 需要 Claude Code ≥ 2.1.280</font>',
               },
               {
                 tag: 'select_static',
