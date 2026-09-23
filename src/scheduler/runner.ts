@@ -179,7 +179,7 @@ async function deliver(deps: JobRunnerDeps, job: ScheduledJob, state: RunState):
   const header = `⏰ 定时任务 \`${job.id}\` · ${scheduleLabel(job)}`;
   const payload =
     replyMode === 'card'
-      ? { card: renderCard(headedState(state, header), cardOptions(deps)) }
+      ? { card: renderCard(headedState(state, header), await cardOptions(deps)) }
       : { markdown: `${header}\n\n${body}` };
   await sendToJobChat(deps, job, payload);
 }
@@ -217,7 +217,7 @@ async function sendToJobChat(
   await deps.channel.send(job.chatId, payload);
 }
 
-function cardOptions(deps: JobRunnerDeps): RunCardRenderOptions {
+async function cardOptions(deps: JobRunnerDeps): Promise<RunCardRenderOptions> {
   const { profileConfig } = deps.controls;
   return {
     meta: {
@@ -226,7 +226,7 @@ function cardOptions(deps: JobRunnerDeps): RunCardRenderOptions {
       model: modelLabel(profileConfig.agentKind, profileConfig.preferences.model),
       effort: resolveEffortArg(profileConfig.agentKind, profileConfig.preferences.effort),
       provider: profileConfig.agentKind === 'codex' ? 'openai' : 'anthropic',
-      sponsor: profileConfig.agentKind === 'claude' ? claudeAccountName() : undefined,
+      sponsor: profileConfig.agentKind === 'claude' ? await claudeAccountName() : undefined,
     },
   };
 }

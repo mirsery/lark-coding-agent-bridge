@@ -1201,7 +1201,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       model: modelLabel(agentKind, modelPref),
       effort: resolveEffortArg(agentKind, controls.profileConfig.preferences.effort),
       provider: agentKind === 'codex' ? 'openai' : 'anthropic',
-      sponsor: agentKind === 'claude' ? claudeAccountName() : undefined,
     },
     ...(callbackAuth
       ? {
@@ -1218,6 +1217,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         }
       : {}),
   };
+  // The byline only shows on the final card, long after this lookup settles,
+  // so resolve the paying account in the background instead of delaying the run.
+  if (agentKind === 'claude') {
+    void claudeAccountName().then((sponsor) => {
+      if (cardRenderOptions.meta) cardRenderOptions.meta.sponsor = sponsor;
+    });
+  }
 
   // Add a "Typing" reaction to the triggering message as an instant ack that
   // the bot noticed it, never letting that outbound API call block agent

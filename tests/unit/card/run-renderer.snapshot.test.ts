@@ -136,11 +136,11 @@ describe('run card renderer snapshots', () => {
 
   it('signs the byline with the sponsoring account when known', () => {
     const card = renderCard(stateFrom([{ type: 'done', terminationReason: 'normal' }]), {
-      meta: { title: 'CC', agent: 'claude', model: 'Opus 5', provider: 'anthropic', sponsor: 'CC' },
+      meta: { title: 'CC', agent: 'claude', model: 'Opus 5', provider: 'anthropic', sponsor: 'first.last' },
     }) as { body?: { elements?: Array<{ content?: string }> } };
     const elements = card.body?.elements ?? [];
     expect(elements[elements.length - 1]?.content).toBe(
-      "<font color='grey'>Agent: claude | Model: Opus 5 | Provider: anthropic | Sponsor: CC</font>",
+      "<font color='grey'>Agent: claude | Model: Opus 5 | Provider: anthropic | Sponsor: first.last</font>",
     );
   });
 

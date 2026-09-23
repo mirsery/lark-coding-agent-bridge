@@ -1,27 +1,54 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { claudeAccountName } from '../../../src/agent/claude/account';
+import { createClaudeAccountResolver, parseAuthStatus } from '../../../src/agent/claude/account';
 
-function configFile(content: unknown): string {
-  const path = join(mkdtempSync(join(tmpdir(), 'claude-account-')), '.claude.json');
-  writeFileSync(path, typeof content === 'string' ? content : JSON.stringify(content));
-  return path;
-}
+const status = (fields: Record<string, unknown>) => JSON.stringify(fields);
 
-describe('claudeAccountName', () => {
-  it('prefers the display name, then full name, then email', () => {
+describe('parseAuthStatus', () => {
+  it('returns the login username for a claude.ai login', () => {
     expect(
-      claudeAccountName(configFile({ oauthAccount: { displayName: 'CC', fullName: 'Full', emailAddress: 'a@b.c' } })),
-    ).toBe('CC');
-    expect(claudeAccountName(configFile({ oauthAccount: { displayName: ' ', fullName: 'Full' } }))).toBe('Full');
-    expect(claudeAccountName(configFile({ oauthAccount: { emailAddress: 'a@b.c' } }))).toBe('a@b.c');
+      parseAuthStatus(status({ loggedIn: true, authMethod: 'claude.ai', email: 'first.last@example.com' })),
+    ).toBe('first.last');
   });
 
-  it('returns undefined without a claude.ai login or a readable file', () => {
-    expect(claudeAccountName(configFile({ numStartups: 3 }))).toBeUndefined();
-    expect(claudeAccountName(configFile('{not json'))).toBeUndefined();
-    expect(claudeAccountName(join(tmpdir(), 'does-not-exist', '.claude.json'))).toBeUndefined();
+  it('returns undefined when logged out, on an API key, or on unreadable output', () => {
+    expect(parseAuthStatus(status({ loggedIn: false, authMethod: 'claude.ai', email: 'a@b.c' }))).toBeUndefined();
+    expect(parseAuthStatus(status({ loggedIn: true, authMethod: 'api_key' }))).toBeUndefined();
+    expect(parseAuthStatus(status({ loggedIn: true, authMethod: 'claude.ai', email: ' ' }))).toBeUndefined();
+    expect(parseAuthStatus('{not json')).toBeUndefined();
+  });
+});
+
+describe('createClaudeAccountResolver', () => {
+  it('reuses one lookup within the TTL and picks up an account switch after it', async () => {
+    let clock = 0;
+    let email = 'first@example.com';
+    let reads = 0;
+    const resolve = createClaudeAccountResolver({
+      readStatus: async () => {
+        reads += 1;
+        return status({ loggedIn: true, authMethod: 'claude.ai', email });
+      },
+      ttlMs: 1_000,
+      now: () => clock,
+    });
+
+    expect(await resolve()).toBe('first');
+    email = 'second@example.com';
+    clock = 500;
+    expect(await resolve()).toBe('first');
+    expect(reads).toBe(1);
+
+    clock = 1_500;
+    expect(await resolve()).toBe('second');
+    expect(reads).toBe(2);
+  });
+
+  it('resolves undefined when the CLI cannot be asked', async () => {
+    const resolve = createClaudeAccountResolver({
+      readStatus: async () => {
+        throw new Error('spawn claude ENOENT');
+      },
+    });
+    expect(await resolve()).toBeUndefined();
   });
 });
