@@ -5,6 +5,7 @@ import type {
 } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
+import { claudeAccountName } from '../agent/claude/account';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import {
   modelLabel,
@@ -1200,6 +1201,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       model: modelLabel(agentKind, modelPref),
       effort: resolveEffortArg(agentKind, controls.profileConfig.preferences.effort),
       provider: agentKind === 'codex' ? 'openai' : 'anthropic',
+      sponsor: agentKind === 'claude' ? claudeAccountName() : undefined,
     },
     ...(callbackAuth
       ? {

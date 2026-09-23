@@ -134,6 +134,16 @@ describe('run card renderer snapshots', () => {
     expect(interrupted.header?.template).toBe('grey');
   });
 
+  it('signs the byline with the sponsoring account when known', () => {
+    const card = renderCard(stateFrom([{ type: 'done', terminationReason: 'normal' }]), {
+      meta: { title: 'CC', agent: 'claude', model: 'Opus 5', provider: 'anthropic', sponsor: 'CC' },
+    }) as { body?: { elements?: Array<{ content?: string }> } };
+    const elements = card.body?.elements ?? [];
+    expect(elements[elements.length - 1]?.content).toBe(
+      "<font color='grey'>Agent: claude | Model: Opus 5 | Provider: anthropic | 赞助商: CC</font>",
+    );
+  });
+
   it('omits the header and byline when no identity meta is supplied', () => {
     const card = renderCard(stateFrom([{ type: 'done', terminationReason: 'normal' }])) as {
       header?: unknown;

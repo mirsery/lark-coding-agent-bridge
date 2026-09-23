@@ -27,6 +27,8 @@ export interface RunCardMeta {
   /** Reasoning effort, omitted when the profile leaves it at the CLI default. */
   effort?: string;
   provider?: string;
+  /** Account paying for the run, e.g. the logged-in Claude account name. */
+  sponsor?: string;
 }
 
 export interface RunCardRenderOptions {
@@ -103,6 +105,7 @@ function byline(meta: RunCardMeta | undefined): object[] {
     meta.model ? `Model: ${meta.model}` : undefined,
     meta.effort ? `Effort: ${meta.effort}` : undefined,
     meta.provider ? `Provider: ${meta.provider}` : undefined,
+    meta.sponsor ? `赞助商: ${meta.sponsor}` : undefined,
   ].filter((p): p is string => p !== undefined);
   if (parts.length === 0) return [];
   return [
