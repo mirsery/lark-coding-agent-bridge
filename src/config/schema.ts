@@ -68,9 +68,18 @@ export interface SecretsConfig {
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 export type CotMessagesMode = 'off' | 'brief' | 'detailed';
+/**
+ * Reasoning effort levels across agents. Claude Code's `--effort` accepts
+ * {@link EFFORT_LEVELS}; Codex's `model_reasoning_effort` accepts
+ * {@link CODEX_EFFORT_LEVELS}, which adds `ultra`.
+ */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 /** Claude Code `--effort` levels, in the CLI's own order. */
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** Codex `model_reasoning_effort` levels, in the CLI's own order. */
+export const CODEX_EFFORT_LEVELS: readonly EffortLevel[] = [...EFFORT_LEVELS, 'ultra'];
+/** Every level any agent accepts — what a stored preference is validated against. */
+export const ALL_EFFORT_LEVELS: readonly EffortLevel[] = CODEX_EFFORT_LEVELS;
 /** Display labels for {@link EffortLevel}, for `/config` and the web console. */
 export const EFFORT_LEVEL_LABELS: Record<EffortLevel, string> = {
   low: '低（low）',
@@ -78,6 +87,7 @@ export const EFFORT_LEVEL_LABELS: Record<EffortLevel, string> = {
   high: '高（high）',
   xhigh: '很高（xhigh）',
   max: '最高（max）',
+  ultra: '极限（ultra，自动分派子任务）',
 };
 
 /**
@@ -126,10 +136,10 @@ export interface AppPreferences {
    */
   model?: string;
   /**
-   * Reasoning effort, forwarded as Claude Code's `--effort`. Claude-only —
-   * Codex sizes its own reasoning and has no matching flag, so the value is
-   * ignored for `codex` profiles. `undefined` means "don't pass `--effort`"
-   * and the CLI default applies. Default: unset.
+   * Reasoning effort. Forwarded as Claude Code's `--effort`, or as Codex's
+   * `-c model_reasoning_effort=…` (clamped to what the chosen model
+   * supports). `undefined` means "don't pass it" and the CLI / Codex config
+   * default applies. Default: unset.
    */
   effort?: EffortLevel;
   /**
@@ -239,13 +249,13 @@ export function getShowToolCalls(cfg: AppConfig): boolean {
 
 /**
  * Resolve the stored effort preference, or `undefined` for "follow the CLI
- * default" (unset, or a value outside {@link EFFORT_LEVELS} — e.g. hand-edited
- * config, or a level a future CLI drops). Callers that need the agent-kind
- * gating (Codex ignores this) should go through `resolveEffortArg` instead.
+ * default" (unset, or a value outside {@link ALL_EFFORT_LEVELS} — e.g.
+ * hand-edited config, or a level a future CLI drops). Callers that need the
+ * per-agent gating should go through `resolveEffortArg` instead.
  */
 export function getEffort(cfg: AppConfig): EffortLevel | undefined {
   const raw = cfg.preferences?.effort;
-  return EFFORT_LEVELS.includes(raw as EffortLevel) ? (raw as EffortLevel) : undefined;
+  return ALL_EFFORT_LEVELS.includes(raw as EffortLevel) ? (raw as EffortLevel) : undefined;
 }
 
 export function getCotMessages(cfg: AppConfig): CotMessagesMode {

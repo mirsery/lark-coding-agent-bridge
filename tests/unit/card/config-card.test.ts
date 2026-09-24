@@ -71,3 +71,36 @@ describe('configFormCard message reply picker', () => {
     expect(picker.initial_option).toBe('card');
   });
 });
+
+function findNamedSelect(node: unknown, name: string): Select | undefined {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = findNamedSelect(child, name);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+  if (node && typeof node === 'object') {
+    const obj = node as Select & Record<string, unknown>;
+    if (obj.tag === 'select_static' && obj.name === name) return obj;
+    for (const value of Object.values(obj)) {
+      const hit = findNamedSelect(value, name);
+      if (hit) return hit;
+    }
+  }
+  return undefined;
+}
+
+describe('configFormCard effort picker', () => {
+  it('offers the Codex levels, including ultra, on codex profiles', () => {
+    const picker = findNamedSelect(configFormCard({ ...base, agentKind: 'codex', effort: 'ultra' }), 'effort');
+    expect(picker?.options?.map((o) => o.value)).toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+    expect(picker?.initial_option).toBe('ultra');
+  });
+
+  it('keeps ultra out of the claude picker, and a stale ultra shows as default', () => {
+    const picker = findNamedSelect(configFormCard({ ...base, agentKind: 'claude', effort: 'ultra' }), 'effort');
+    expect(picker?.options?.map((o) => o.value)).not.toContain('ultra');
+    expect(picker?.initial_option).toBe('');
+  });
+});

@@ -1,13 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_MODEL,
+  clampCodexEffort,
   isDefaultModel,
   modelLabel,
   normalizeModelSelection,
+  parseCodexModelsCache,
+  resetCodexModelCatalogCache,
   resolveEffortArg,
   resolveModelArg,
+  supportedEfforts,
   supportedModels,
 } from '../../../src/agent/models.js';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach } from 'vitest';
 
 describe('agent model catalog', () => {
   it('offers a distinct catalog per agent kind, each led by the default sentinel', () => {
@@ -16,8 +24,8 @@ describe('agent model catalog', () => {
     expect(claude[0]?.value).toBe(DEFAULT_MODEL);
     expect(codex[0]?.value).toBe(DEFAULT_MODEL);
     expect(claude.map((m) => m.value)).toContain('claude-opus-5');
-    expect(codex.map((m) => m.value)).toContain('gpt-5-codex');
-    expect(claude.map((m) => m.value)).not.toContain('gpt-5-codex');
+    expect(codex.length).toBeGreaterThan(1);
+    expect(claude.map((m) => m.value)).not.toContain(codex[1]?.value);
   });
 
   it('treats unset and the default sentinel as "use agent default"', () => {
@@ -30,7 +38,7 @@ describe('agent model catalog', () => {
   it('coerces unknown / cross-agent selections back to the default option', () => {
     expect(normalizeModelSelection('claude', 'claude-opus-5')).toBe('claude-opus-5');
     // A Codex model left over after switching a profile to Claude is invalid.
-    expect(normalizeModelSelection('claude', 'gpt-5-codex')).toBe(DEFAULT_MODEL);
+    expect(normalizeModelSelection('claude', 'gpt-6-sol')).toBe(DEFAULT_MODEL);
     expect(normalizeModelSelection('claude', undefined)).toBe(DEFAULT_MODEL);
   });
 
@@ -49,13 +57,102 @@ describe('agent model catalog', () => {
     expect(modelLabel('claude', DEFAULT_MODEL)).toContain('跟随默认');
   });
 
-  it('resolves --effort only for claude, and only for known levels', () => {
+  it('resolves effort against each agent\'s own levels', () => {
     expect(resolveEffortArg('claude', 'xhigh')).toBe('xhigh');
     expect(resolveEffortArg('claude', 'max')).toBe('max');
     // Unset / unknown / hand-edited → omit the flag, let the CLI default win.
     expect(resolveEffortArg('claude', undefined)).toBeUndefined();
     expect(resolveEffortArg('claude', 'extra')).toBeUndefined();
-    // Codex has no --effort flag; a stored level must not leak into its argv.
-    expect(resolveEffortArg('codex', 'xhigh')).toBeUndefined();
+    // Codex-only `ultra` must never reach Claude's --effort.
+    expect(resolveEffortArg('claude', 'ultra')).toBeUndefined();
+    expect(resolveEffortArg('codex', 'xhigh')).toBe('xhigh');
+    expect(resolveEffortArg('codex', 'ultra')).toBe('ultra');
+    expect(resolveEffortArg('codex', 'extra')).toBeUndefined();
+    expect(supportedEfforts('claude')).not.toContain('ultra');
+    expect(supportedEfforts('codex')).toContain('ultra');
+  });
+});
+
+describe('Codex model catalog', () => {
+  const cache = JSON.stringify({
+    models: [
+      { slug: 'hidden-model', display_name: 'Hidden', visibility: 'hide', priority: 0 },
+      {
+        slug: 'gpt-b',
+        display_name: 'GPT-B',
+        visibility: 'list',
+        priority: 5,
+        supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }, { effort: 'high' }, { effort: 'xhigh' }],
+      },
+      {
+        slug: 'gpt-a',
+        display_name: 'GPT-A',
+        visibility: 'list',
+        priority: 1,
+        supported_reasoning_levels: [
+          { effort: 'low' },
+          { effort: 'max' },
+          { effort: 'ultra' },
+          { effort: 'something-new' },
+        ],
+      },
+    ],
+  });
+
+  it('keeps only listed models, in priority order, with known effort levels', () => {
+    expect(parseCodexModelsCache(cache)).toEqual([
+      { slug: 'gpt-a', label: 'GPT-A', efforts: ['low', 'max', 'ultra'] },
+      { slug: 'gpt-b', label: 'GPT-B', efforts: ['low', 'medium', 'high', 'xhigh'] },
+    ]);
+    expect(parseCodexModelsCache('not json')).toEqual([]);
+    expect(parseCodexModelsCache('{"models": 3}')).toEqual([]);
+  });
+
+  describe('live cache', () => {
+    const saved = process.env.CODEX_HOME;
+    beforeEach(() => {
+      const home = mkdtempSync(join(tmpdir(), 'codex-home-'));
+      writeFileSync(join(home, 'models_cache.json'), cache);
+      process.env.CODEX_HOME = home;
+      resetCodexModelCatalogCache();
+    });
+    afterEach(() => {
+      if (saved === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = saved;
+      resetCodexModelCatalogCache();
+    });
+
+    it('drives the codex model picker from CODEX_HOME/models_cache.json', () => {
+      expect(supportedModels('codex').map((m) => m.value)).toEqual([DEFAULT_MODEL, 'gpt-a', 'gpt-b']);
+      expect(modelLabel('codex', 'gpt-b')).toBe('GPT-B');
+    });
+  });
+
+  it('falls back to a pinned catalog when the cache is missing', () => {
+    const saved = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = mkdtempSync(join(tmpdir(), 'codex-empty-'));
+    resetCodexModelCatalogCache();
+    try {
+      const values = supportedModels('codex').map((m) => m.value);
+      expect(values[0]).toBe(DEFAULT_MODEL);
+      expect(values).toContain('gpt-5.5');
+    } finally {
+      if (saved === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = saved;
+      resetCodexModelCatalogCache();
+    }
+  });
+
+  it('steps an over-high effort down to the model\'s highest supported level', () => {
+    const catalog = parseCodexModelsCache(cache);
+    expect(clampCodexEffort('gpt-b', 'max', catalog)).toBe('xhigh');
+    expect(clampCodexEffort('gpt-b', 'ultra', catalog)).toBe('xhigh');
+    expect(clampCodexEffort('gpt-b', 'medium', catalog)).toBe('medium');
+    // gpt-a has low/max/ultra only: `high` drops to the nearest lower level.
+    expect(clampCodexEffort('gpt-a', 'high', catalog)).toBe('low');
+    // No explicit model (Codex config decides) or unknown model → pass through.
+    expect(clampCodexEffort(undefined, 'ultra', catalog)).toBe('ultra');
+    expect(clampCodexEffort('mystery', 'ultra', catalog)).toBe('ultra');
+    expect(clampCodexEffort('gpt-b', undefined, catalog)).toBeUndefined();
   });
 });

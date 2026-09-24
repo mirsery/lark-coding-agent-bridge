@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
 import type { SandboxMode } from '../../config/profile-schema';
+import type { EffortLevel } from '../../config/schema';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
@@ -15,6 +16,7 @@ import type {
   AgentRun,
   AgentRunOptions,
 } from '../types';
+import { clampCodexEffort } from '../models';
 import { buildCodexArgs } from './argv';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 
@@ -93,6 +95,9 @@ export class CodexAdapter implements AgentAdapter {
       throw new Error('cwd is required for CodexAdapter.run');
     }
 
+    // Fit the stored level to the chosen model so an over-high pick steps
+    // down instead of Codex rejecting the run.
+    const effort = clampCodexEffort(opts.model, opts.effort as EffortLevel | undefined);
     const args = buildCodexArgs({
       cwd: opts.cwd,
       sandbox: opts.sandbox ?? this.sandbox,
@@ -101,6 +106,7 @@ export class CodexAdapter implements AgentAdapter {
       ignoreUserConfig: this.ignoreUserConfig,
       ignoreRules: this.ignoreRules,
       model: opts.model,
+      effort,
     });
     const envOverrides: NodeJS.ProcessEnv = buildLarkChannelEnv(this.larkChannel);
     if (this.codexHome) {
@@ -121,6 +127,7 @@ export class CodexAdapter implements AgentAdapter {
       promptChars: opts.prompt.length,
       images: opts.images?.length ?? 0,
       model: opts.model,
+      effort,
     });
 
     const stderrChunks: Buffer[] = [];

@@ -148,7 +148,7 @@ export function ConfigView({ profile }: { profile: string }) {
               options={cfg.models.map((m) => [m.value, m.label])} />
           </Field>
           {cfg.effortOptions.length > 0 && (
-            <Field label="Effort（推理强度）" hint="越高越慢越贵，越低越快越便宜；跟随默认 = 不传 --effort，由 CLI 决定">
+            <Field label="Effort（推理强度）" hint={cfg.agentKind === "codex" ? "越高越慢越贵；跟随默认 = 用 Codex 配置里的 model_reasoning_effort；所选模型不支持的档位会自动降到它支持的最高档" : "越高越慢越贵，越低越快越便宜；跟随默认 = 不传 --effort，由 CLI 决定"}>
               <SelectRow value={cfg.effort} onChange={(v) => set("effort", v)}
                 options={[["", "跟随默认"], ...cfg.effortOptions.map((o) => [o.value, o.label] as [string, string])]} />
             </Field>

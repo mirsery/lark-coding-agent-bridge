@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentKind } from '../config/profile-schema';
-import { EFFORT_LEVELS, type EffortLevel } from '../config/schema';
+import { CODEX_EFFORT_LEVELS, EFFORT_LEVELS, type EffortLevel } from '../config/schema';
 
 /**
  * Sentinel selection meaning "don't pass `--model`; let the agent CLI /
@@ -37,17 +40,110 @@ const CLAUDE_MODELS: ModelOption[] = [
   { value: 'opusplan', label: 'Opus Plan（规划用 Opus，执行用 Sonnet）' },
 ];
 
-/** Codex CLI models. Forwarded to `codex exec --model`. */
-const CODEX_MODELS: ModelOption[] = [
-  { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
-  { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
-  { value: 'gpt-5', label: 'GPT-5' },
-  { value: 'o3', label: 'o3' },
+/** One entry of the Codex CLI's own model catalog. */
+export interface CodexModelEntry {
+  slug: string;
+  label: string;
+  /** Efforts the model accepts, in the CLI's order; empty when unknown. */
+  efforts: EffortLevel[];
+}
+
+/**
+ * Fallback when the Codex model cache can't be read (Codex never ran on this
+ * machine, or the cache format moved). Mirrors the listed models of
+ * codex-cli 0.156; the live cache wins whenever it is present.
+ */
+const CODEX_FALLBACK_CATALOG: CodexModelEntry[] = [
+  { slug: 'gpt-6-astra', label: 'GPT-6-Astra', efforts: [...CODEX_EFFORT_LEVELS] },
+  { slug: 'gpt-6-sol', label: 'GPT-6-Sol', efforts: [...CODEX_EFFORT_LEVELS] },
+  { slug: 'gpt-6-luna', label: 'GPT-6-Luna', efforts: [...EFFORT_LEVELS] },
+  { slug: 'gpt-5.6-sol', label: 'GPT-5.6-Sol', efforts: [...CODEX_EFFORT_LEVELS] },
+  { slug: 'gpt-5.6-terra', label: 'GPT-5.6-Terra', efforts: [...CODEX_EFFORT_LEVELS] },
+  { slug: 'gpt-5.6-luna', label: 'GPT-5.6-Luna', efforts: [...EFFORT_LEVELS] },
+  { slug: 'gpt-5.5', label: 'GPT-5.5', efforts: ['low', 'medium', 'high', 'xhigh'] },
 ];
+
+/** Where Codex keeps `models_cache.json` — the same home a profile inherits by default. */
+function codexHomeDir(): string {
+  return process.env.CODEX_HOME || join(homedir(), '.codex');
+}
+
+/**
+ * Parse Codex's `models_cache.json` into picker entries: only models the CLI
+ * itself lists (`visibility: "list"`), in its priority order. Returns `[]`
+ * for anything unreadable so callers fall back rather than fail.
+ */
+export function parseCodexModelsCache(raw: string): CodexModelEntry[] {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const models = (doc as { models?: unknown })?.models;
+  if (!Array.isArray(models)) return [];
+  return models
+    .filter(
+      (m): m is Record<string, unknown> =>
+        typeof m === 'object' && m !== null && typeof (m as { slug?: unknown }).slug === 'string',
+    )
+    .filter((m) => m.visibility === undefined || m.visibility === 'list')
+    .sort((a, b) => Number(a.priority ?? 0) - Number(b.priority ?? 0))
+    .map((m) => ({
+      slug: m.slug as string,
+      label: typeof m.display_name === 'string' && m.display_name ? m.display_name : (m.slug as string),
+      efforts: Array.isArray(m.supported_reasoning_levels)
+        ? (m.supported_reasoning_levels as unknown[])
+            .map((l) => (typeof l === 'object' && l !== null ? (l as { effort?: unknown }).effort : l))
+            .filter((e): e is EffortLevel => CODEX_EFFORT_LEVELS.includes(e as EffortLevel))
+        : [],
+    }));
+}
+
+let codexCatalogCache: { at: number; entries: CodexModelEntry[] } | undefined;
+const CODEX_CATALOG_TTL_MS = 60_000;
+
+/**
+ * The Codex model catalog: the CLI's live cache when readable, else the
+ * pinned fallback. Re-read at most once a minute, so a Codex upgrade shows
+ * up in `/config` without restarting the bridge.
+ */
+export function codexModelCatalog(now: number = Date.now()): CodexModelEntry[] {
+  if (codexCatalogCache && now - codexCatalogCache.at < CODEX_CATALOG_TTL_MS) {
+    return codexCatalogCache.entries;
+  }
+  let entries: CodexModelEntry[] = [];
+  try {
+    entries = parseCodexModelsCache(readFileSync(join(codexHomeDir(), 'models_cache.json'), 'utf8'));
+  } catch {
+    entries = [];
+  }
+  if (entries.length === 0) entries = CODEX_FALLBACK_CATALOG;
+  codexCatalogCache = { at: now, entries };
+  return entries;
+}
+
+/** Test hook: forget the memoized Codex catalog. */
+export function resetCodexModelCatalogCache(): void {
+  codexCatalogCache = undefined;
+}
+
+/** Codex CLI models. Forwarded to `codex exec --model`. */
+function codexModels(): ModelOption[] {
+  return [
+    { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
+    ...codexModelCatalog().map((m) => ({ value: m.slug, label: m.label })),
+  ];
+}
 
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+  return agentKind === 'codex' ? codexModels() : CLAUDE_MODELS;
+}
+
+/** The effort picker options for a profile's agent kind, in the CLI's order. */
+export function supportedEfforts(agentKind: AgentKind): readonly EffortLevel[] {
+  return agentKind === 'codex' ? CODEX_EFFORT_LEVELS : EFFORT_LEVELS;
 }
 
 /** True when the selection means "use the agent default" (no `--model`). */
@@ -85,18 +181,39 @@ export function resolveModelArg(
 }
 
 /**
- * Resolve the concrete `--effort` value to hand the agent, or `undefined` to
- * omit the flag. Claude-only: Codex sizes its own reasoning and rejects an
- * unknown flag, so a stored level is ignored for `codex` profiles. Unknown
- * levels (hand-edited config, a level a future CLI drops) also fall back to
- * the CLI default rather than failing the run.
+ * Resolve the concrete effort to hand the agent, or `undefined` to omit it.
+ * Validated against the agent's own levels ({@link supportedEfforts}): a
+ * Codex-only level such as `ultra` never reaches Claude's `--effort`.
+ * Unknown levels (hand-edited config, a level a future CLI drops) fall back
+ * to the CLI default rather than failing the run.
  */
 export function resolveEffortArg(
   agentKind: AgentKind,
   value: string | undefined,
 ): EffortLevel | undefined {
-  if (agentKind !== 'claude') return undefined;
-  return EFFORT_LEVELS.includes(value as EffortLevel) ? (value as EffortLevel) : undefined;
+  return supportedEfforts(agentKind).includes(value as EffortLevel)
+    ? (value as EffortLevel)
+    : undefined;
+}
+
+/**
+ * Fit a Codex effort to what the chosen model accepts. Models differ
+ * (e.g. GPT-5.5 stops at `xhigh`), and Codex rejects a level the model
+ * lacks, so an over-high pick steps down to the model's highest supported
+ * level instead of failing the run. With no explicit model (Codex config
+ * decides) or a model the catalog doesn't know, the level passes through.
+ */
+export function clampCodexEffort(
+  model: string | undefined,
+  effort: EffortLevel | undefined,
+  catalog: CodexModelEntry[] = codexModelCatalog(),
+): EffortLevel | undefined {
+  if (!effort || !model) return effort;
+  const supported = catalog.find((m) => m.slug === model)?.efforts ?? [];
+  if (supported.length === 0 || supported.includes(effort)) return effort;
+  const rank = CODEX_EFFORT_LEVELS.indexOf(effort);
+  const fitting = supported.filter((e) => CODEX_EFFORT_LEVELS.indexOf(e) <= rank);
+  return fitting.length > 0 ? fitting[fitting.length - 1] : supported[0];
 }
 
 /** Picker label for a stored value, for display in the saved-config card. */

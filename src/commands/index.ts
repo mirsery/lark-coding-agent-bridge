@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
-import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
+import { DEFAULT_MODEL, normalizeModelSelection, supportedEfforts, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { RunsMonitor } from '../bot/runs-monitor';
@@ -71,7 +71,6 @@ import { formatTime, jobScopeId } from '../scheduler/runner';
 import type { ScheduledJob } from '../scheduler/types';
 import type { AppConfig, AppPreferences, EffortLevel, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
-  EFFORT_LEVELS,
   getAgentStopGraceMs,
   getCotMessages,
   getEffort,
@@ -2759,15 +2758,13 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     ? rawModel
     : normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model);
   const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
-  // Effort field is only rendered (and thus only submitted) for claude
-  // profiles; absent/empty means "follow default", unrecognized keeps
-  // current. `fv.effort` is simply absent for codex forms, which also
-  // resolves to "keep current" (always undefined there).
+  // Absent/empty means "follow default"; a level outside this agent's own
+  // list (e.g. Codex-only `ultra` on a claude form) keeps the current value.
   const rawEffort = String(fv.effort ?? '').trim();
   const effort: EffortLevel | undefined =
     rawEffort === ''
       ? undefined
-      : EFFORT_LEVELS.includes(rawEffort as EffortLevel)
+      : supportedEfforts(agentKind).includes(rawEffort as EffortLevel)
         ? (rawEffort as EffortLevel)
         : getEffort(ctx.controls.cfg);
   const rawCotMessages = String(fv.cot_messages ?? '').trim();

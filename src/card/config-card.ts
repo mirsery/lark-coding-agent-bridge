@@ -1,7 +1,7 @@
-import { modelLabel, supportedModels } from '../agent/models';
+import { modelLabel, supportedEfforts, supportedModels } from '../agent/models';
 import type { KnownChat } from '../bot/lark-info';
 import type { AgentKind, LarkCliIdentityPreset, ProfileMode } from '../config/profile-schema';
-import { EFFORT_LEVELS, EFFORT_LEVEL_LABELS, type CotMessagesMode, type EffortLevel, type MessageReplyMode } from '../config/schema';
+import { EFFORT_LEVEL_LABELS, type CotMessagesMode, type EffortLevel, type MessageReplyMode } from '../config/schema';
 
 export interface ConfigFormOpts {
   /** Profile's agent kind — decides which model catalog the picker shows. */
@@ -10,7 +10,7 @@ export interface ConfigFormOpts {
   mode: ProfileMode;
   /** Current model selection (a value from {@link supportedModels}). */
   model: string;
-  /** Current effort level, or `undefined` for "follow the CLI default". Claude-only — ignored for `codex` profiles. */
+  /** Current effort level, or `undefined` for "follow the CLI default". Options come from the profile's agent kind. */
   effort: EffortLevel | undefined;
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
@@ -192,27 +192,27 @@ export function configFormCard(opts: ConfigFormOpts): object {
                   value: m.value,
                 })),
               },
-              ...(opts.agentKind === 'claude'
-                ? [
-                    {
-                      tag: 'markdown',
-                      content:
-                        '**Effort（推理强度）**\n<font color="grey">越高越慢越贵；「跟随默认」= 不传 --effort</font>',
-                    },
-                    {
-                      tag: 'select_static',
-                      name: 'effort',
-                      initial_option: opts.effort ?? '',
-                      options: [
-                        { text: { tag: 'plain_text', content: '跟随默认' }, value: '' },
-                        ...EFFORT_LEVELS.map((level) => ({
-                          text: { tag: 'plain_text', content: EFFORT_LEVEL_LABELS[level] },
-                          value: level,
-                        })),
-                      ],
-                    },
-                  ]
-                : []),
+              {
+                tag: 'markdown',
+                content:
+                  '**Effort（推理强度）**\n<font color="grey">越高越慢越贵；' +
+                  (opts.agentKind === 'codex'
+                    ? '「跟随默认」= 用 Codex 配置里的 model_reasoning_effort；所选模型不支持的档位会自动降到它支持的最高档'
+                    : '「跟随默认」= 不传 --effort') +
+                  '</font>',
+              },
+              {
+                tag: 'select_static',
+                name: 'effort',
+                initial_option: opts.effort && supportedEfforts(opts.agentKind).includes(opts.effort) ? opts.effort : '',
+                options: [
+                  { text: { tag: 'plain_text', content: '跟随默认' }, value: '' },
+                  ...supportedEfforts(opts.agentKind).map((level) => ({
+                    text: { tag: 'plain_text', content: EFFORT_LEVEL_LABELS[level] },
+                    value: level,
+                  })),
+                ],
+              },
             ]),
             sectionBlock('turquoise-50', [
               { tag: 'markdown', content: '💬 **消息展示**' },
@@ -405,12 +405,12 @@ export function configSavedCard(opts: ConfigFormOpts): object {
         kvBlock('🧠 **模型与推理**', [
           ['运行模式', opts.mode === 'team' ? '团队版' : '个人版'],
           ['模型', modelLabel(opts.agentKind, opts.model)],
-          ...(opts.agentKind === 'claude'
-            ? ([['Effort', opts.effort ? EFFORT_LEVEL_LABELS[opts.effort] : '跟随默认']] as [
-                string,
-                string,
-              ][])
-            : []),
+          [
+            'Effort',
+            opts.effort && supportedEfforts(opts.agentKind).includes(opts.effort)
+              ? EFFORT_LEVEL_LABELS[opts.effort]
+              : '跟随默认',
+          ],
         ]),
         kvBlock('💬 **消息展示**', [
           ['消息回复方式', replyLabel],

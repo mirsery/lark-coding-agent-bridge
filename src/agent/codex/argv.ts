@@ -9,7 +9,15 @@ export interface BuildCodexArgsInput {
   ignoreRules?: boolean;
   /** Forwarded to `codex exec --model`. Omitted uses the Codex default. */
   model?: string;
+  /**
+   * Forwarded as `-c model_reasoning_effort="…"`. Omitted uses the Codex
+   * config default. Callers fit it to the model first (`clampCodexEffort`).
+   */
+  effort?: string;
 }
+
+/** Levels `model_reasoning_effort` may carry; anything else is dropped, never quoted into argv. */
+const CODEX_REASONING_EFFORT = /^[a-z]+$/;
 
 export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
   if (
@@ -24,6 +32,9 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
     '--sandbox',
     input.sandbox,
     ...(input.model ? ['--model', input.model] : []),
+    ...(input.effort && CODEX_REASONING_EFFORT.test(input.effort)
+      ? ['-c', `model_reasoning_effort="${input.effort}"`]
+      : []),
     '-c',
     'approval_policy="never"',
     '-c',

@@ -37,7 +37,8 @@ export interface AgentRunOptions {
   model?: string;
   /**
    * Reasoning effort for adapters whose CLI exposes one (Claude Code's
-   * `--effort`). Adapters without the concept ignore it.
+   * `--effort`, Codex's `model_reasoning_effort`). Adapters without the
+   * concept ignore it.
    */
   effort?: string;
   images?: readonly string[];
