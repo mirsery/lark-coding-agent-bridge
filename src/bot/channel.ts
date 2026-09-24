@@ -27,7 +27,7 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
 import type { RunCardRenderOptions } from '../card/run-renderer';
-import { initialState, type RunState, type Terminal } from '../card/run-state';
+import { initialState, stripNoReply, type RunState, type Terminal } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
@@ -1186,7 +1186,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // The thinking panel is process detail too, so it follows `showToolCalls`:
   // someone who turned tool calls off wants the answer, not the reasoning that
   // led to it. Only card mode renders it — `renderText` never did.
-  const filterForPrefs = (state: RunState): RunState => {
+  // Marker-only answers ([[NO_REPLY]]) are stripped first, for every pref
+  // combination: the run already delivered its result (e.g. a skill-posted card).
+  const filterForPrefs = (raw: RunState): RunState => {
+    const state = stripNoReply(raw);
     if (getShowToolCalls(controls.cfg)) return state;
     return {
       ...state,
@@ -1281,7 +1284,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           channel,
           chatId,
           scope,
-          state: finalAnswerOnlyState(finalState),
+          state: finalAnswerOnlyState(stripNoReply(finalState)),
           replyMode,
           sendOpts,
           cardRenderOptions,

@@ -171,3 +171,33 @@ export function finalizeIfRunning(state: RunState): RunState {
     footer: null,
   };
 }
+
+/**
+ * Agent-side opt-out of the final reply. A run whose whole visible answer is
+ * this marker has already delivered its result some other way — typically a
+ * skill that posted its own interactive card via `lark-cli` (`/show-status`,
+ * `/show-tasks`, …). Replying on top of that card only adds a second, empty
+ * "card sent" message. The agent host insists on *some* final text, so the
+ * skill ends with the marker and the bridge treats it as "nothing to send".
+ */
+export const NO_REPLY_MARKER = '[[NO_REPLY]]';
+
+/**
+ * True when `text` is the marker, or a still-streaming prefix of it. The prefix
+ * case keeps a half-arrived `[[NO_` from opening a progress card that would
+ * then have to be recalled.
+ */
+export function isNoReplyText(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return t === NO_REPLY_MARKER || (t.startsWith('[[') && NO_REPLY_MARKER.startsWith(t));
+}
+
+/** Drop marker-only text (blocks and final text) so every reply path sees an empty answer. */
+export function stripNoReply(state: RunState): RunState {
+  const blocks = state.blocks.filter((b) => !(b.kind === 'text' && isNoReplyText(b.content)));
+  const finalText =
+    state.finalText !== undefined && isNoReplyText(state.finalText) ? undefined : state.finalText;
+  if (blocks.length === state.blocks.length && finalText === state.finalText) return state;
+  return { ...state, blocks, finalText };
+}
