@@ -179,6 +179,37 @@ lark-channel-bridge restart --profile codex
 lark-channel-bridge status --profile codex
 ```
 
+#### Adding a bot from an existing app
+
+To attach another bot you already created on the Feishu / Lark Open Platform (instead of creating one through the QR wizard), create the profile with its App ID, then start it as a background service:
+
+```bash
+# 1. Log in the agent CLI first (Codex shown; Claude uses `claude` login)
+codex login --device-auth
+
+# 2. Create the profile from the existing app. Leave out --app-secret:
+#    the command prompts for it, so the secret never lands in shell history.
+lark-channel-bridge profile create codex \
+  --agent codex \
+  --app-id cli_xxxxxxxxxxxx \
+  --workspace ~/workspace
+
+# 3. Run it as an OS-managed daemon (autostart on login)
+lark-channel-bridge start --profile codex
+
+# 4. Check it
+lark-channel-bridge status --profile codex
+lark-channel-bridge profile list
+```
+
+Before step 2, make sure the app is ready on the Open Platform:
+
+- **Bot** capability is enabled.
+- **Event subscription** uses **long connection** and subscribes to *Receive messages* (`im.message.receive_v1`); otherwise the bot never sees a message.
+- The app is **not already bound to another profile**. Two profiles on one app both consume the same events and answer the same message twice.
+
+Add `--tenant lark` for a Lark global app. Day-to-day management is the same as any profile: `restart` / `stop --profile codex`, or `lark-channel-bridge ui` for the web console.
+
 ### Restarting a `npm link`'d local dev checkout
 
 If `lark-channel-bridge` on your `PATH` is `npm link`'d to a local clone of this repo (`npm ls -g lark-channel-bridge` shows a symlink into the repo instead of a versioned npm install), the running daemon only reflects whatever was in `dist/` the moment it started — Node loads the built JS into memory once at process start and does not hot-reload. Editing source or even running `pnpm build` afterwards changes nothing for an already-running daemon.

@@ -179,6 +179,37 @@ lark-channel-bridge restart --profile codex
 lark-channel-bridge status --profile codex
 ```
 
+#### 用已有机器人新建 profile
+
+如果机器人已经在飞书 / Lark 开放平台建好了（不走扫码创建），用它的 App ID 建 profile，再作为后台服务启动：
+
+```bash
+# 1. 先登录 agent CLI（以 Codex 为例；Claude 用 claude 自己的登录）
+codex login --device-auth
+
+# 2. 用已有应用建 profile。不要写 --app-secret：
+#    命令会提示输入，Secret 不会留在 shell 历史里
+lark-channel-bridge profile create codex \
+  --agent codex \
+  --app-id cli_xxxxxxxxxxxx \
+  --workspace ~/workspace
+
+# 3. 以系统托管的后台服务启动（登录后自启）
+lark-channel-bridge start --profile codex
+
+# 4. 查看状态
+lark-channel-bridge status --profile codex
+lark-channel-bridge profile list
+```
+
+执行第 2 步之前，先在开放平台确认：
+
+- 已开启 **机器人** 能力。
+- **事件订阅** 选 **长连接**，并订阅「接收消息」（`im.message.receive_v1`），否则机器人收不到任何消息。
+- 这个应用 **没有被别的 profile 占用**。一个应用接两个 profile，两边会消费同一批事件，同一条消息会被回复两次。
+
+Lark 国际版应用加 `--tenant lark`。日常管理和其他 profile 一样：`restart` / `stop --profile codex`，或用 `lark-channel-bridge ui` 打开网页控制台。
+
 ### 重启 `npm link` 出来的本地开发副本
 
 如果 `PATH` 里的 `lark-channel-bridge` 是 `npm link` 到本仓库某个本地 checkout 的（`npm ls -g lark-channel-bridge` 显示的是软链到仓库目录，而不是一个带版本号的 npm 安装），那正在跑的 daemon 只反映它**启动那一刻** `dist/` 里的内容——Node 进程启动时把编译好的 JS 一次性加载进内存，不会热更新。之后改源码、甚至跑了 `pnpm build`，对这个已经在跑的 daemon 都不生效。
