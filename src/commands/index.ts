@@ -2753,7 +2753,11 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   // tidy (resolveModelArg treats both the same way).
   const agentKind = ctx.controls.profileConfig.agentKind;
   const rawModel = String(fv.model ?? '').trim();
-  const modelValid = rawModel !== '' && supportedModels(agentKind).some((m) => m.value === rawModel);
+  const modelValid =
+    rawModel !== '' &&
+    // Passing the submitted value as `current` also accepts a well-formed pinned
+    // Claude id (e.g. `claude-opus-5-5`) that the alias picker no longer lists.
+    supportedModels(agentKind, rawModel).some((m) => m.value === rawModel);
   const modelSelection = modelValid
     ? rawModel
     : normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model);

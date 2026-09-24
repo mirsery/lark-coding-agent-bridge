@@ -181,13 +181,13 @@ export function configFormCard(opts: ConfigFormOpts): object {
               {
                 tag: 'markdown',
                 content:
-                  '**模型**\n<font color="grey">「跟随默认」= 不指定，由 CLI/账号决定；Opus 5.5 需要 Claude Code ≥ 2.1.280</font>',
+                  '**模型**\n<font color="grey">「跟随默认」= 不指定，由 CLI/账号决定；「始终最新」由 CLI 自动解析到当前最新版本</font>',
               },
               {
                 tag: 'select_static',
                 name: 'model',
                 initial_option: opts.model,
-                options: supportedModels(opts.agentKind).map((m) => ({
+                options: supportedModels(opts.agentKind, opts.model).map((m) => ({
                   text: { tag: 'plain_text', content: m.label },
                   value: m.value,
                 })),

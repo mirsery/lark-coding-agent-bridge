@@ -23,22 +23,94 @@ export interface ModelOption {
 }
 
 /**
- * Claude Code models. Pinned to concrete version ids (Claude Code's `--model`
- * accepts the full model-id string, not just the `opus`/`sonnet` aliases) so
- * the picker names an exact model. Add new ids here when a generation ships;
- * `opusplan` is kept as the one alias with no versioned equivalent (it runs
- * Opus for planning and Sonnet for execution).
+ * Claude Code models, expressed as the CLI's own aliases rather than pinned
+ * version ids: Claude Code resolves `opus` / `sonnet` / … to the newest model
+ * the account can use, so the picker never needs a code change when a new
+ * generation ships. Claude Code keeps no local catalog of concrete ids to
+ * read (unlike Codex's `models_cache.json`); the account-specific extras it
+ * does cache are appended by {@link claudeModels}.
  */
-const CLAUDE_MODELS: ModelOption[] = [
-  { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
-  { value: 'claude-opus-5-5', label: 'Opus 5.5（最新）' },
-  { value: 'claude-opus-5', label: 'Opus 5' },
-  { value: 'claude-sonnet-5', label: 'Sonnet 5（最新）' },
-  { value: 'claude-fable-5-1', label: 'Fable 5.1（最新）' },
-  { value: 'claude-fable-5', label: 'Fable 5' },
-  { value: 'claude-haiku-4-5', label: 'Haiku 4.5（最新）' },
+const CLAUDE_ALIASES: ModelOption[] = [
+  { value: 'opus', label: 'Opus（始终最新）' },
+  { value: 'sonnet', label: 'Sonnet（始终最新）' },
+  { value: 'fable', label: 'Fable（始终最新）' },
+  { value: 'haiku', label: 'Haiku（始终最新）' },
+  { value: 'opus[1m]', label: 'Opus · 1M 上下文（始终最新）' },
+  { value: 'sonnet[1m]', label: 'Sonnet · 1M 上下文（始终最新）' },
+  { value: 'fable[1m]', label: 'Fable · 1M 上下文（始终最新）' },
   { value: 'opusplan', label: 'Opus Plan（规划用 Opus，执行用 Sonnet）' },
 ];
+
+/** A concrete Claude model id such as `claude-opus-5-5` or `claude-fable-5-1[1m]`. */
+const CLAUDE_MODEL_ID = /^claude-[a-z0-9]+(?:-[a-z0-9]+)*(?:\[1m\])?$/;
+
+/** `claude-opus-5-5[1m]` → `Opus 5.5 · 1M`; anything unrecognised keeps its id. */
+export function claudeModelIdLabel(id: string): string {
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d+))?(?:-\d{8})?(\[1m\])?$/.exec(id);
+  if (!m || !m[1] || !m[2]) return id;
+  const family = m[1].charAt(0).toUpperCase() + m[1].slice(1);
+  const version = m[3] ? `${m[2]}.${m[3]}` : m[2];
+  return `${family} ${version}${m[4] ? ' · 1M' : ''}`;
+}
+
+/**
+ * Account-specific extras Claude Code caches in `~/.claude.json`
+ * (`additionalModelOptionsCache`), e.g. a Fable 1M option. Returns `[]` for
+ * anything unreadable so the picker falls back to the aliases.
+ */
+export function parseClaudeAdditionalModels(raw: string): ModelOption[] {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const extras = (doc as { additionalModelOptionsCache?: unknown })?.additionalModelOptionsCache;
+  if (!Array.isArray(extras)) return [];
+  return extras
+    .filter(
+      (e): e is { value: string; label?: unknown; description?: unknown } =>
+        typeof e === 'object' && e !== null && typeof (e as { value?: unknown }).value === 'string',
+    )
+    .filter((e) => CLAUDE_MODEL_ID.test(e.value) || CLAUDE_ALIASES.some((a) => a.value === e.value))
+    .map((e) => {
+      const description = typeof e.description === 'string' ? e.description.split(' · ')[0] : '';
+      const base = description || claudeModelIdLabel(e.value);
+      const label = e.value.endsWith('[1m]') && !base.includes('1M') ? `${base} · 1M` : base;
+      return { value: e.value, label };
+    });
+}
+
+let claudeExtrasCache: { at: number; entries: ModelOption[] } | undefined;
+const CLAUDE_EXTRAS_TTL_MS = 60_000;
+
+function claudeAdditionalModels(now: number = Date.now()): ModelOption[] {
+  if (claudeExtrasCache && now - claudeExtrasCache.at < CLAUDE_EXTRAS_TTL_MS) return claudeExtrasCache.entries;
+  let entries: ModelOption[] = [];
+  try {
+    const path = process.env.CLAUDE_CONFIG_DIR
+      ? join(process.env.CLAUDE_CONFIG_DIR, '.claude.json')
+      : join(homedir(), '.claude.json');
+    entries = parseClaudeAdditionalModels(readFileSync(path, 'utf8'));
+  } catch {
+    entries = [];
+  }
+  claudeExtrasCache = { at: now, entries };
+  return entries;
+}
+
+/** Test hook: forget the memoized Claude extras. */
+export function resetClaudeModelCache(): void {
+  claudeExtrasCache = undefined;
+}
+
+function claudeModels(): ModelOption[] {
+  const out: ModelOption[] = [{ value: DEFAULT_MODEL, label: '跟随默认（不指定）' }, ...CLAUDE_ALIASES];
+  for (const extra of claudeAdditionalModels()) {
+    if (!out.some((m) => m.value === extra.value)) out.push(extra);
+  }
+  return out;
+}
 
 /** One entry of the Codex CLI's own model catalog. */
 export interface CodexModelEntry {
@@ -136,9 +208,23 @@ function codexModels(): ModelOption[] {
   ];
 }
 
-/** The model picker options for a profile's agent kind. */
-export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? codexModels() : CLAUDE_MODELS;
+/**
+ * The model picker options for a profile's agent kind. Pass the stored
+ * selection as `current` so a pinned Claude id chosen earlier (e.g.
+ * `claude-opus-5-5`) stays selectable instead of silently resetting.
+ */
+export function supportedModels(agentKind: AgentKind, current?: string): ModelOption[] {
+  if (agentKind === 'codex') return codexModels();
+  const options = claudeModels();
+  if (current && isPinnedClaudeModel(current) && !options.some((m) => m.value === current)) {
+    options.push({ value: current, label: claudeModelIdLabel(current) });
+  }
+  return options;
+}
+
+/** A concrete, well-formed Claude model id — accepted even when no picker lists it. */
+function isPinnedClaudeModel(value: string): boolean {
+  return CLAUDE_MODEL_ID.test(value);
 }
 
 /** The effort picker options for a profile's agent kind, in the CLI's order. */
@@ -163,7 +249,7 @@ export function normalizeModelSelection(
   value: string | undefined,
 ): string {
   if (isDefaultModel(value)) return DEFAULT_MODEL;
-  return supportedModels(agentKind).some((m) => m.value === value)
+  return supportedModels(agentKind, value).some((m) => m.value === value)
     ? (value as string)
     : DEFAULT_MODEL;
 }
@@ -219,5 +305,5 @@ export function clampCodexEffort(
 /** Picker label for a stored value, for display in the saved-config card. */
 export function modelLabel(agentKind: AgentKind, value: string | undefined): string {
   const normalized = normalizeModelSelection(agentKind, value);
-  return supportedModels(agentKind).find((m) => m.value === normalized)?.label ?? normalized;
+  return supportedModels(agentKind, normalized).find((m) => m.value === normalized)?.label ?? normalized;
 }

@@ -91,7 +91,7 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
     agentKind,
     mode: state.profileConfig.mode,
     model: normalizeModelSelection(agentKind, state.cfg.preferences?.model),
-    models: supportedModels(agentKind),
+    models: supportedModels(agentKind, state.cfg.preferences?.model),
     effort: getEffort(state.cfg) ?? '',
     effortOptions: supportedEfforts(agentKind).map((level) => ({
       value: level,
@@ -225,7 +225,11 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       : state.profileConfig.larkCli.identityPreset;
 
   const rawModel = typeof fv.model === 'string' ? fv.model : '';
-  const modelValid = rawModel !== '' && supportedModels(agentKind).some((m) => m.value === rawModel);
+  const modelValid =
+    rawModel !== '' &&
+    // Passing the submitted value as `current` also accepts a well-formed pinned
+    // Claude id (e.g. `claude-opus-5-5`) that the alias picker no longer lists.
+    supportedModels(agentKind, rawModel).some((m) => m.value === rawModel);
   const modelSelection = modelValid
     ? rawModel
     : normalizeModelSelection(agentKind, state.cfg.preferences?.model);

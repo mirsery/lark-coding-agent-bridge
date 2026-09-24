@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_MODEL,
   clampCodexEffort,
+  claudeModelIdLabel,
+  parseClaudeAdditionalModels,
   isDefaultModel,
   modelLabel,
   normalizeModelSelection,
@@ -23,7 +25,8 @@ describe('agent model catalog', () => {
     const codex = supportedModels('codex');
     expect(claude[0]?.value).toBe(DEFAULT_MODEL);
     expect(codex[0]?.value).toBe(DEFAULT_MODEL);
-    expect(claude.map((m) => m.value)).toContain('claude-opus-5');
+    // Claude is offered through the CLI's own "always latest" aliases.
+    expect(claude.map((m) => m.value)).toEqual(expect.arrayContaining(['opus', 'sonnet', 'fable', 'haiku', 'opusplan']));
     expect(codex.length).toBeGreaterThan(1);
     expect(claude.map((m) => m.value)).not.toContain(codex[1]?.value);
   });
@@ -51,10 +54,41 @@ describe('agent model catalog', () => {
   });
 
   it('labels a stored value using the picker option text', () => {
-    expect(modelLabel('claude', 'claude-opus-5-5')).toBe('Opus 5.5（最新）');
-    expect(modelLabel('claude', 'claude-opus-5')).toBe('Opus 5');
-    expect(modelLabel('claude', 'claude-fable-5')).toBe('Fable 5');
+    expect(modelLabel('claude', 'opus')).toBe('Opus（始终最新）');
+    expect(modelLabel('claude', 'opus[1m]')).toContain('1M');
     expect(modelLabel('claude', DEFAULT_MODEL)).toContain('跟随默认');
+  });
+
+  it('keeps a previously pinned Claude id selectable and labelled, instead of resetting it', () => {
+    // A profile saved with the old pinned picker keeps working.
+    expect(normalizeModelSelection('claude', 'claude-opus-5-5')).toBe('claude-opus-5-5');
+    expect(resolveModelArg('claude', 'claude-opus-5-5')).toBe('claude-opus-5-5');
+    expect(modelLabel('claude', 'claude-opus-5-5')).toBe('Opus 5.5');
+    expect(supportedModels('claude', 'claude-fable-5-1[1m]').map((m) => m.value)).toContain('claude-fable-5-1[1m]');
+    // …but a malformed or foreign value still falls back to default.
+    expect(normalizeModelSelection('claude', 'rm -rf /')).toBe(DEFAULT_MODEL);
+    expect(supportedModels('claude', 'gpt-6-sol').map((m) => m.value)).not.toContain('gpt-6-sol');
+  });
+
+  it('formats pinned Claude ids into readable labels', () => {
+    expect(claudeModelIdLabel('claude-opus-5-5')).toBe('Opus 5.5');
+    expect(claudeModelIdLabel('claude-sonnet-5')).toBe('Sonnet 5');
+    expect(claudeModelIdLabel('claude-fable-5-1[1m]')).toBe('Fable 5.1 · 1M');
+    expect(claudeModelIdLabel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5');
+    expect(claudeModelIdLabel('something-else')).toBe('something-else');
+  });
+
+  it('reads the account-specific extras Claude Code caches, ignoring junk', () => {
+    const raw = JSON.stringify({
+      additionalModelOptionsCache: [
+        { value: 'claude-fable-5-1[1m]', label: 'Fable', description: 'Fable 5.1 · Most capable for long tasks' },
+        { value: 'not a model', label: 'x' },
+        { label: 'no value' },
+      ],
+    });
+    expect(parseClaudeAdditionalModels(raw)).toEqual([{ value: 'claude-fable-5-1[1m]', label: 'Fable 5.1 · 1M' }]);
+    expect(parseClaudeAdditionalModels('{')).toEqual([]);
+    expect(parseClaudeAdditionalModels('{}')).toEqual([]);
   });
 
   it('resolves effort against each agent\'s own levels', () => {
