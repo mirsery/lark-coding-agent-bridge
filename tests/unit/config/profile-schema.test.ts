@@ -324,6 +324,27 @@ describe('profile schema', () => {
     expect(cfg.codex?.inheritCodexHome).toBe(false);
   });
 
+  it('keeps well-formed codex.env pairs and drops malformed ones', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'codex',
+      accounts: { app },
+      codex: {
+        binaryPath: '/usr/local/bin/codex',
+        env: { HTTPS_PROXY: 'http://127.0.0.1:7890', 'BAD KEY': 'x', NUM: 3 },
+      },
+    });
+    expect(cfg.codex?.env).toEqual({ HTTPS_PROXY: 'http://127.0.0.1:7890' });
+
+    const none = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'codex',
+      accounts: { app },
+      codex: { binaryPath: '/usr/local/bin/codex', env: ['nope'] },
+    });
+    expect(none.codex).not.toHaveProperty('env');
+  });
+
   it('defaults Claude permissions to full/full and derives legacy sandbox for runtime compatibility', () => {
     const cfg = createDefaultProfileConfig({
       agentKind: 'claude',

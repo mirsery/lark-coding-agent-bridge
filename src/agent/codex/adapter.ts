@@ -30,6 +30,14 @@ export interface CodexAdapterOptions {
   sandbox?: SandboxMode;
   stopGraceMs?: number;
   larkChannel?: LarkChannelEnvContext;
+  /** Profile-configured extras for the codex child (`codex.env`); bridge-managed keys win. */
+  env?: Record<string, string>;
+}
+
+/** Variables the bridge sets itself; a profile's `codex.env` must not shadow them. */
+function isBridgeManagedEnvKey(key: string): boolean {
+  const upper = key.toUpperCase();
+  return upper === 'CODEX_HOME' || upper.startsWith('LARK_CHANNEL') || upper === 'LARKSUITE_CLI_CONFIG_DIR';
 }
 
 type CodexChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -47,6 +55,7 @@ export class CodexAdapter implements AgentAdapter {
   private readonly sandbox: SandboxMode;
   private readonly defaultStopGraceMs: number;
   private readonly larkChannel: LarkChannelEnvContext | undefined;
+  private readonly extraEnv: Record<string, string>;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: CodexAdapterOptions) {
@@ -59,6 +68,9 @@ export class CodexAdapter implements AgentAdapter {
     this.sandbox = opts.sandbox ?? 'danger-full-access';
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.larkChannel = opts.larkChannel;
+    this.extraEnv = Object.fromEntries(
+      Object.entries(opts.env ?? {}).filter(([key]) => !isBridgeManagedEnvKey(key)),
+    );
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -108,7 +120,7 @@ export class CodexAdapter implements AgentAdapter {
       model: opts.model,
       effort,
     });
-    const envOverrides: NodeJS.ProcessEnv = buildLarkChannelEnv(this.larkChannel);
+    const envOverrides: NodeJS.ProcessEnv = { ...this.extraEnv, ...buildLarkChannelEnv(this.larkChannel) };
     if (this.codexHome) {
       envOverrides.CODEX_HOME = this.codexHome;
     } else if (!this.inheritCodexHome) {

@@ -60,6 +60,13 @@ export interface CodexConfig {
   inheritCodexHome?: boolean;
   ignoreUserConfig?: boolean;
   ignoreRules?: boolean;
+  /**
+   * Extra environment for the `codex` child process only — e.g. a proxy the
+   * Codex CLI needs while the bridge itself talks to Feishu directly.
+   * Bridge-managed variables (`CODEX_HOME`, `LARK_CHANNEL*`,
+   * `LARKSUITE_CLI_CONFIG_DIR`) cannot be overridden here.
+   */
+  env?: Record<string, string>;
 }
 
 export interface AttachmentConfig {
@@ -415,7 +422,20 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
     ignoreUserConfig: input.ignoreUserConfig === true,
     ignoreRules: input.ignoreRules !== false,
   };
+  const env = normalizeCodexEnv(input.env);
+  if (env) codex.env = env;
   return codex;
+}
+
+const CODEX_ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Keep only well-formed `KEY: "string"` pairs; `undefined` when none survive. */
+function normalizeCodexEnv(input: unknown): Record<string, string> | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const entries = Object.entries(input as Record<string, unknown>).filter(
+    (entry): entry is [string, string] => CODEX_ENV_KEY.test(entry[0]) && typeof entry[1] === 'string',
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function normalizeComments(_input: unknown): CommentConfig {

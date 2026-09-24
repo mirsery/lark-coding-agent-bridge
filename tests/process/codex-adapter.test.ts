@@ -126,6 +126,34 @@ describe('CodexAdapter process contract', () => {
     });
   });
 
+  it('passes codex.env to the child but never lets it shadow bridge-managed variables', async () => {
+    process.env.CODEX_HOME = '/outer/codex-home';
+    const fake = await createFakeCodex({ lines: [{ type: 'turn.completed' }] });
+    cleanup.push(fake.dir);
+    const rootDir = join(fake.dir, 'channel-home');
+
+    const run = new CodexAdapter({
+      binary: fake.path,
+      profileStateDir: fake.dir,
+      env: {
+        HTTPS_PROXY: 'http://127.0.0.1:7890',
+        NO_PROXY: 'localhost,127.0.0.1',
+        CODEX_HOME: '/hijacked',
+        LARK_CHANNEL_PROFILE: 'hijacked',
+      },
+      larkChannel: { profile: 'codex-dev', rootDir },
+    }).run({ runId: 'run-extra-env', prompt: 'env', cwd: await realpath(fake.dir) });
+
+    await collect(run.events);
+    const record = await readRecord(fake.recordPath);
+    expect(record.env).toMatchObject({
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+      NO_PROXY: 'localhost,127.0.0.1',
+      CODEX_HOME: '/outer/codex-home',
+      LARK_CHANNEL_PROFILE: 'codex-dev',
+    });
+  });
+
   it('leaves CODEX_HOME unset by default so Codex can use the user login under ~/.codex', async () => {
     delete process.env.CODEX_HOME;
     const fake = await createFakeCodex({
@@ -454,6 +482,8 @@ async function createFakeCodex(options: {
       '      LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,',
       '      CODEX_HOME: process.env.CODEX_HOME,',
       '      APP_SECRET: process.env.APP_SECRET,',
+      '      HTTPS_PROXY: process.env.HTTPS_PROXY,',
+      '      NO_PROXY: process.env.NO_PROXY,',
       '      PATH: process.env.PATH,',
       '    },',
       '  }));',
