@@ -1,5 +1,5 @@
 import type { LarkChannel } from '@larksuite/channel';
-import { claudeAccountName } from '../agent/claude/account';
+import { agentAccountName } from '../agent/account';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import { modelLabel, resolveEffortArg } from '../agent/models';
 import { processAgentStream } from '../bot/agent-stream';
@@ -226,7 +226,7 @@ async function cardOptions(deps: JobRunnerDeps): Promise<RunCardRenderOptions> {
       model: modelLabel(profileConfig.agentKind, profileConfig.preferences.model),
       effort: resolveEffortArg(profileConfig.agentKind, profileConfig.preferences.effort),
       provider: profileConfig.agentKind === 'codex' ? 'openai' : 'anthropic',
-      sponsor: profileConfig.agentKind === 'claude' ? await claudeAccountName() : undefined,
+      sponsor: await agentAccountName(profileConfig),
     },
   };
 }

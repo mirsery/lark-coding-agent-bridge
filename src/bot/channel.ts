@@ -5,7 +5,7 @@ import type {
 } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
-import { claudeAccountName } from '../agent/claude/account';
+import { agentAccountName } from '../agent/account';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import {
   modelLabel,
@@ -1222,11 +1222,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   };
   // The byline only shows on the final card, long after this lookup settles,
   // so resolve the paying account in the background instead of delaying the run.
-  if (agentKind === 'claude') {
-    void claudeAccountName().then((sponsor) => {
-      if (cardRenderOptions.meta) cardRenderOptions.meta.sponsor = sponsor;
-    });
-  }
+  void agentAccountName(controls.profileConfig).then((sponsor) => {
+    if (cardRenderOptions.meta) cardRenderOptions.meta.sponsor = sponsor;
+  });
 
   // Add a "Typing" reaction to the triggering message as an instant ack that
   // the bot noticed it, never letting that outbound API call block agent
