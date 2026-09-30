@@ -12,6 +12,7 @@ import {
   normalizeModelSelection,
   resolveEffortArg,
   resolveModelArg,
+  resolvedModelLabel,
 } from '../agent/models';
 import {
   buildAgentPrompt,
@@ -1157,6 +1158,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         requested: requestedModel ?? 'default',
         actual: evt.model,
       });
+      // Same ground truth for the reader: the byline shows the concrete model
+      // (e.g. Opus 5.5) instead of only the "always latest" alias picked in /config.
+      if (cardRenderOptions.meta) {
+        cardRenderOptions.meta.model = resolvedModelLabel(agentKind, modelPref, evt.model);
+      }
     }
     if (evt.type === 'system' && evt.threadId) {
       log.info('session', 'set-thread', { threadId: evt.threadId });

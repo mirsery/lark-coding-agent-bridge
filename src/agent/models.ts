@@ -307,3 +307,19 @@ export function modelLabel(agentKind: AgentKind, value: string | undefined): str
   const normalized = normalizeModelSelection(agentKind, value);
   return supportedModels(agentKind, normalized).find((m) => m.value === normalized)?.label ?? normalized;
 }
+
+/**
+ * Reply-card byline label once the agent has reported the model it actually
+ * loaded: the concrete version first, then the `/config` choice it was resolved
+ * from when that differs (an "always latest" alias or "follow default").
+ * `claude-opus-5-5` under `opus` → `Opus 5.5 · 配置 Opus（始终最新）`.
+ */
+export function resolvedModelLabel(
+  agentKind: AgentKind,
+  configValue: string | undefined,
+  actualId: string,
+): string {
+  const configured = modelLabel(agentKind, configValue);
+  const actual = agentKind === 'claude' ? claudeModelIdLabel(actualId) : actualId;
+  return actual === configured ? actual : `${actual} · 配置 ${configured}`;
+}
