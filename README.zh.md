@@ -545,6 +545,8 @@ pnpm build
 
 `pnpm test` 包含 unit、integration 和 process-level adapter 测试。CI 在 macOS、Ubuntu、Windows 上执行 `pnpm install --frozen-lockfile`、`pnpm test`、`pnpm typecheck` 和 `pnpm build`。
 
+改代码的完整约定（worktree 迭代流程、门禁 `pnpm ci:local`、架构地图、新增 agent 的步骤）见仓库根目录的 `CLAUDE.md`。
+
 ## 可选：遥测（Telemetry）
 
 默认情况下 bridge **不上报任何数据**：没有指标、没有日志离开你的机器，也不引入任何遥测依赖。下面这个钩子在你主动开启前完全是空操作。

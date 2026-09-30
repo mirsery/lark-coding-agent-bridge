@@ -545,6 +545,8 @@ pnpm build
 
 `pnpm test` includes unit, integration, and process-level adapter tests. CI runs on macOS, Ubuntu, and Windows with `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm typecheck`, and `pnpm build`.
 
+Contributor conventions — worktree iteration loop, the `pnpm ci:local` gate, architecture map, and how to add an agent — live in `CLAUDE.md` at the repository root.
+
 ## Optional telemetry
 
 By default the bridge reports **nothing**: no metrics, no logs leave your machine, and it pulls in zero telemetry dependencies. The hook below is inert unless you opt in.
