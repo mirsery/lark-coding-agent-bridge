@@ -253,8 +253,8 @@ export function helpCard(agentName = 'Agent'): object {
       vertical_spacing: '10px',
       elements: [
         helpSection('blue-50', '🗣 会话', [
-          '`/new` `/reset` — 清空当前会话',
-          '`/new chat [名字]` — 新建群 + 新会话，自动拉你进群',
+          '`/new` `/reset` — 清空当前会话（仅管理员）',
+          '`/new chat [名字]` — 新建群 + 新会话，自动拉你进群（仅管理员）',
           '`/resume [N]` — 列出并恢复历史会话',
           '`/stop` — 结束正在跑的任务（也可点卡片上的 ⏹ 终止）',
           '`/timeout [N|off|default]` — 本会话的探活分钟数',
