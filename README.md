@@ -545,7 +545,7 @@ pnpm build
 
 `pnpm test` includes unit, integration, and process-level adapter tests. CI runs on macOS, Ubuntu, and Windows with `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm typecheck`, and `pnpm build`.
 
-Contributor conventions — worktree iteration loop, the `pnpm ci:local` gate, architecture map, and how to add an agent — live in `CLAUDE.md` at the repository root.
+Contributor conventions — worktree iteration loop, the `pnpm ci:local` gate, architecture map, and how to add an agent — live in `AGENTS.md` at the repository root, shared by Claude Code (imported via `CLAUDE.md`) and Codex; step-by-step runbooks are under `docs/dev/`.
 
 ## Optional telemetry
 

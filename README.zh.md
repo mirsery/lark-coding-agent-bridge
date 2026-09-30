@@ -545,7 +545,7 @@ pnpm build
 
 `pnpm test` 包含 unit、integration 和 process-level adapter 测试。CI 在 macOS、Ubuntu、Windows 上执行 `pnpm install --frozen-lockfile`、`pnpm test`、`pnpm typecheck` 和 `pnpm build`。
 
-改代码的完整约定（worktree 迭代流程、门禁 `pnpm ci:local`、架构地图、新增 agent 的步骤）见仓库根目录的 `CLAUDE.md`。
+改代码的完整约定（worktree 迭代流程、门禁 `pnpm ci:local`、架构地图、新增 agent 的步骤）见仓库根目录的 `AGENTS.md`（Claude Code 经 `CLAUDE.md` 导入，Codex 直接读取，两者共用一份），操作步骤在 `docs/dev/`。
 
 ## 可选：遥测（Telemetry）
 
