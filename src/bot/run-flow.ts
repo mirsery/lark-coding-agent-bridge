@@ -110,9 +110,8 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     };
   }
 
+  const { descriptor } = input.capability;
   let resumeFrom: string | undefined;
-  let sessionId: string | undefined;
-  let threadId: string | undefined;
   if (input.sessionCatalog) {
     const catalogEntry = input.sessionCatalog.activeFor({
       scopeId: input.scopeId,
@@ -120,22 +119,17 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       cwdRealpath: workspace.cwdRealpath,
       policyFingerprint: policy.policyFingerprint,
     });
-    if (catalogEntry?.agentId === 'claude') {
-      sessionId = catalogEntry.sessionId;
-      resumeFrom = sessionId;
-    } else if (catalogEntry?.agentId === 'codex') {
-      threadId = catalogEntry.threadId;
-      resumeFrom = threadId;
-    }
+    resumeFrom = catalogEntry?.[descriptor.sessionHandle];
   }
-  if (!resumeFrom && input.capability.agentId === 'claude') {
+  if (!resumeFrom && descriptor.scopeSessionStore) {
     resumeFrom = input.sessions.resumeFor(input.scopeId, workspace.cwdRealpath);
-    sessionId = resumeFrom;
     const stale = input.sessions.getRaw(input.scopeId);
     if (!resumeFrom && stale?.cwd && stale.cwd !== workspace.cwdRealpath) {
       input.sessions.clear(input.scopeId);
     }
   }
+  const sessionId = descriptor.sessionHandle === 'sessionId' ? resumeFrom : undefined;
+  const threadId = descriptor.sessionHandle === 'threadId' ? resumeFrom : undefined;
 
   let execution: RunExecution;
   try {
@@ -153,7 +147,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         input.profileConfig.preferences.effort,
       ),
       images:
-        input.capability.agentId === 'codex'
+        descriptor.imageArgs
           ? policy.attachments
               .filter((attachment) => attachment.kind === 'image' && attachment.decision === 'accepted')
               .map((attachment) => attachment.path)
@@ -192,25 +186,16 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
 
 export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
   if (input.event.type !== 'system') return;
-  if (input.capability.agentId === 'claude' && input.event.sessionId) {
-    const cwdRealpath = input.event.cwd ?? input.policy.cwdRealpath;
-    input.sessions.set(input.scopeId, input.event.sessionId, cwdRealpath);
-    input.sessionCatalog?.upsertActive({
-      scopeId: input.scopeId,
-      agentId: 'claude',
-      cwdRealpath,
-      policyFingerprint: input.policy.policyFingerprint,
-      sessionId: input.event.sessionId,
-    });
-    return;
-  }
-  if (input.capability.agentId === 'codex' && input.event.threadId) {
-    input.sessionCatalog?.upsertActive({
-      scopeId: input.scopeId,
-      agentId: 'codex',
-      cwdRealpath: input.policy.cwdRealpath,
-      policyFingerprint: input.policy.policyFingerprint,
-      threadId: input.event.threadId,
-    });
-  }
+  const { descriptor } = input.capability;
+  const handle = input.event[descriptor.sessionHandle];
+  if (!handle) return;
+  const cwdRealpath = input.event.cwd ?? input.policy.cwdRealpath;
+  if (descriptor.scopeSessionStore) input.sessions.set(input.scopeId, handle, cwdRealpath);
+  input.sessionCatalog?.upsertActive({
+    scopeId: input.scopeId,
+    agentId: input.capability.agentId,
+    cwdRealpath,
+    policyFingerprint: input.policy.policyFingerprint,
+    [descriptor.sessionHandle]: handle,
+  });
 }

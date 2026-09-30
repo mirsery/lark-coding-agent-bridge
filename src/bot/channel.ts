@@ -6,7 +6,7 @@ import type {
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { agentAccountName } from '../agent/account';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { agentCapability } from '../agent/capability';
 import {
   modelLabel,
   normalizeModelSelection,
@@ -1081,10 +1081,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     actorId: firstMsg.senderId,
     ...(threadId ? { threadId } : {}),
   };
-  const capability =
-    controls.profileConfig.agentKind === 'codex'
-      ? codexCapability(controls.profileConfig)
-      : claudeCapability(controls.profileConfig);
+  const capability = agentCapability(controls.profileConfig);
+  // Agents that post the answer as its own reply (see AgentDescriptor.finalReply)
+  // treat the progress stream as best-effort: its failures are logged, not fatal.
+  const separateFinalReply = capability.descriptor.finalReply === 'separate';
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -1209,7 +1209,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       agent: capability.agentId,
       model: modelLabel(agentKind, modelPref),
       effort: resolveEffortArg(agentKind, controls.profileConfig.preferences.effort),
-      provider: agentKind === 'codex' ? 'openai' : 'anthropic',
+      provider: capability.descriptor.provider,
     },
     ...(callbackAuth
       ? {
@@ -1343,7 +1343,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           renderDone,
           producerStarted: () => producerStarted,
           fallback: async (state) => {
-            if (controls.profileConfig.agentKind === 'codex') return;
+            if (separateFinalReply) return;
             if (renderText(filterForPrefs(state)).trim() === '') return;
             await channel.send(
               chatId,
@@ -1353,11 +1353,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
+        if (!separateFinalReply) throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
-      if (controls.profileConfig.agentKind === 'codex') {
+      if (separateFinalReply) {
         await sendFinalReply({
           channel,
           chatId,
@@ -1409,7 +1409,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           renderDone,
           producerStarted: () => producerStarted,
           fallback: async (state) => {
-            if (controls.profileConfig.agentKind === 'codex') return;
+            if (separateFinalReply) return;
             const body = renderText(filterForPrefs(state));
             if (body.trim()) {
               await channel.send(chatId, { markdown: body }, sendOpts);
@@ -1417,11 +1417,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
+        if (!separateFinalReply) throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
-      if (controls.profileConfig.agentKind === 'codex') {
+      if (separateFinalReply) {
         await sendFinalReply({
           channel,
           chatId,
@@ -1450,7 +1450,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         chatId,
         scope,
         state:
-          controls.profileConfig.agentKind === 'codex'
+          separateFinalReply
             ? finalAnswerOnlyState(filterForPrefs(finalState))
             : filterForPrefs(finalState),
         replyMode,

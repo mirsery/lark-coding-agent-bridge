@@ -1,3 +1,4 @@
+import { agentDescriptor } from '../agent/registry';
 import { modelLabel, supportedEfforts, supportedModels } from '../agent/models';
 import type { KnownChat } from '../bot/lark-info';
 import type { AgentKind, LarkCliIdentityPreset, ProfileMode } from '../config/profile-schema';
@@ -196,9 +197,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
                 tag: 'markdown',
                 content:
                   '**Effort（推理强度）**\n<font color="grey">越高越慢越贵；' +
-                  (opts.agentKind === 'codex'
-                    ? '「跟随默认」= 用 Codex 配置里的 model_reasoning_effort；所选模型不支持的档位会自动降到它支持的最高档'
-                    : '「跟随默认」= 不传 --effort') +
+                  agentDescriptor(opts.agentKind).effortDefaultHint +
                   '</font>',
               },
               {

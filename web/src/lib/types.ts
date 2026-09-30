@@ -1,4 +1,5 @@
-export type AgentKind = "claude" | "codex";
+/** An agent id from the backend registry (src/agent/registry.ts); the server validates it. */
+export type AgentKind = string;
 export type ProfileMode = "personal" | "team";
 export type LarkCliIdentity = "bot-only" | "user-default";
 export type MessageReply = "card" | "markdown" | "text";
@@ -49,6 +50,7 @@ export interface ConfigView {
   effort: string;
   /** Empty for non-claude profiles — hide the field when this is empty. */
   effortOptions: ModelOption[];
+  effortHint: string;
   messageReply: MessageReply;
   showToolCalls: boolean;
   cotMessages: CotMessages;
@@ -170,4 +172,5 @@ export interface OnboardState {
   activeProfile?: string;
   profiles: string[];
   detectedAgents: AgentKind[];
+  agents: { kind: AgentKind; displayName: string }[];
 }

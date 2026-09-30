@@ -45,6 +45,7 @@ import {
   type ProfileMode,
 } from '../config/profile-schema';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedEfforts, supportedModels } from '../agent/models';
+import { agentDescriptor } from '../agent/registry';
 import { log } from '../core/logger';
 import { HttpError } from './http';
 import type { UiRuntime } from './types';
@@ -63,6 +64,8 @@ export interface ConfigView {
   effort: string;
   /** The profile agent's own levels (Codex adds `ultra`). */
   effortOptions: { value: string; label: string }[];
+  /** What "跟随默认" means for this agent's CLI, shown under the effort picker. */
+  effortHint: string;
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   cotMessages: CotMessagesMode;
@@ -97,6 +100,7 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
       value: level,
       label: EFFORT_LEVEL_LABELS[level],
     })),
+    effortHint: agentDescriptor(agentKind).effortDefaultHint,
     messageReply: getMessageReplyMode(state.cfg),
     showToolCalls: getShowToolCalls(state.cfg),
     cotMessages: getCotMessages(state.cfg),
