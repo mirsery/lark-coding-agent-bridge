@@ -25,6 +25,20 @@ interface ClaudeRawEvent {
     cache_read_input_tokens?: number;
   };
   total_cost_usd?: number;
+  num_turns?: number;
+}
+
+/**
+ * A `result` that closes a turn in which the model never ran. On `--resume`
+ * Claude Code first drains task notifications left over from the previous
+ * process (e.g. a background Bash that died when the bridge reaped that
+ * process after `done`) and closes that drain with its own `num_turns: 0`
+ * result — before our prompt has reached the model. It is not the answer.
+ */
+export function isNoTurnResult(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const evt = raw as ClaudeRawEvent;
+  return evt.type === 'result' && evt.num_turns === 0;
 }
 
 export function* translateEvent(raw: unknown): Generator<AgentEvent> {

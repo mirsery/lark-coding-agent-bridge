@@ -123,6 +123,50 @@ describe('Claude stream-json reader behavior', () => {
       },
     ]);
   });
+
+  it('does not end the run on the no-turn result a resume emits for leftover task notifications', async () => {
+    // Shape captured from `claude -p --resume` on a session whose background
+    // Bash died with the previous process.
+    const binary = await createFakeBinary([
+      JSON.stringify({ type: 'system', subtype: 'task_notification' }),
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-r' }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: '', num_turns: 0, session_id: 'sess-r' }),
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-r' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'answer' }] } }),
+      JSON.stringify({ type: 'result', subtype: 'success', result: 'answer', num_turns: 1, session_id: 'sess-r' }),
+    ], 0, '');
+    cleanup = binary.cleanup;
+
+    const run = new ClaudeAdapter({ binary: binary.path }).run({
+      runId: 'run-resume-notification',
+      prompt: 'hi',
+      cwd: tmpdir(),
+      sessionId: 'sess-r',
+    });
+    const events = await collect(run.events);
+
+    expect(events.filter((e) => e.type !== 'system')).toEqual([
+      { type: 'text', delta: 'answer' },
+      { type: 'done', sessionId: 'sess-r', terminationReason: 'normal' },
+    ]);
+  });
+
+  it('still reports done when a no-turn result is the only result before exit', async () => {
+    const binary = await createFakeBinary([
+      JSON.stringify({ type: 'result', subtype: 'success', result: '', num_turns: 0, session_id: 'sess-e' }),
+    ], 0, '');
+    cleanup = binary.cleanup;
+
+    const run = new ClaudeAdapter({ binary: binary.path }).run({
+      runId: 'run-no-turn-only',
+      prompt: 'hi',
+      cwd: tmpdir(),
+    });
+
+    await expect(collect(run.events)).resolves.toEqual([
+      { type: 'done', sessionId: 'sess-e', terminationReason: 'normal' },
+    ]);
+  });
 });
 
 async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {

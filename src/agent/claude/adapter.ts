@@ -16,7 +16,7 @@ import {
   type AgentRun,
   type AgentRunOptions,
 } from '../types';
-import { translateEvent } from './stream-json';
+import { isNoTurnResult, translateEvent } from './stream-json';
 
 export interface ClaudeAdapterOptions {
   binary?: string;
@@ -214,6 +214,10 @@ async function* createEventStream(
     }, 50);
   };
   child.once('exit', closeSilentStdout);
+  // A no-turn result (see isNoTurnResult) is held back: yielding it as `done`
+  // ends the run ~2s in and the post-done reap kills the turn that actually
+  // carries the user's prompt. Replayed only if no real result follows.
+  let heldResult: AgentEvent[] | undefined;
   try {
     for await (const line of rl) {
       sawStdout = true;
@@ -225,13 +229,21 @@ async function* createEventStream(
       } catch {
         continue;
       }
-      yield* translateEvent(parsed);
+      if (isNoTurnResult(parsed)) {
+        heldResult = [...translateEvent(parsed)];
+        continue;
+      }
+      for (const evt of translateEvent(parsed)) {
+        if (evt.type === 'done') heldResult = undefined;
+        yield evt;
+      }
     }
   } finally {
     if (silentExitTimer) clearTimeout(silentExitTimer);
     child.removeListener('exit', closeSilentStdout);
     rl.close();
   }
+  if (heldResult) yield* heldResult;
 
   const earlyRuntimeError = getError();
   if (earlyRuntimeError && child.exitCode === null && child.signalCode === null) {
