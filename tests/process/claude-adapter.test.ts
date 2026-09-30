@@ -43,11 +43,17 @@ describe('ClaudeAdapter process contract', () => {
 
     expect(await realpath(record.cwd)).toBe(await realpath(fake.dir));
     expect(record.env.LARK_CHANNEL).toBe('1');
-    // The prompt goes via stdin, and the bridge system prompt via a temp file,
-    // so neither ever touches argv (which cmd.exe would mangle on Windows).
-    expect(record.stdin).toBe('hello');
-    expect(record.argv.slice(0, 7)).toEqual([
+    // The prompt goes via stdin (a stream-json user message), and the bridge
+    // system prompt via a temp file, so neither ever touches argv (which
+    // cmd.exe would mangle on Windows).
+    expect(JSON.parse(record.stdin)).toEqual({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+    });
+    expect(record.argv.slice(0, 9)).toEqual([
       '-p',
+      '--input-format',
+      'stream-json',
       '--output-format',
       'stream-json',
       '--verbose',
@@ -123,7 +129,7 @@ describe('ClaudeAdapter process contract', () => {
     const record = await readRecord(fake.recordPath);
 
     expect(record.argv.slice(-4)).toEqual(['--resume', 'sess-old', '--model', 'sonnet']);
-    expect(record.argv[5]).toBe('bypassPermissions');
+    expect(record.argv[7]).toBe('bypassPermissions');
   });
 
   it('includes stderr when the process exits non-zero', async () => {
@@ -131,6 +137,8 @@ describe('ClaudeAdapter process contract', () => {
       lines: [{ type: 'assistant', message: { content: [{ type: 'text', text: 'before failure' }] } }],
       stderr: 'boom\n',
       exitCode: 42,
+      // A crash ends the process by itself, with stdin still open.
+      exitAfterAnswer: true,
     });
     cleanup.push(fake.dir);
 
@@ -205,6 +213,41 @@ describe('ClaudeAdapter process contract', () => {
     await iterator.return?.();
   });
 
+  it('keeps input open while background tasks run, takes the next message, and closes after the turn that leaves none', async () => {
+    const fake = await createMultiTurnClaude([
+      [
+        { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b1' }] },
+        { type: 'result', num_turns: 1, session_id: 'sess-live' },
+      ],
+      [
+        { type: 'system', subtype: 'background_tasks_changed', tasks: [] },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'second answer' }] } },
+        { type: 'result', num_turns: 1, session_id: 'sess-live' },
+      ],
+    ]);
+    cleanup.push(fake.dir);
+
+    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'run-live', prompt: 'first', cwd: fake.dir });
+    const iterator = run.events[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toEqual({ type: 'background', count: 1 });
+    expect((await iterator.next()).value).toEqual({ type: 'done', sessionId: 'sess-live', terminationReason: 'normal' });
+
+    // A background task is still running, so the process still takes input.
+    expect(run.send?.('second')).toBe(true);
+    const rest: AgentEvent[] = [];
+    for (let next = await iterator.next(); !next.done; next = await iterator.next()) rest.push(next.value);
+    expect(rest).toEqual([
+      { type: 'background', count: 0 },
+      { type: 'text', delta: 'second answer' },
+      { type: 'done', sessionId: 'sess-live', terminationReason: 'normal' },
+    ]);
+    // That turn left no background tasks: input was closed and the process exited.
+    expect(await run.waitForExit(1_000)).toBe(true);
+    expect(run.send?.('third')).toBe(false);
+    const received = (await readFile(fake.recordPath, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(received.map((m) => m.message.content[0].text)).toEqual(['first', 'second']);
+  });
+
   it('requires cwd to be resolved by policy before spawning', () => {
     expect(() =>
       new ClaudeAdapter({ binary: 'unused' }).run({ runId: 'run-no-cwd', prompt: 'hi' }),
@@ -223,6 +266,7 @@ async function createFakeClaude(options: {
   stderr?: string;
   exitCode?: number;
   exitDelayMs?: number;
+  exitAfterAnswer?: boolean;
 }): Promise<FakeBinary> {
   const dir = await mkdtemp(join(tmpdir(), 'claude-adapter-test-'));
   const path = join(dir, 'fake-claude.mjs');
@@ -235,12 +279,18 @@ async function createFakeClaude(options: {
       'const argv = process.argv.slice(2);',
       'const spIdx = argv.indexOf("--append-system-prompt-file");',
       'const systemPrompt = spIdx !== -1 ? readFileSync(argv[spIdx + 1], "utf8") : null;',
+      // Like `claude --input-format stream-json`: answer the first message,
+      // then stay alive until stdin closes (the adapter closes it after a
+      // turn that leaves no background tasks).
       'let stdin = "";',
-      'process.stdin.on("data", (c) => { stdin += c; });',
-      'process.stdin.on("end", () => {',
+      'let answered = false;',
+      'process.stdin.on("data", (c) => {',
+      '  stdin += c;',
+      '  if (answered || !stdin.includes("\\n")) return;',
+      '  answered = true;',
       `  writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({`,
       '    argv,',
-      '    stdin,',
+      '    stdin: stdin.slice(0, stdin.indexOf("\\n")),',
       '    systemPrompt,',
       '    cwd: process.cwd(),',
       '    env: {',
@@ -254,6 +304,11 @@ async function createFakeClaude(options: {
       `  const lines = ${JSON.stringify(options.lines)};`,
       '  for (const line of lines) console.log(JSON.stringify(line));',
       options.stderr ? `  process.stderr.write(${JSON.stringify(options.stderr)});` : '',
+      options.exitAfterAnswer
+        ? `  setTimeout(() => process.exit(${options.exitCode ?? 0}), ${options.exitDelayMs ?? 0});`
+        : '',
+      '});',
+      'process.stdin.on("end", () => {',
       `  setTimeout(() => process.exit(${options.exitCode ?? 0}), ${options.exitDelayMs ?? 0});`,
       '});',
     ].filter(Boolean).join('\n'),
@@ -289,4 +344,35 @@ async function readRecord(path: string): Promise<{
       LARKSUITE_CLI_CONFIG_DIR?: string;
     };
   };
+}
+
+/** A fake `claude --input-format stream-json` that answers message N with `turns[N]` and exits when stdin closes. */
+async function createMultiTurnClaude(turns: unknown[][]): Promise<FakeBinary> {
+  const dir = await mkdtemp(join(tmpdir(), 'claude-adapter-live-'));
+  const path = join(dir, 'fake-claude.mjs');
+  const recordPath = join(dir, 'messages.jsonl');
+  await writeFile(
+    path,
+    [
+      '#!/usr/bin/env node',
+      'import { appendFileSync } from "node:fs";',
+      `const turns = ${JSON.stringify(turns)};`,
+      'let buffered = "";',
+      'let turn = 0;',
+      'process.stdin.on("data", (c) => {',
+      '  buffered += c;',
+      '  let nl;',
+      '  while ((nl = buffered.indexOf("\\n")) !== -1) {',
+      '    const line = buffered.slice(0, nl);',
+      '    buffered = buffered.slice(nl + 1);',
+      `    appendFileSync(${JSON.stringify(recordPath)}, line + "\\n");`,
+      '    for (const out of turns[turn++] ?? []) console.log(JSON.stringify(out));',
+      '  }',
+      '});',
+      'process.stdin.on("end", () => process.exit(0));',
+    ].join('\n'),
+    'utf8',
+  );
+  await chmod(path, 0o755);
+  return { path, dir, recordPath };
 }

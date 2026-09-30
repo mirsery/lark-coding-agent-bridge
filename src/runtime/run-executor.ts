@@ -5,6 +5,7 @@ import { ProcessPool } from '../bot/process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
 import { RunRejected, SpawnFailed } from './errors';
+import { isTerminalEvent, ProcessSession } from './process-session';
 
 export interface RunExecutorDeps {
   agent: AgentAdapter;
@@ -13,7 +14,24 @@ export interface RunExecutorDeps {
   createRunId?: () => string;
   now?: () => number;
   postDoneExitGraceMs?: number;
+  /**
+   * How long a process may keep running background tasks after its last
+   * user turn before it is stopped anyway.
+   */
+  maxBackgroundLingerMs?: number;
 }
+
+/**
+ * What a submitter hears about a process after its user turn ended: a turn
+ * the agent ran on its own (a background task it started reported back), or
+ * that the process was stopped with background work still running.
+ */
+export type BackgroundTurn =
+  | { kind: 'turn'; events: AgentEvent[] }
+  | { kind: 'stopped'; reason: 'max-linger'; afterMs: number }
+  | { kind: 'stopped'; reason: 'shutdown' };
+
+export type BackgroundTurnHandler = (turn: BackgroundTurn) => Promise<void>;
 
 export interface SubmitRunInput {
   scopeId: string;
@@ -25,6 +43,12 @@ export interface SubmitRunInput {
   images?: readonly string[];
   stopGraceMs?: number;
   nowait?: boolean;
+  /**
+   * Receives background turns once this run's user turn is over. A later
+   * submission for the same scope replaces it, so follow-ups go to whoever
+   * talked to the process last. Without one they are only logged.
+   */
+  onBackgroundTurn?: BackgroundTurnHandler;
   observability?: {
     profile: string;
     agent: string;
@@ -43,6 +67,19 @@ export interface RunExecution {
 }
 
 const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
+const DEFAULT_MAX_BACKGROUND_LINGER_MS = 30 * 60 * 1000;
+
+/** A spawned process, tracked per scope while it may still serve turns. */
+interface LiveProcess {
+  scopeId: string;
+  session: ProcessSession;
+  /** Run options that must match for a new user turn to reuse the process. */
+  compatKey: string;
+  dimensions: Record<string, unknown>;
+  onBackgroundTurn: BackgroundTurnHandler | undefined;
+  lingerTimer: NodeJS.Timeout | undefined;
+  finishing: boolean;
+}
 
 export class RunExecutor {
   private readonly agent: AgentAdapter;
@@ -51,6 +88,8 @@ export class RunExecutor {
   private readonly createRunId: () => string;
   private readonly now: () => number;
   private readonly postDoneExitGraceMs: number;
+  private readonly maxBackgroundLingerMs: number;
+  private readonly live = new Map<string, LiveProcess>();
 
   constructor(deps: RunExecutorDeps) {
     this.agent = deps.agent;
@@ -59,6 +98,7 @@ export class RunExecutor {
     this.createRunId = deps.createRunId ?? randomUUID;
     this.now = deps.now ?? Date.now;
     this.postDoneExitGraceMs = deps.postDoneExitGraceMs ?? DEFAULT_POST_DONE_EXIT_GRACE_MS;
+    this.maxBackgroundLingerMs = deps.maxBackgroundLingerMs ?? DEFAULT_MAX_BACKGROUND_LINGER_MS;
   }
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {
@@ -107,30 +147,7 @@ export class RunExecutor {
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
     };
-    let run: AgentRun;
-    try {
-      await this.agent.prepareRun?.(runOptions);
-    } catch (err) {
-      release();
-      releaseScope();
-      if (err instanceof SpawnFailed) throw err;
-      throw new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed');
-    }
-    if (this.activeRuns.newRunsPaused()) {
-      release();
-      releaseScope();
-      throw new RunRejected(
-        'reconnect-in-progress',
-        this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
-      );
-    }
-    try {
-      run = this.agent.run(runOptions);
-    } catch (err) {
-      release();
-      releaseScope();
-      throw new SpawnFailed('agent spawn failed', err);
-    }
+    const compatKey = runCompatKey(runOptions);
     const dimensions = {
       runId,
       profile: input.observability?.profile ?? 'unknown',
@@ -139,6 +156,81 @@ export class RunExecutor {
       source: input.observability?.source ?? 'unknown',
       stage: input.observability?.stage ?? 'submit',
     };
+
+    // A process still running background tasks for this scope takes the
+    // prompt as its next turn, so that work is not killed to spawn anew.
+    let live: LiveProcess | undefined;
+    let turnEvents: AsyncIterable<AgentEvent> | undefined;
+    const previous = this.live.get(input.scopeId);
+    if (previous) {
+      const resumeTarget = input.sessionId ?? input.threadId;
+      const compatible =
+        previous.compatKey === compatKey &&
+        !previous.finishing &&
+        !previous.session.hasExited &&
+        !previous.session.hasAttachedTurn &&
+        (!resumeTarget || resumeTarget === previous.session.conversationId);
+      if (compatible && previous.session.run.send) {
+        const events = previous.session.attachTurn();
+        if (previous.session.run.send(input.policy.prompt)) {
+          live = previous;
+          turnEvents = events;
+          this.endLinger(live);
+          live.dimensions = dimensions;
+          log.info('run', 'reuse-process', { ...dimensions, background: live.session.background });
+        } else {
+          previous.session.detachTurn();
+        }
+      }
+      if (!live) await this.retire(previous, compatible ? 'input-closed' : 'incompatible');
+    }
+
+    let run: AgentRun;
+    if (live && turnEvents) {
+      run = live.session.run;
+    } else {
+      try {
+        await this.agent.prepareRun?.(runOptions);
+      } catch (err) {
+        release();
+        releaseScope();
+        if (err instanceof SpawnFailed) throw err;
+        throw new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed');
+      }
+      if (this.activeRuns.newRunsPaused()) {
+        release();
+        releaseScope();
+        throw new RunRejected(
+          'reconnect-in-progress',
+          this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
+        );
+      }
+      try {
+        run = this.agent.run(runOptions);
+      } catch (err) {
+        release();
+        releaseScope();
+        throw new SpawnFailed('agent spawn failed', err);
+      }
+      let created!: LiveProcess;
+      const session = new ProcessSession(run, {
+        onBackgroundTurn: (events) => this.deliverBackgroundTurn(created, events),
+        onExit: () => this.forget(created),
+      });
+      created = {
+        scopeId: input.scopeId,
+        session,
+        compatKey,
+        dimensions,
+        onBackgroundTurn: undefined,
+        lingerTimer: undefined,
+        finishing: false,
+      };
+      live = created;
+      turnEvents = created.session.attachTurn();
+      this.live.set(input.scopeId, created);
+    }
+    live.onBackgroundTurn = input.onBackgroundTurn;
     log.info('run', 'started', {
       ...dimensions,
       queueWaitMs,
@@ -159,35 +251,34 @@ export class RunExecutor {
         err instanceof Error ? err.message : 'another run is already active for this scope',
       );
     }
+    const owner = live;
     let cleaned = false;
-    const cleanup = async (waitForExit: boolean): Promise<void> => {
+    const cleanup = async (terminal: AgentEvent | undefined): Promise<void> => {
       if (cleaned) return;
       cleaned = true;
       this.activeRuns.unregister(input.scopeId, run);
       release();
-      if (waitForExit) {
-        const exited = await run.waitForExit(this.postDoneExitGraceMs);
-        if (!exited) {
-          log.warn('run', 'post-done-exit-timeout', {
-            ...dimensions,
-            graceMs: this.postDoneExitGraceMs,
-          });
-          await run.stop().catch((err) => {
-            log.warn('run', 'post-done-stop-failed', {
-              ...dimensions,
-              err: err instanceof Error ? err.message : String(err),
-            });
-          });
-        }
+      if (handle.interrupted) return;
+      if (
+        terminal?.type === 'done' &&
+        owner.session.background > 0 &&
+        run.send &&
+        !owner.session.hasExited
+      ) {
+        this.startLinger(owner);
+        return;
       }
+      await this.finish(owner);
     };
-    const fanout = new EventFanout(observeRunEvents(run.events, {
-      dimensions,
-      startedAt,
-      now: this.now,
-    }), async () => {
-      await cleanup(!handle.interrupted);
-    });
+    let terminal: AgentEvent | undefined;
+    const fanout = new EventFanout(
+      observeRunEvents(turnEvents, { dimensions, startedAt, now: this.now }, (event) => {
+        terminal = event;
+      }),
+      async () => {
+        await cleanup(terminal);
+      },
+    );
 
     return {
       runId,
@@ -199,10 +290,149 @@ export class RunExecutor {
         handle.interrupted = true;
         await run.stop();
         await run.waitForExit(this.postDoneExitGraceMs);
-        await cleanup(false);
+        await cleanup(undefined);
       },
     };
   }
+
+  /**
+   * Tell every scope whose process is only running background tasks that the
+   * work is being stopped, then stop it — for shutdown / reconnect, where the
+   * process dies with this daemon anyway.
+   */
+  async stopLingering(): Promise<void> {
+    const lingering = [...this.live.values()].filter(
+      (live) => !live.session.hasExited && !live.session.hasAttachedTurn && !live.finishing,
+    );
+    await Promise.allSettled(
+      lingering.map(async (live) => {
+        log.info('run', 'linger-stopped', { ...live.dimensions, reason: 'shutdown', background: live.session.background });
+        await this.notify(live, { kind: 'stopped', reason: 'shutdown' });
+        await this.retire(live, 'shutdown');
+      }),
+    );
+  }
+
+  /** Keep a process whose user turn ended while its background tasks run on. */
+  private startLinger(live: LiveProcess): void {
+    this.endLinger(live);
+    this.activeRuns.setLingering(live.scopeId, live.session.run);
+    live.lingerTimer = setTimeout(() => {
+      void this.expireLinger(live);
+    }, this.maxBackgroundLingerMs);
+    live.lingerTimer.unref?.();
+    log.info('run', 'linger-start', {
+      ...live.dimensions,
+      background: live.session.background,
+      maxLingerMs: this.maxBackgroundLingerMs,
+    });
+  }
+
+  private endLinger(live: LiveProcess): void {
+    if (live.lingerTimer) clearTimeout(live.lingerTimer);
+    live.lingerTimer = undefined;
+    this.activeRuns.clearLingering(live.scopeId, live.session.run);
+  }
+
+  private async expireLinger(live: LiveProcess): Promise<void> {
+    live.lingerTimer = undefined;
+    if (live.session.hasExited || live.session.hasAttachedTurn) return;
+    log.warn('run', 'linger-timeout', {
+      ...live.dimensions,
+      background: live.session.background,
+      maxLingerMs: this.maxBackgroundLingerMs,
+    });
+    await this.notify(live, { kind: 'stopped', reason: 'max-linger', afterMs: this.maxBackgroundLingerMs });
+    await this.retire(live, 'max-linger');
+  }
+
+  private deliverBackgroundTurn(live: LiveProcess, events: AgentEvent[]): void {
+    log.info('run', 'background-turn', {
+      ...live.dimensions,
+      events: events.length,
+      background: live.session.background,
+    });
+    void this.notify(live, { kind: 'turn', events }).then(async () => {
+      // The adapter closes input after a turn that leaves no background tasks;
+      // make sure the process then actually goes away.
+      if (live.session.background === 0 && !live.session.hasAttachedTurn) await this.finish(live);
+    });
+  }
+
+  private async notify(live: LiveProcess, turn: BackgroundTurn): Promise<void> {
+    if (!live.onBackgroundTurn) return;
+    try {
+      await live.onBackgroundTurn(turn);
+    } catch (err) {
+      log.warn('run', 'background-turn-delivery-failed', {
+        ...live.dimensions,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /** Let a process with nothing left to do exit; stop it if it won't. */
+  private async finish(live: LiveProcess): Promise<void> {
+    if (live.finishing) return;
+    live.finishing = true;
+    this.endLinger(live);
+    const exited = await live.session.run.waitForExit(this.postDoneExitGraceMs);
+    if (!exited) {
+      log.warn('run', 'post-done-exit-timeout', {
+        ...live.dimensions,
+        graceMs: this.postDoneExitGraceMs,
+        background: live.session.background,
+      });
+      await live.session.run.stop().catch((err) => {
+        log.warn('run', 'post-done-stop-failed', {
+          ...live.dimensions,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+    this.forget(live);
+  }
+
+  /** Stop a process that can no longer serve this scope's turns. */
+  private async retire(
+    live: LiveProcess,
+    reason: 'incompatible' | 'input-closed' | 'max-linger' | 'shutdown',
+  ): Promise<void> {
+    log.info('run', 'retire-process', { ...live.dimensions, reason, background: live.session.background });
+    if (reason === 'input-closed') {
+      await this.finish(live);
+      return;
+    }
+    live.finishing = true;
+    this.endLinger(live);
+    await live.session.run.stop().catch(() => {});
+    this.forget(live);
+  }
+
+  private forget(live: LiveProcess): void {
+    this.endLinger(live);
+    if (this.live.get(live.scopeId) === live) this.live.delete(live.scopeId);
+  }
+}
+
+/** Everything a running process was started with that a later turn must share. */
+function runCompatKey(opts: {
+  cwd?: string;
+  model?: string;
+  effort?: string;
+  sandbox?: string;
+  permissionMode?: string;
+  images?: readonly string[];
+}): string {
+  return JSON.stringify([
+    opts.cwd ?? null,
+    opts.model ?? null,
+    opts.effort ?? null,
+    opts.sandbox ?? null,
+    opts.permissionMode ?? null,
+    // Image arguments ride on argv; a turn that carries them needs a new process.
+    opts.images?.length ? opts.images : null,
+  ]);
 }
 
 function observeRunEvents(
@@ -212,10 +442,12 @@ function observeRunEvents(
     startedAt: number;
     now: () => number;
   },
+  onTerminal: (event: AgentEvent) => void,
 ): AsyncIterable<AgentEvent> {
   return {
     async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
       for await (const event of events) {
+        if (isTerminalEvent(event)) onTerminal(event);
         if (event.type === 'done') {
           log.info('run', 'completed', {
             ...opts.dimensions,
@@ -310,8 +542,4 @@ class EventFanout {
   private wakeAll(): void {
     for (const wake of [...this.waiters]) wake();
   }
-}
-
-function isTerminalEvent(event: AgentEvent): boolean {
-  return event.type === 'done' || event.type === 'error';
 }

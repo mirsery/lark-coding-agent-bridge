@@ -11,6 +11,12 @@ export interface RunHandle {
 export class ActiveRuns {
   private readonly handles = new Map<string, RunHandle>();
   private readonly reservations = new Set<string>();
+  /**
+   * Processes whose user turn is over but which are still running background
+   * tasks the agent started (see RunExecutor). Not "active": new messages for
+   * the scope are handed to them rather than queued. Interrupts stop them.
+   */
+  private readonly lingering = new Map<string, AgentRun>();
   private pauseDepth = 0;
   private pauseReason: string | undefined;
 
@@ -77,29 +83,61 @@ export class ActiveRuns {
     return [...this.handles.keys()];
   }
 
+  setLingering(chatId: string, run: AgentRun): void {
+    this.lingering.set(chatId, run);
+  }
+
+  clearLingering(chatId: string, run: AgentRun): void {
+    if (this.lingering.get(chatId) === run) this.lingering.delete(chatId);
+  }
+
+  isLingering(chatId: string): boolean {
+    return this.lingering.has(chatId);
+  }
+
+  lingeringScopes(): string[] {
+    return [...this.lingering.keys()];
+  }
+
   /**
-   * Interrupt the current run for this chat, if any. Returns true if an
-   * interrupt was issued. Fires stop() fire-and-forget — the old run's
-   * generator exits on its own as the subprocess dies.
+   * Interrupt the current run for this chat, if any, and any background
+   * tasks its process is still running. Returns true if anything was
+   * stopped. Fires stop() fire-and-forget — the old run's generator exits on
+   * its own as the subprocess dies.
    */
   interrupt(chatId: string): boolean {
+    const result = this.interruptDetailed(chatId);
+    return result.active || result.background;
+  }
+
+  /** {@link interrupt}, reporting whether a user turn and/or background work was stopped. */
+  interruptDetailed(chatId: string): { active: boolean; background: boolean } {
+    const lingering = this.lingering.get(chatId);
+    if (lingering) {
+      this.lingering.delete(chatId);
+      void lingering.stop().catch(() => {
+        /* stop errors are non-fatal */
+      });
+    }
     const h = this.handles.get(chatId);
-    if (!h) return false;
+    if (!h) return { active: false, background: Boolean(lingering) };
     this.reservations.delete(chatId);
     h.interrupted = true;
     this.handles.delete(chatId);
     void h.run.stop().catch(() => {
       /* stop errors are non-fatal */
     });
-    return true;
+    return { active: true, background: Boolean(lingering) };
   }
 
   async stopAll(): Promise<void> {
     const all = [...this.handles.values()];
+    const lingering = [...this.lingering.values()];
     this.handles.clear();
     this.reservations.clear();
+    this.lingering.clear();
     for (const h of all) h.interrupted = true;
-    await Promise.allSettled(all.map((h) => h.run.stop()));
+    await Promise.allSettled([...all.map((h) => h.run.stop()), ...lingering.map((run) => run.stop())]);
   }
 
   async waitForAll(timeoutMs = 300_000): Promise<void> {

@@ -57,7 +57,8 @@
 ## 不变量与踩过的坑
 
 - **agent 分支只走注册表。** 共享代码不写 `agentKind === 'codex'` 这类字面判断（隐含的 else 会把新 agent 当成 Claude）。`tests/static/contracts.test.ts` 会拦；只有 agent 自己的代码（`src/agent/`、codex 配置段所在的 `src/config/` / `src/cli/`、`profile-runtime.ts` 里的历史迁移）可以点名某个 agent。
-- **run 在第一个 `done` 结束。** executor 随后给 2s 宽限期等进程退出，超时就杀（日志 `post-done-exit-timeout`）；进程里还在跑的后台任务一起被杀。Claude 下一轮 `--resume` 时会先为这个残留任务的通知单独吐一个 `num_turns: 0` 的 `result`——adapter 暂存它，不当成 `done`（否则用户那轮会被吞，只剩 "No response requested."）。改 `stream-json` / adapter 时保持这个行为，相关测试在 `tests/unit/agent/claude-stream-json.test.ts`。
+- **一轮在 `done` 结束，进程不一定。** Claude 以 `--input-format stream-json` 运行：一轮结束时没有后台任务，adapter 关闭 stdin，进程自己退出（executor 仍给 2s 宽限期，超时才杀）；还有后台任务（后台 Bash、后台子 agent、Monitor）时进程留着（`ProcessSession` / `RunExecutor` 的 linger，最长 30 分钟），后台任务触发的续跑轮经 `onBackgroundTurn` 作为补充回复发出，期间同一会话的新消息直接 `send` 进这个进程，不重开、不杀后台任务；运行参数（cwd、model、effort、权限、会话）不一致时才停掉重开。`/stop`、`/new`、`/cd` 会连后台任务一起停。Claude `--resume` 时若有上个进程残留的后台任务通知，会先吐一个 `num_turns: 0` 的 `result`——adapter 暂存它，不当成 `done`。相关测试：`tests/integration/executor/background-linger.test.ts`、`tests/unit/agent/claude-stream-json.test.ts`、`tests/process/claude-adapter.test.ts`。
+- **排队中的消息落盘**（`pending.json`，`PendingStore`）：重启 / 重连后 10 分钟内的自动补处理，更早的回一条通知请对方重发；重启时被停掉的后台任务也会在会话里说明。
 - **新增斜杠命令要过三处**：`handlers` 表；是否进 `ADMIN_COMMANDS`；帮助卡（`src/card/templates.ts`）。别名（如 `/reset` 之于 `/new`）要和本名一起进权限表，否则就是绕过。卡片按钮走 `runCommandHandler`，同样受管理员检查。
 - **飞书审核**：消息可能被审核拒（错误码 230028），`reply()` 会退回一句中性文案；卡片里不要放完整邮箱（会被拒），账号只显示 `@` 前的用户名。
 - **持久化状态**一律 `writeFileAtomic` + `mode: 0o600`（契约测试守护）。

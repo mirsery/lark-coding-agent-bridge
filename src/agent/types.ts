@@ -24,7 +24,14 @@ export type AgentEvent =
       threadId?: string;
       terminationReason: 'normal' | 'interrupted' | 'timeout';
     }
-  | { type: 'error'; message: string; terminationReason: 'failed' | 'interrupted' | 'timeout' };
+  | { type: 'error'; message: string; terminationReason: 'failed' | 'interrupted' | 'timeout' }
+  /**
+   * How many background tasks (backgrounded shell commands, background
+   * sub-agents, monitors) the agent process currently has running. While it
+   * is above zero after a `done`, the process is still working and will run
+   * further turns on its own as those tasks report back.
+   */
+  | { type: 'background'; count: number };
 
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
@@ -70,6 +77,14 @@ export interface AgentRun {
    * 143 instead of 0; waiting it out lets it exit cleanly.
    */
   waitForExit(timeoutMs: number): Promise<boolean>;
+  /**
+   * Hand the still-running process another user message, as the next turn.
+   * Only offered by adapters whose CLI accepts streamed input; returns false
+   * once the process no longer takes input (it closed stdin after a turn with
+   * no background tasks left, or exited), in which case the caller spawns a
+   * fresh run instead.
+   */
+  send?(prompt: string): boolean;
 }
 
 /**

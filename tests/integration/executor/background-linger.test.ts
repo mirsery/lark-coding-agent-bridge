@@ -1,0 +1,330 @@
+import { describe, expect, it } from 'vitest';
+import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../../../src/agent/types';
+import { ActiveRuns } from '../../../src/bot/active-runs';
+import { ProcessPool } from '../../../src/bot/process-pool';
+import type { RunPolicyAllow } from '../../../src/policy/run-policy';
+import { RunExecutor, type BackgroundTurn } from '../../../src/runtime/run-executor';
+
+/**
+ * A process the test drives by hand, shaped like `claude --input-format
+ * stream-json`: it stays alive across turns, accepts `send` until its input
+ * is closed, and only exits when the test says so (or it is stopped).
+ */
+class LiveRun implements AgentRun {
+  readonly runId: string;
+  readonly sent: string[] = [];
+  stopped = false;
+  inputClosed = false;
+  private readonly queue: AgentEvent[] = [];
+  private wake: (() => void) | undefined;
+  private exited = false;
+  private exitWaiters: Array<() => void> = [];
+
+  constructor(readonly opts: AgentRunOptions) {
+    this.runId = opts.runId;
+  }
+
+  emit(...events: AgentEvent[]): void {
+    this.queue.push(...events);
+    this.notify();
+  }
+
+  exit(): void {
+    this.exited = true;
+    this.notify();
+    for (const resolve of this.exitWaiters.splice(0)) resolve();
+  }
+
+  closeInput(): void {
+    this.inputClosed = true;
+  }
+
+  readonly events: AsyncIterable<AgentEvent> = {
+    [Symbol.asyncIterator]: () => this.iterate(),
+  };
+
+  send(prompt: string): boolean {
+    if (this.inputClosed || this.exited) return false;
+    this.sent.push(prompt);
+    return true;
+  }
+
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.exit();
+  }
+
+  waitForExit(timeoutMs: number): Promise<boolean> {
+    if (this.exited) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      this.exitWaiters.push(() => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+  }
+
+  private notify(): void {
+    const wake = this.wake;
+    this.wake = undefined;
+    wake?.();
+  }
+
+  private async *iterate(): AsyncGenerator<AgentEvent> {
+    for (;;) {
+      if (this.queue.length > 0) {
+        yield this.queue.shift()!;
+        continue;
+      }
+      if (this.exited) return;
+      await new Promise<void>((resolve) => {
+        this.wake = resolve;
+      });
+    }
+  }
+}
+
+class LiveAgent implements AgentAdapter {
+  readonly id = 'claude';
+  readonly displayName = 'Live fake';
+  readonly runs: LiveRun[] = [];
+
+  async isAvailable(): Promise<boolean> {
+    return true;
+  }
+
+  run(opts: AgentRunOptions): AgentRun {
+    const run = new LiveRun(opts);
+    this.runs.push(run);
+    return run;
+  }
+}
+
+function harness(opts: { maxBackgroundLingerMs?: number } = {}) {
+  const agent = new LiveAgent();
+  const activeRuns = new ActiveRuns();
+  let n = 0;
+  const executor = new RunExecutor({
+    agent,
+    pool: new ProcessPool(() => 2),
+    activeRuns,
+    createRunId: () => `run-${++n}`,
+    now: () => 1000,
+    postDoneExitGraceMs: 50,
+    ...opts,
+  });
+  return { agent, activeRuns, executor };
+}
+
+function policy(overrides: Partial<RunPolicyAllow> = {}): RunPolicyAllow {
+  return {
+    ok: true,
+    prompt: 'hello',
+    requestedCwd: '/repo',
+    cwdRealpath: '/repo',
+    accessMode: 'full',
+    sandbox: 'danger-full-access',
+    permissionMode: 'bypassPermissions',
+    access: { ok: true, reason: 'allowed-user' },
+    attachments: [],
+    policyFingerprint: 'fp',
+    expiresAt: 2000,
+    ...overrides,
+  };
+}
+
+async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
+  const out: AgentEvent[] = [];
+  for await (const event of events) out.push(event);
+  return out;
+}
+
+function until(check: () => boolean, timeoutMs = 1000): Promise<void> {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const tick = (): void => {
+      if (check()) return resolve();
+      if (Date.now() - started > timeoutMs) return reject(new Error('condition not met in time'));
+      setTimeout(tick, 5);
+    };
+    tick();
+  });
+}
+
+const done = (sessionId = 'sess-1'): AgentEvent => ({
+  type: 'done',
+  sessionId,
+  terminationReason: 'normal',
+});
+
+describe('RunExecutor background tasks', () => {
+  it('keeps a process that still has background tasks and delivers the turns they trigger', async () => {
+    const h = harness();
+    const turns: BackgroundTurn[] = [];
+    const execution = await h.executor.submit({
+      scopeId: 'chat-1',
+      policy: policy(),
+      onBackgroundTurn: async (turn) => {
+        turns.push(turn);
+      },
+    });
+    const live = h.agent.runs[0]!;
+    live.emit(
+      { type: 'system', sessionId: 'sess-1' },
+      { type: 'background', count: 1 },
+      { type: 'text', delta: 'started the build' },
+      done(),
+    );
+
+    const events = await collect(execution.subscribe());
+    expect(events.at(-1)).toEqual(done());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+    expect(live.stopped).toBe(false);
+    expect(h.activeRuns.get('chat-1')).toBeUndefined();
+
+    // The build finishes: the agent runs a turn on its own and reports.
+    live.emit({ type: 'background', count: 0 }, { type: 'text', delta: 'build ok' }, done());
+    live.closeInput();
+    await until(() => turns.length === 1);
+    expect(turns[0]).toEqual({
+      kind: 'turn',
+      events: [{ type: 'background', count: 0 }, { type: 'text', delta: 'build ok' }, done()],
+    });
+
+    live.exit();
+    await until(() => !h.activeRuns.isLingering('chat-1'));
+    expect(live.stopped).toBe(false);
+  });
+
+  it('closes out a process with no background tasks exactly as before', async () => {
+    const h = harness();
+    const execution = await h.executor.submit({ scopeId: 'chat-1', policy: policy() });
+    const live = h.agent.runs[0]!;
+    live.emit({ type: 'text', delta: 'hi' }, done());
+    await collect(execution.subscribe());
+
+    // It does not exit on its own within the grace period, so it is stopped.
+    await until(() => live.stopped);
+    expect(h.activeRuns.isLingering('chat-1')).toBe(false);
+  });
+
+  it('hands the next message to the lingering process instead of spawning, without touching its background work', async () => {
+    const h = harness();
+    const turns: BackgroundTurn[] = [];
+    const first = await h.executor.submit({ scopeId: 'chat-1', policy: policy() });
+    const live = h.agent.runs[0]!;
+    live.emit({ type: 'system', sessionId: 'sess-1' }, { type: 'background', count: 1 }, done());
+    await collect(first.subscribe());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+
+    const second = await h.executor.submit({
+      scopeId: 'chat-1',
+      policy: policy({ prompt: 'what is 2+2?' }),
+      sessionId: 'sess-1',
+      onBackgroundTurn: async (turn) => {
+        turns.push(turn);
+      },
+    });
+    expect(h.agent.runs).toHaveLength(1);
+    expect(live.sent).toEqual(['what is 2+2?']);
+    expect(second.run).toBe(live);
+    expect(h.activeRuns.get('chat-1')?.run).toBe(live);
+    expect(h.activeRuns.isLingering('chat-1')).toBe(false);
+
+    live.emit({ type: 'text', delta: '4' }, done());
+    expect(await collect(second.subscribe())).toEqual([{ type: 'text', delta: '4' }, done()]);
+    // Still one background task: back to lingering, and the newest submitter
+    // now receives the follow-up.
+    await until(() => h.activeRuns.isLingering('chat-1'));
+    live.emit({ type: 'background', count: 0 }, { type: 'text', delta: 'build ok' }, done());
+    await until(() => turns.length === 1);
+    expect(live.stopped).toBe(false);
+    live.exit();
+  });
+
+  it('spawns a fresh process when the next message needs different run options', async () => {
+    const h = harness();
+    const first = await h.executor.submit({ scopeId: 'chat-1', policy: policy(), model: 'opus' });
+    const live = h.agent.runs[0]!;
+    live.emit({ type: 'system', sessionId: 'sess-1' }, { type: 'background', count: 1 }, done());
+    await collect(first.subscribe());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+
+    await h.executor.submit({ scopeId: 'chat-1', policy: policy(), model: 'sonnet', sessionId: 'sess-1' });
+    expect(live.stopped).toBe(true);
+    expect(live.sent).toEqual([]);
+    expect(h.agent.runs).toHaveLength(2);
+  });
+
+  it('spawns a fresh process when the next message resumes a different session', async () => {
+    const h = harness();
+    const first = await h.executor.submit({ scopeId: 'chat-1', policy: policy() });
+    const live = h.agent.runs[0]!;
+    live.emit({ type: 'system', sessionId: 'sess-1' }, { type: 'background', count: 1 }, done());
+    await collect(first.subscribe());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+
+    await h.executor.submit({ scopeId: 'chat-1', policy: policy(), sessionId: 'sess-other' });
+    expect(live.stopped).toBe(true);
+    expect(h.agent.runs).toHaveLength(2);
+  });
+
+  it('waits for a process that stopped taking input to finish instead of killing it', async () => {
+    const h = harness();
+    const first = await h.executor.submit({ scopeId: 'chat-1', policy: policy() });
+    const live = h.agent.runs[0]!;
+    live.emit({ type: 'system', sessionId: 'sess-1' }, { type: 'background', count: 1 }, done());
+    await collect(first.subscribe());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+    live.closeInput();
+    setTimeout(() => live.exit(), 10);
+
+    await h.executor.submit({ scopeId: 'chat-1', policy: policy(), sessionId: 'sess-1' });
+    expect(live.stopped).toBe(false);
+    expect(h.agent.runs).toHaveLength(2);
+  });
+
+  it('stops lingering background work on interrupt', async () => {
+    const h = harness();
+    const first = await h.executor.submit({ scopeId: 'chat-1', policy: policy() });
+    const live = h.agent.runs[0]!;
+    live.emit({ type: 'background', count: 2 }, done());
+    await collect(first.subscribe());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+
+    expect(h.activeRuns.interruptDetailed('chat-1')).toEqual({ active: false, background: true });
+    expect(live.stopped).toBe(true);
+    expect(h.activeRuns.isLingering('chat-1')).toBe(false);
+  });
+
+  it('stops background work that outlives the linger cap and says so', async () => {
+    const h = harness({ maxBackgroundLingerMs: 30 });
+    const turns: BackgroundTurn[] = [];
+    const first = await h.executor.submit({
+      scopeId: 'chat-1',
+      policy: policy(),
+      onBackgroundTurn: async (turn) => {
+        turns.push(turn);
+      },
+    });
+    const live = h.agent.runs[0]!;
+    live.emit({ type: 'background', count: 1 }, done());
+    await collect(first.subscribe());
+
+    await until(() => live.stopped);
+    expect(turns).toEqual([{ kind: 'stopped', reason: 'max-linger', afterMs: 30 }]);
+    await until(() => !h.activeRuns.isLingering('chat-1'));
+  });
+
+  it('does not linger when the user turn failed', async () => {
+    const h = harness();
+    const first = await h.executor.submit({ scopeId: 'chat-1', policy: policy() });
+    const live = h.agent.runs[0]!;
+    live.emit({ type: 'background', count: 1 }, { type: 'error', message: 'boom', terminationReason: 'failed' });
+    await collect(first.subscribe());
+
+    await until(() => live.stopped);
+    expect(h.activeRuns.isLingering('chat-1')).toBe(false);
+  });
+});

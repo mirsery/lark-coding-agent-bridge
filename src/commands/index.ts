@@ -926,6 +926,7 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     ...(await gitStatusLine(cwd)),
     ...(await knowledgeStatusLine(ctx)),
     activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
+    backgroundRun: ctx.activeRuns.isLingering(ctx.scope),
     activeScopes: ctx.activeRuns.scopes().filter((scope) => !scope.startsWith('comment:')),
     activeCommentScopes: ctx.activeRuns.scopes().filter((scope) => scope.startsWith('comment:')),
     queue: ctx.processPool?.snapshot(),
@@ -952,11 +953,13 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const scope = targetScope || ctx.scope;
-  const ok = ctx.activeRuns.interrupt(scope);
+  const stopped = ctx.activeRuns.interruptDetailed(scope);
+  const ok = stopped.active || stopped.background;
   log.info('command', 'stop', {
     scope,
     targeted: Boolean(targetScope),
     interrupted: ok,
+    background: stopped.background,
   });
   if (targetScope) {
     await reply(
@@ -966,8 +969,11 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
         : `未找到正在运行的任务：\`${scope}\`。`,
     );
   }
-  // No reply for the current IM scope: if there was a run, its in-flight
-  // render loop will mark the card as interrupted and re-render.
+  // No reply for the current IM scope when a run was in flight: its render
+  // loop marks the card as interrupted. Background work has no card to mark.
+  else if (stopped.background && !stopped.active) {
+    await reply(ctx, '已停止后台任务。');
+  }
 }
 
 async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {

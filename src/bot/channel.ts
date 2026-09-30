@@ -28,7 +28,14 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
 import type { RunCardRenderOptions } from '../card/run-renderer';
-import { initialState, stripNoReply, type RunState, type Terminal } from '../card/run-state';
+import {
+  finalizeIfRunning,
+  initialState,
+  reduce,
+  stripNoReply,
+  type RunState,
+  type Terminal,
+} from '../card/run-state';
 import { renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
@@ -53,7 +60,7 @@ import type { VcRequestClient } from '../meeting/api';
 import { attachMeetingAgent, summarizeEndedMeeting } from '../meeting/orchestrator';
 import type { ScopeContext } from '../policy/run-policy';
 import { createOwnerRefreshController } from '../policy/owner';
-import { RunExecutor } from '../runtime/run-executor';
+import { RunExecutor, type BackgroundTurn, type BackgroundTurnHandler } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -72,6 +79,7 @@ import { JobStore } from '../scheduler/store';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
+import { PendingStore, type PendingRecord } from './pending-store';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
 import { lookupMessageThreadId } from './thread-id';
@@ -214,7 +222,7 @@ export interface StartChannelDeps {
   controls: Controls;
   appPaths?: Pick<
     AppPaths,
-    'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'runsFile' | 'knowledgeDir' | 'jobsFile'
+    'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'runsFile' | 'knowledgeDir' | 'jobsFile' | 'pendingFile'
   >;
 }
 
@@ -225,6 +233,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // see which runs never finished. Absent only in tests that omit appPaths.
   const runs = deps.appPaths?.runsFile ? new RunRegistry(deps.appPaths.runsFile) : undefined;
   await runs?.load();
+  // Durable twin of the pending queue. Whatever the previous process left is
+  // taken now, before any new message can overwrite a scope's entry, and is
+  // re-queued or reported once the channel is up.
+  const pendingStore = deps.appPaths?.pendingFile ? new PendingStore(deps.appPaths.pendingFile) : undefined;
+  await pendingStore?.load();
+  const leftoverPending = pendingStore?.takeAll() ?? [];
   // Cross-session memory + skills. Absent only in tests that omit appPaths,
   // where every run simply gets no knowledge block.
   const knowledge = deps.appPaths?.knowledgeDir
@@ -387,7 +401,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         log.info('flush', 'end');
       }
     });
-  });
+  }, (scope, messages) => pendingStore?.set(scope, messages));
 
   // The console's tasks panel reads live runs / queue depth and issues the
   // same interrupt the IM /stop command uses. Late-bound like `meeting`
@@ -543,6 +557,18 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       );
     }
   }
+  // Messages that were waiting behind a run when the previous process went
+  // away: recent ones are simply processed now, old ones are reported rather
+  // than acted on long after the fact.
+  for (const record of leftoverPending) {
+    if (Date.now() - record.queuedAt <= PENDING_REQUEUE_WINDOW_MS) {
+      log.info('pending', 'requeued', { scope: record.scope, count: record.messages.length });
+      for (const msg of record.messages) pending.push(record.scope, msg);
+    } else {
+      log.info('pending', 'expired', { scope: record.scope, count: record.messages.length });
+      void sendExpiredPendingNotice(channel, record);
+    }
+  }
   // Scheduler starts only after the WS is up: a job that fires before the
   // channel can deliver would produce an answer with nowhere to go.
   let scheduler: Scheduler | undefined;
@@ -615,7 +641,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       controls.scheduler = undefined;
       controls.meeting = undefined;
       controls.runsMonitor = undefined;
-      pending.cancelAll();
+      // Keep the durable copy: the next process (or the rebuilt channel after
+      // /reconnect) picks the queued messages up again.
+      pending.stop();
+      // Background work dies with this daemon; say so while the channel is up.
+      await executor.stopLingering().catch((err: unknown) => {
+        log.fail('disconnect', err, { step: 'stopLingering' });
+      });
       // Stop the agents first, then report — the notice goes out over this
       // channel, so it has to happen before `channel.disconnect()`. Doing it
       // after stopAll (rather than before) avoids racing a run that was about
@@ -640,6 +672,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         callbackNonceStore?.flush(),
         workspaces.flush(),
         jobs?.flush(),
+        pendingStore?.flush(),
       ]);
       for (const [idx, result] of flushResults.entries()) {
         if (result.status === 'rejected') {
@@ -1085,6 +1118,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Agents that post the answer as its own reply (see AgentDescriptor.finalReply)
   // treat the progress stream as best-effort: its failures are logged, not fatal.
   const separateFinalReply = capability.descriptor.finalReply === 'separate';
+  // Assigned once the reply surface below is set up. A background turn only
+  // arrives after this run's own reply, so it is always ready by then.
+  let deliverBackgroundTurn: BackgroundTurnHandler | undefined;
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -1099,6 +1135,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     executor,
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
+    onBackgroundTurn: (turn) => deliverBackgroundTurn?.(turn) ?? Promise.resolve(),
     observability: {
       profile: controls.profile,
       agent: capability.agentId,
@@ -1231,6 +1268,22 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   void agentAccountName(controls.profileConfig).then((sponsor) => {
     if (cardRenderOptions.meta) cardRenderOptions.meta.sponsor = sponsor;
   });
+
+  // Turns the agent runs on its own after this reply (a background task it
+  // started reported back) go out as a follow-up reply to the same message.
+  deliverBackgroundTurn = async (turn) => {
+    const state = backgroundTurnState(turn, filterForPrefs);
+    if (!state) return;
+    await sendFinalReply({
+      channel,
+      chatId,
+      scope,
+      state: separateFinalReply ? finalAnswerOnlyState(state) : state,
+      replyMode,
+      sendOpts,
+      cardRenderOptions,
+    });
+  };
 
   // Add a "Typing" reaction to the triggering message as an instant ack that
   // the bot noticed it, never letting that outbound API call block agent
@@ -2028,4 +2081,56 @@ function parseJsonOrRaw(input: string): unknown {
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
+}
+
+const BACKGROUND_TURN_PREFIX = '（后台任务有了新进展）\n\n';
+
+/**
+ * The reply state for a background turn, or undefined when it has nothing to
+ * show (only tool calls, or a `[[NO_REPLY]]` answer). A stop notice is always
+ * shown so a silently vanished task never looks like it is still running.
+ */
+export function backgroundTurnState(
+  turn: BackgroundTurn,
+  filterForPrefs: (state: RunState) => RunState,
+): RunState | undefined {
+  if (turn.kind === 'stopped') {
+    const notice =
+      turn.reason === 'shutdown'
+        ? 'bridge 重启，还在运行的后台任务已停止。会话上下文没丢，需要的话回一句「继续」重新发起。'
+        : `后台任务运行超过 ${Math.round(turn.afterMs / 60_000)} 分钟仍未结束，已停止。需要的话请重新发起。`;
+    return reduce(reduce(initialState, { type: 'text', delta: notice }), {
+      type: 'done',
+      terminationReason: 'normal',
+    });
+  }
+  const own = finalizeIfRunning(turn.events.reduce(reduce, initialState));
+  if (!renderText(filterForPrefs(own)).trim()) return undefined;
+  const withPrefix = turn.events.reduce(
+    reduce,
+    reduce(initialState, { type: 'text', delta: BACKGROUND_TURN_PREFIX }),
+  );
+  return filterForPrefs(finalizeIfRunning(withPrefix));
+}
+
+/** Queued messages older than this at boot are reported instead of processed. */
+const PENDING_REQUEUE_WINDOW_MS = 10 * 60 * 1000;
+
+async function sendExpiredPendingNotice(channel: LarkChannel, record: PendingRecord): Promise<void> {
+  const last = record.messages[record.messages.length - 1];
+  const first = record.messages[0];
+  if (!last || !first) return;
+  const preview = first.content.replace(/\s+/g, ' ').trim().slice(0, 40);
+  const text =
+    `bridge 重启前，这里有 ${record.messages.length} 条消息还在排队、没来得及处理` +
+    `${preview ? `（最早一条：「${preview}」）` : ''}。` +
+    '已经过去超过 10 分钟，没有自动补处理，需要的话请重新发送。';
+  try {
+    await channel.send(last.chatId, { text }, {
+      replyTo: last.messageId,
+      ...(last.threadId ? { replyInThread: true } : {}),
+    });
+  } catch (err) {
+    log.warn('pending', 'expired-notice-failed', { scope: record.scope, err: String(err) });
+  }
 }

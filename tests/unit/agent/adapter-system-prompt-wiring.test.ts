@@ -54,8 +54,9 @@ describe('ClaudeAdapter system prompt wiring', () => {
 
     adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
 
-    // The prompt goes via stdin, never argv (cmd.exe would mangle it on Windows).
-    expect(await readAll(child.stdin)).toBe('hi');
+    // The prompt goes via stdin (as a stream-json user message), never argv
+    // (cmd.exe would mangle it on Windows).
+    expect(await readFirstUserMessage(child.stdin)).toBe('hi');
     expect(systemPromptFileContent()).toBe(
       buildBridgeSystemPrompt({ openId: 'ou_bot_self', name: 'Bridge' }),
     );
@@ -68,7 +69,7 @@ describe('ClaudeAdapter system prompt wiring', () => {
 
     adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
 
-    expect(await readAll(child.stdin)).toBe('hi');
+    expect(await readFirstUserMessage(child.stdin)).toBe('hi');
     expect(systemPromptFileContent()).toBe(buildBridgeSystemPrompt(undefined));
   });
 
@@ -121,4 +122,27 @@ async function readAll(stream: PassThrough): Promise<string> {
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks).toString('utf8');
+}
+
+/** The text of the first stream-json user message written to a child's stdin. */
+function readFirstUserMessage(stream: PassThrough): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let buffered = '';
+    stream.on('data', (chunk: Buffer) => {
+      buffered += chunk.toString('utf8');
+      const nl = buffered.indexOf('\n');
+      if (nl === -1) return;
+      try {
+        const msg = JSON.parse(buffered.slice(0, nl)) as {
+          type: string;
+          message: { role: string; content: Array<{ type: string; text: string }> };
+        };
+        expect(msg.type).toBe('user');
+        expect(msg.message.role).toBe('user');
+        resolve(msg.message.content.map((c) => c.text).join(''));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
 }

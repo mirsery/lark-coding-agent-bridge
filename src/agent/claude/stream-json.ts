@@ -26,6 +26,8 @@ interface ClaudeRawEvent {
   };
   total_cost_usd?: number;
   num_turns?: number;
+  /** `system/background_tasks_changed`: the full list of running background tasks. */
+  tasks?: unknown[];
 }
 
 /**
@@ -44,6 +46,11 @@ export function isNoTurnResult(raw: unknown): boolean {
 export function* translateEvent(raw: unknown): Generator<AgentEvent> {
   if (!raw || typeof raw !== 'object') return;
   const evt = raw as ClaudeRawEvent;
+
+  if (evt.type === 'system' && evt.subtype === 'background_tasks_changed') {
+    yield { type: 'background', count: Array.isArray(evt.tasks) ? evt.tasks.length : 0 };
+    return;
+  }
 
   if (evt.type === 'system' && evt.subtype === 'init') {
     yield {
@@ -96,4 +103,9 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
     }
     yield { type: 'done', sessionId: evt.session_id, terminationReason: 'normal' };
   }
+}
+
+/** Encode one prompt as a stream-json user message (`--input-format stream-json`). */
+export function encodeUserMessage(prompt: string): string {
+  return `${JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } })}\n`;
 }

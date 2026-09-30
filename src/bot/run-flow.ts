@@ -15,7 +15,7 @@ import {
   type WorkingDirectoryRejectReason,
   type WorkingDirectoryResolveResult,
 } from '../policy/workspace';
-import type { RunExecution, RunExecutor } from '../runtime/run-executor';
+import type { BackgroundTurnHandler, RunExecution, RunExecutor } from '../runtime/run-executor';
 import { RunRejected, type RunRejectedCode } from '../runtime/errors';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
@@ -34,6 +34,8 @@ export interface StartRunFlowInput {
   workspaces: WorkspaceStore;
   executor: RunExecutor;
   now: number;
+  /** Passed to the executor as `SubmitRunInput.onBackgroundTurn`. */
+  onBackgroundTurn?: BackgroundTurnHandler;
   stopGraceMs?: number;
   observability?: {
     profile: string;
@@ -154,6 +156,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
               .filter((path): path is string => Boolean(path))
           : undefined,
       stopGraceMs: input.stopGraceMs,
+      onBackgroundTurn: input.onBackgroundTurn,
       observability: input.observability,
     });
   } catch (err) {

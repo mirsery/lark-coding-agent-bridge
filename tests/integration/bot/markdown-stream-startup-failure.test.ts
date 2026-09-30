@@ -1,9 +1,9 @@
 import type { NormalizedMessage } from '@larksuite/channel';
-import { realpath } from 'node:fs/promises';
+import { realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../../src/agent/types.js';
-import type { FakeAgentEvents } from '../../helpers/fake-agent.js';
+import type { FakeAgentEvents, FakeBackgroundTurn } from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -205,6 +205,85 @@ describe('markdown stream startup failures', () => {
     // A successful run marks the triggering question itself as answered,
     // alongside (not instead of) the Typing reaction's own add/remove cycle.
     await waitFor(() => reactionTypesAdded(h.channel).includes('DONE'));
+  });
+
+  it('posts a background turn as a follow-up reply to the same message', async () => {
+    const streamed: string[] = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [
+        { type: 'system', sessionId: 'sess-bg' },
+        { type: 'background', count: 1 },
+        { type: 'text', delta: 'BUILD_STARTED' },
+        { type: 'done', sessionId: 'sess-bg', terminationReason: 'normal' },
+      ],
+      background: {
+        afterMs: 50,
+        events: [
+          { type: 'background', count: 0 },
+          { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/tmp/out' } },
+          { type: 'tool_result', id: 't1', output: 'ok', isError: false },
+          { type: 'text', delta: 'BUILD_OK' },
+          { type: 'done', sessionId: 'sess-bg', terminationReason: 'normal' },
+        ],
+      },
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            streamed.push(markdown);
+          }),
+        });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_bg', 'build it'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    // Claude streams its answer; the background turn arrives later as its own reply.
+    expect(streamed.some((markdown) => markdown.includes('BUILD_STARTED'))).toBe(true);
+    const followUp = lastMarkdown(h.channel);
+    expect(followUp).toContain('BUILD_OK');
+    expect(followUp).toContain('后台任务');
+    expect(followUp).not.toContain('BUILD_STARTED');
+    expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_bg' });
+    // The background turn ran to completion; nothing was killed.
+    expect(h.agent.runs[0]?.stopped).toBe(false);
+  });
+
+  it('processes messages a previous process left queued, and reports ones too old to act on', async () => {
+    const streamed: string[] = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [{ type: 'text', delta: 'LEFTOVER_ANSWERED' }, { type: 'done', terminationReason: 'normal' }],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({ setContent: vi.fn(async (markdown: string) => void streamed.push(markdown)) });
+      },
+    });
+    const appPaths = testAppPaths(h.tmp);
+    const stale = { ...message('om_old', 'stale question'), chatId: 'oc_other' };
+    await writeFile(
+      appPaths.pendingFile,
+      JSON.stringify({
+        oc_dm: { scope: 'oc_dm', queuedAt: Date.now() - 60_000, messages: [message('om_left', 'leftover question')] },
+        oc_other: { scope: 'oc_other', queuedAt: Date.now() - 60 * 60_000, messages: [stale] },
+      }),
+    );
+    await startTestBridge(h, appPaths);
+
+    await waitFor(() => h.agent.runOptions.length === 1 && streamed.some((m) => m.includes('LEFTOVER_ANSWERED')));
+    expect(h.agent.runOptions[0]?.prompt).toContain('leftover question');
+    await waitFor(() => h.channel.sent.some((m) => m.chatId === 'oc_other'));
+    const notice = h.channel.sent.find((m) => m.chatId === 'oc_other');
+    expect(JSON.stringify(notice?.content)).toContain('没来得及处理');
+    expect(notice?.options).toMatchObject({ replyTo: 'om_old' });
+    expect(h.agent.runOptions.some((o) => o.prompt.includes('stale question'))).toBe(false);
   });
 
   it('opens no progress stream for a final-only round', async () => {
@@ -449,6 +528,8 @@ async function createHarness(options: {
   messageReply?: 'card' | 'markdown' | 'text';
   /** Codex holds its answer back for a dedicated final reply; Claude streams it. */
   agentKind?: 'claude' | 'codex';
+  /** A turn the first run emits on its own after its user turn. */
+  background?: FakeBackgroundTurn;
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;
@@ -489,6 +570,7 @@ async function createHarness(options: {
   const agent = new FakeAgentAdapter({
     id: 'codex',
     displayName: 'Codex',
+    ...(options.background ? { background: options.background } : {}),
     events: options.events ?? [
       [
         {
@@ -524,13 +606,14 @@ async function startTestBridge(h: {
   sessions: SessionStore;
   workspaces: WorkspaceStore;
   controls: ReturnType<typeof createControls>;
-}): Promise<void> {
+}, appPaths?: Parameters<typeof startChannel>[0]['appPaths']): Promise<void> {
   const bridge = await startChannel({
     cfg: h.profileConfig,
     agent: h.agent,
     sessions: h.sessions,
     workspaces: h.workspaces,
     controls: h.controls,
+    ...(appPaths ? { appPaths } : {}),
   });
   cleanups.push(() => bridge.disconnect());
 }
@@ -668,4 +751,16 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error('timed out waiting for async work');
+}
+
+function testAppPaths(tmp: TmpProfile) {
+  return {
+    secretsFile: join(tmp.profile, 'secrets.enc'),
+    keystoreSaltFile: join(tmp.profile, 'keystore.salt'),
+    mediaDir: join(tmp.profile, 'media'),
+    runsFile: join(tmp.profile, 'runs.json'),
+    knowledgeDir: join(tmp.profile, 'knowledge'),
+    jobsFile: join(tmp.profile, 'jobs.json'),
+    pendingFile: join(tmp.profile, 'pending.json'),
+  };
 }

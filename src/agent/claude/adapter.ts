@@ -16,7 +16,7 @@ import {
   type AgentRun,
   type AgentRunOptions,
 } from '../types';
-import { isNoTurnResult, translateEvent } from './stream-json';
+import { encodeUserMessage, isNoTurnResult, translateEvent } from './stream-json';
 
 export interface ClaudeAdapterOptions {
   binary?: string;
@@ -70,8 +70,14 @@ export class ClaudeAdapter implements AgentAdapter {
     // special characters ever reach the shell.
     const systemPromptFile = writeSystemPromptFile(buildBridgeSystemPrompt(this.botIdentity));
 
+    // Streamed input keeps stdin open after the first turn: when the agent
+    // leaves background tasks running, the process lives on to run the turns
+    // those tasks trigger, and the bridge can hand it the next user message
+    // (`send`) instead of killing that work to spawn a new process.
     const args = [
       '-p',
+      '--input-format',
+      'stream-json',
       '--output-format',
       'stream-json',
       '--verbose',
@@ -134,7 +140,28 @@ export class ClaudeAdapter implements AgentAdapter {
     child.stdin.on('error', (err) => {
       log.warn('agent', 'stdin-error', { message: err.message });
     });
-    child.stdin.end(opts.prompt, 'utf8');
+    // stdin stays open only while the CLI still has background tasks: a turn
+    // that ends with none left closes it, and the process exits on its own.
+    let inputOpen = true;
+    let background = 0;
+    const closeInput = (): void => {
+      if (!inputOpen) return;
+      inputOpen = false;
+      child.stdin.end();
+    };
+    const send = (prompt: string): boolean => {
+      if (!inputOpen || child.exitCode !== null || child.signalCode !== null) return false;
+      child.stdin.write(encodeUserMessage(prompt), 'utf8');
+      return true;
+    };
+    child.once('exit', () => {
+      inputOpen = false;
+    });
+    child.stdin.write(encodeUserMessage(opts.prompt), 'utf8');
+    const onEvent = (evt: AgentEvent): void => {
+      if (evt.type === 'background') background = evt.count;
+      if ((evt.type === 'done' || evt.type === 'error') && background === 0) closeInput();
+    };
 
     // Default 5s if caller didn't specify — claude often has live
     // subprocesses (lark-cli waiting for OAuth, long Bash, etc.) and the
@@ -145,7 +172,8 @@ export class ClaudeAdapter implements AgentAdapter {
 
     return {
       runId: opts.runId,
-      events: createEventStream(child, stderrChunks, () => runtimeError),
+      events: createEventStream(child, stderrChunks, () => runtimeError, onEvent),
+      send,
       async stop() {
         if (child.exitCode !== null || child.signalCode !== null) return;
         log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs });
@@ -192,6 +220,7 @@ async function* createEventStream(
   child: ClaudeChild,
   stderrChunks: Buffer[],
   getError: () => Error | null,
+  onEvent: (evt: AgentEvent) => void,
 ): AsyncGenerator<AgentEvent> {
   // If fork itself failed synchronously, child.pid is undefined. The 'error'
   // event (ENOENT etc.) fires in the next tick, so also check getError().
@@ -235,6 +264,7 @@ async function* createEventStream(
       }
       for (const evt of translateEvent(parsed)) {
         if (evt.type === 'done') heldResult = undefined;
+        onEvent(evt);
         yield evt;
       }
     }
