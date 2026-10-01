@@ -496,16 +496,16 @@ To let other people or groups in, add them to one of three lists:
 - Strangers get pure silence — no reply at all. The one exception: if someone `@`-mentions the bot in a group that hasn't been opened up, the bot posts a friendly one-liner telling them an admin can run `/invite group` to enable it.
 - Cloud-doc comments are document-scoped: anyone who can comment in a supported document and mention the bot can trigger a reply.
 
-### Approvals for non-admins
+### Approvals for non-admins (off by default)
 
-Runs driven by anyone other than the bot owner and the admins (DMs, @bot in groups, doc comments — a merged batch counts if any message in it is from a non-admin):
+Off by default: every run gets the profile's permissions, whoever drives it. With `approvals.enabled` on in the profile config, runs driven by anyone other than the bot owner and the admins (DMs, @bot in groups, doc comments — a merged batch counts if any message in it is from a non-admin):
 
 - The agent may read, search and browse freely; before it **runs a command, writes a file or calls an external (MCP) tool**, an approval card with Allow / Allow this turn / Deny goes to the owner's and every admin's private chat. The requester sees a "waiting for an admin" card and can cancel.
 - Only an admin can allow; anything unanswered for **5 minutes** is denied, and the agent is told so.
-- Every approval and every command / file change is recorded per person in an audit log (`audit.jsonl` in the profile dir, kept 90 days); admins see the latest with `/audit [N]` in a private chat.
+- Every approval and every command / file change is recorded per person in an audit log (`audit.jsonl` in the profile dir, kept 90 days; commands and file changes are recorded with approvals off too); admins see the latest with `/audit [N]` in a private chat.
 - Claude Code is gated with a PreToolUse hook; Codex through the app-server's own approval requests (read-only sandbox, `approvalPolicy: untrusted`). Codex profiles that fall back to `codex exec` have no approval channel, so non-admin runs there are read-only.
 
-Tune it with `approvals` in the profile config (restart the profile to apply):
+It lives in the profile config's `approvals` section (restart the profile to apply):
 
 ```json
 "approvals": {
@@ -515,7 +515,7 @@ Tune it with `approvals` in the profile config (restart the profile to apply):
 }
 ```
 
-- `enabled: false` turns approvals off: non-admins' runs get the same permissions as an admin's again. On by default.
+- `enabled`: `true` turns approvals on; absent or `false` (the default) keeps them off — non-admins' runs get the same permissions as an admin's, no approval cards.
 - `allowCommands`: commands that run without asking, matched by their leading words (`~` and `$HOME` expanded, whole words only) — the example covers every subcommand of that script. Each stage of a `&&` / `|` line must be listed or plainly read-only; `;`, redirection and substitution still ask; a script reached through a variable (`$C`) doesn't match.
 - `allowTools`: tool names that run without asking; `*` matches anything. Listing `Bash` waives every command.
 - Steps waived this way are still audited (shown as "allowlisted" in `/audit`).

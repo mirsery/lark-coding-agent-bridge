@@ -92,7 +92,7 @@ export function canRunAdminCommand(
 
 /**
  * Whether what this sender asks for needs an admin's approval step by step:
- * they are not an admin, and the profile has approvals on.
+ * the profile has approvals on (off by default), and they are not an admin.
  */
 export function runNeedsApproval(profile: ProfileConfig, controls: RuntimeControls, senderId: string): boolean {
   return profile.approvals.enabled && !canRunAdminCommand(profile, controls, senderId).ok;

@@ -286,7 +286,7 @@ describe('markdown stream startup failures', () => {
     expect(h.agent.runOptions.some((o) => o.prompt.includes('stale question'))).toBe(false);
   });
 
-  it('gates runs a non-admin drives, and only those', async () => {
+  it('with approvals on, gates runs a non-admin drives, and only those', async () => {
     const h = await createHarness({
       agentKind: 'claude',
       events: [
@@ -295,6 +295,7 @@ describe('markdown stream startup failures', () => {
         [{ type: 'done', terminationReason: 'normal' }],
       ],
     });
+    h.profileConfig.approvals.enabled = true;
     await startTestBridge(h, testAppPaths(h.tmp));
 
     await h.channel.handlers.message?.(message('om_user', 'please deploy'));
@@ -309,12 +310,11 @@ describe('markdown stream startup failures', () => {
     expect(h.agent.runOptions[1]?.approvals).toBeUndefined();
   });
 
-  it('runs non-admins ungated once the profile turns approvals off', async () => {
+  it('runs non-admins ungated by default, with approvals off', async () => {
     const h = await createHarness({
       agentKind: 'claude',
       events: [[{ type: 'done', terminationReason: 'normal' }]],
     });
-    h.profileConfig.approvals.enabled = false;
     await startTestBridge(h, testAppPaths(h.tmp));
 
     await h.channel.handlers.message?.(message('om_user', 'please deploy'));

@@ -1202,8 +1202,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Assigned once the reply surface below is set up. A background turn only
   // arrives after this run's own reply, so it is always ready by then.
   let deliverBackgroundTurn: BackgroundTurnHandler | undefined;
-  // A batch carrying anyone's words but an admin's is gated: the agent may
-  // read freely, but each side-effecting step waits for an admin.
+  // With approvals on, a batch carrying anyone's words but an admin's is
+  // gated: the agent may read freely, but each side-effecting step waits
+  // for an admin.
   const requester = batch.find((m) => runNeedsApproval(controls.profileConfig, controls, m.senderId));
   const gate: GateContext | undefined = requester
     ? {

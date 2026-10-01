@@ -86,9 +86,9 @@ describe('profile schema', () => {
     ).toBe('bot-only');
   });
 
-  it('keeps approvals on by default and normalizes the allowlists', () => {
+  it('keeps approvals off by default and normalizes the allowlists', () => {
     expect(createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } }).approvals).toEqual({
-      enabled: true,
+      enabled: false,
       allowCommands: [],
       allowTools: [],
     });
@@ -97,21 +97,21 @@ describe('profile schema', () => {
       agentKind: 'claude',
       accounts: { app },
       approvals: {
-        enabled: false,
+        enabled: true,
         allowCommands: ['  python3 ~/tools/a.py ', '', 42],
         allowTools: ['mcp__tdengine-*__query', null],
       },
     });
     expect(cfg.approvals).toEqual({
-      enabled: false,
+      enabled: true,
       allowCommands: ['python3 ~/tools/a.py'],
       allowTools: ['mcp__tdengine-*__query'],
     });
-    // Only an explicit false turns approvals off.
+    // Only an explicit true turns approvals on.
     expect(
-      normalizeProfileConfig({ schemaVersion: 2, agentKind: 'claude', accounts: { app }, approvals: { enabled: 'no' } })
+      normalizeProfileConfig({ schemaVersion: 2, agentKind: 'claude', accounts: { app }, approvals: { enabled: 'yes' } })
         .approvals.enabled,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('requires codex configuration when agentKind is codex', () => {

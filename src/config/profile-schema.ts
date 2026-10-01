@@ -138,11 +138,13 @@ export interface MeetingConfig {
 
 /**
  * Approvals for runs a non-admin drives (#6). Admins' own runs never ask.
+ * Off unless a profile opts in.
  */
 export interface ApprovalsConfig {
   /**
-   * Off: non-admins' runs get the same permissions as an admin's again — no
-   * approval cards. Default on.
+   * On: each side-effecting step a non-admin's run takes waits for an
+   * admin's approval card. Off (default): non-admins' runs get the same
+   * permissions as an admin's — no approval cards.
    */
   enabled: boolean;
   /**
@@ -544,7 +546,7 @@ function normalizeApprovals(input: unknown): ApprovalsConfig {
       .map((item) => item.trim())
       .filter(Boolean);
   return {
-    enabled: raw.enabled !== false,
+    enabled: raw.enabled === true,
     allowCommands: trimmed(raw.allowCommands),
     allowTools: trimmed(raw.allowTools),
   };
