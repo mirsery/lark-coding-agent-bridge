@@ -102,7 +102,7 @@ class LiveAgent implements AgentAdapter {
   }
 }
 
-function harness(opts: { maxBackgroundLingerMs?: number } = {}) {
+function harness(opts: { maxBackgroundLingerMs?: number; postDoneExitGraceMs?: number } = {}) {
   const agent = new LiveAgent();
   const activeRuns = new ActiveRuns();
   const booked: UsageEntry[] = [];
@@ -369,5 +369,50 @@ describe('RunExecutor background tasks', () => {
     ]);
     expect(h.booked[0]?.actorName).toBe('A');
     live.exit();
+  });
+
+  it('leaves a process still exiting after its turn alone when the next turn starts', async () => {
+    const h = harness({ postDoneExitGraceMs: 1_000 });
+    const first = await h.executor.submit({ scopeId: 'chat-1', policy: policy() });
+    const live = h.agent.runs[0]!;
+    // Like Codex: the turn is over and input is closed, but the process takes
+    // a moment to write its session and exit.
+    live.closeInput();
+    live.emit({ type: 'system', sessionId: 'sess-1' }, done());
+    for await (const event of first.subscribe()) if (event.type === 'done') break;
+    await until(() => !h.activeRuns.get('chat-1'));
+
+    const started = Date.now();
+    await h.executor.submit({ scopeId: 'chat-1', policy: policy(), sessionId: 'sess-1' });
+    // The new turn neither waited for the old process nor killed it.
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(h.agent.runs).toHaveLength(2);
+    expect(live.stopped).toBe(false);
+    live.exit();
+  });
+
+  it('ends subscriptions at the terminal event without waiting for the process to exit', async () => {
+    const h = harness({ postDoneExitGraceMs: 2_000 });
+    const execution = await h.executor.submit({ scopeId: 'chat-1', policy: policy() });
+    const live = h.agent.runs[0]!;
+    live.closeInput();
+    live.emit({ type: 'text', delta: 'hi' }, done());
+
+    const started = Date.now();
+    await collect(execution.subscribe());
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(h.activeRuns.get('chat-1')).toBeUndefined();
+    live.exit();
+  });
+
+  it('gives each agent its own post-turn exit grace', () => {
+    const codex = new RunExecutor({
+      agent: Object.assign(new LiveAgent(), { id: 'codex' }),
+      pool: new ProcessPool(() => 1),
+      activeRuns: new ActiveRuns(),
+    });
+    const claude = new RunExecutor({ agent: new LiveAgent(), pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
+    expect((codex as unknown as { postDoneExitGraceMs: number }).postDoneExitGraceMs).toBe(30_000);
+    expect((claude as unknown as { postDoneExitGraceMs: number }).postDoneExitGraceMs).toBe(2_000);
   });
 });

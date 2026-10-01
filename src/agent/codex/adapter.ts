@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { SandboxMode } from '../../config/profile-schema';
 import type { EffortLevel } from '../../config/schema';
@@ -19,6 +20,7 @@ import type {
 import { clampCodexEffort } from '../models';
 import { buildCodexArgs } from './argv';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
+import { readThreadUsageBaseline, subtractBaseline, type CodexUsageTotals } from './thread-usage';
 
 export interface CodexAdapterOptions {
   binary: string;
@@ -55,6 +57,8 @@ export class CodexAdapter implements AgentAdapter {
   private readonly sandbox: SandboxMode;
   private readonly defaultStopGraceMs: number;
   private readonly larkChannel: LarkChannelEnvContext | undefined;
+  /** Thread usage read in prepareRun, keyed by runId, consumed by run. */
+  private readonly usageBaselines = new Map<string, CodexUsageTotals | undefined>();
   private readonly extraEnv: Record<string, string>;
   private botIdentity: AgentBotIdentity | undefined;
 
@@ -90,7 +94,7 @@ export class CodexAdapter implements AgentAdapter {
     });
   }
 
-  async prepareRun(): Promise<void> {
+  async prepareRun(opts?: AgentRunOptions): Promise<void> {
     const availability = await this.checkAvailability();
     if (!availability.ok) {
       throw new SpawnFailed(
@@ -100,6 +104,22 @@ export class CodexAdapter implements AgentAdapter {
         availability.diagnostic,
       );
     }
+    // Read the resumed thread's usage so far before Codex starts appending
+    // this run's turn to the same rollout.
+    if (opts?.threadId) {
+      this.usageBaselines.set(opts.runId, await this.readBaseline(opts.threadId));
+    }
+  }
+
+  private readBaseline(threadId: string): Promise<CodexUsageTotals | undefined> {
+    return readThreadUsageBaseline(this.codexHomeDir(), threadId).catch(() => undefined);
+  }
+
+  /** The CODEX_HOME a spawned run uses (mirrors the env set in `run`). */
+  private codexHomeDir(): string {
+    if (this.codexHome) return this.codexHome;
+    if (!this.inheritCodexHome) return join(this.profileStateDir, 'codex-home');
+    return this.extraEnv.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), '.codex');
   }
 
   run(opts: AgentRunOptions): AgentRun {
@@ -173,12 +193,21 @@ export class CodexAdapter implements AgentAdapter {
       log.warn('agent', 'stdin-error', { message: err.message });
     });
     child.stdin.end(prefixBridgeSystemPrompt(opts.prompt, this.botIdentity), 'utf8');
+    // `turn.completed` carries thread-cumulative totals; this run is measured
+    // from the thread's totals before it (read in prepareRun when possible).
+    const prepared = this.usageBaselines.has(opts.runId);
+    const baseline: Promise<CodexUsageTotals | undefined> = prepared
+      ? Promise.resolve(this.usageBaselines.get(opts.runId))
+      : opts.threadId
+        ? this.readBaseline(opts.threadId)
+        : Promise.resolve(undefined);
+    this.usageBaselines.delete(opts.runId);
 
     const stopGraceMs = opts.stopGraceMs ?? this.defaultStopGraceMs;
 
     return {
       runId: opts.runId,
-      events: createEventStream(child, stderrChunks, () => runtimeError, () => stopReason),
+      events: createEventStream(child, stderrChunks, () => runtimeError, () => stopReason, baseline),
       async stop() {
         if (child.exitCode !== null || child.signalCode !== null) return;
         stopReason = 'interrupted';
@@ -227,6 +256,7 @@ async function* createEventStream(
   stderrChunks: Buffer[],
   getError: () => Error | null,
   getStopReason: () => CodexFinishReason | undefined,
+  usageBaseline: Promise<CodexUsageTotals | undefined>,
 ): AsyncGenerator<AgentEvent> {
   const translator = new CodexJsonlTranslator();
   if (!child.pid) {
@@ -259,7 +289,9 @@ async function* createEventStream(
       } catch {
         continue;
       }
-      yield* translator.translate(parsed);
+      for (const evt of translator.translate(parsed)) {
+        yield evt.type === 'usage' ? subtractBaseline(evt, await usageBaseline) : evt;
+      }
     }
   } finally {
     if (silentExitTimer) clearTimeout(silentExitTimer);

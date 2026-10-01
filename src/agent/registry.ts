@@ -64,6 +64,13 @@ export interface AgentDescriptor {
   readonly legacyCallbackMarkers: readonly string[];
   /** `/config` effort hint: what "跟随默认" (no explicit effort) means for this CLI. */
   readonly effortDefaultHint: string;
+  /**
+   * How long the CLI may take to exit on its own after its last turn before
+   * the bridge stops it. Stopping it earlier cuts off its final bookkeeping
+   * (Codex needs several seconds after `turn.completed`). Nothing waits on
+   * this: replies go out at `done`, and a new turn starts its own process.
+   */
+  readonly exitGraceMs: number;
 }
 
 export const AGENT_DESCRIPTORS: Readonly<Record<AgentKind, AgentDescriptor>> = {
@@ -81,6 +88,7 @@ export const AGENT_DESCRIPTORS: Readonly<Record<AgentKind, AgentDescriptor>> = {
     promptInjection: 'append-system-prompt',
     legacyCallbackMarkers: ['__claude_cb'],
     effortDefaultHint: '「跟随默认」= 不传 --effort',
+    exitGraceMs: 2_000,
   },
   codex: {
     kind: 'codex',
@@ -97,6 +105,10 @@ export const AGENT_DESCRIPTORS: Readonly<Record<AgentKind, AgentDescriptor>> = {
     legacyCallbackMarkers: [],
     effortDefaultHint:
       '「跟随默认」= 用 Codex 配置里的 model_reasoning_effort；所选模型不支持的档位会自动降到它支持的最高档',
+    // codex-cli 0.159 spends 5–15s after `turn.completed` updating its
+    // memories / thread-state sqlite stores (what thread listing reads);
+    // the rollout itself is already complete by then.
+    exitGraceMs: 30_000,
   },
 };
 

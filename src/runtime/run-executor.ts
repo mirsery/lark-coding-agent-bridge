@@ -4,6 +4,7 @@ import { ActiveRuns, type RunHandle } from '../bot/active-runs';
 import { ProcessPool } from '../bot/process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
+import { agentDescriptor, isAgentKind } from '../agent/registry';
 import { RunRejected, SpawnFailed } from './errors';
 import { isTerminalEvent, ProcessSession } from './process-session';
 import type { UsageEntry } from './usage-ledger';
@@ -71,7 +72,6 @@ export interface RunExecution {
   stop(): Promise<void>;
 }
 
-const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
 const DEFAULT_MAX_BACKGROUND_LINGER_MS = 30 * 60 * 1000;
 
 /** A spawned process, tracked per scope while it may still serve turns. */
@@ -87,6 +87,8 @@ interface LiveProcess {
   source: string;
   lingerTimer: NodeJS.Timeout | undefined;
   finishing: boolean;
+  /** Settles once a finishing process has exited (or been stopped). */
+  finished: Promise<void> | undefined;
 }
 
 export class RunExecutor {
@@ -106,7 +108,8 @@ export class RunExecutor {
     this.activeRuns = deps.activeRuns;
     this.createRunId = deps.createRunId ?? randomUUID;
     this.now = deps.now ?? Date.now;
-    this.postDoneExitGraceMs = deps.postDoneExitGraceMs ?? DEFAULT_POST_DONE_EXIT_GRACE_MS;
+    this.postDoneExitGraceMs =
+      deps.postDoneExitGraceMs ?? agentDescriptor(isAgentKind(deps.agent.id) ? deps.agent.id : undefined).exitGraceMs;
     this.maxBackgroundLingerMs = deps.maxBackgroundLingerMs ?? DEFAULT_MAX_BACKGROUND_LINGER_MS;
     this.usage = deps.usage;
   }
@@ -172,7 +175,10 @@ export class RunExecutor {
     let live: LiveProcess | undefined;
     let turnEvents: AsyncIterable<AgentEvent> | undefined;
     const previous = this.live.get(input.scopeId);
-    if (previous) {
+    // A process still exiting on its own after its last turn is left to
+    // finish its bookkeeping in the background; the conversation it wrote is
+    // already complete, so the new turn does not wait for it.
+    if (previous && !previous.finishing) {
       const resumeTarget = input.sessionId ?? input.threadId;
       const compatible =
         previous.compatKey === compatKey &&
@@ -237,6 +243,7 @@ export class RunExecutor {
         source: 'unknown',
         lingerTimer: undefined,
         finishing: false,
+        finished: undefined,
       };
       live = created;
       turnEvents = created.session.attachTurn();
@@ -403,9 +410,15 @@ export class RunExecutor {
   }
 
   /** Let a process with nothing left to do exit; stop it if it won't. */
-  private async finish(live: LiveProcess): Promise<void> {
-    if (live.finishing) return;
-    live.finishing = true;
+  private finish(live: LiveProcess): Promise<void> {
+    if (!live.finished) {
+      live.finishing = true;
+      live.finished = this.awaitExit(live);
+    }
+    return live.finished;
+  }
+
+  private async awaitExit(live: LiveProcess): Promise<void> {
     this.endLinger(live);
     const exited = await live.session.run.waitForExit(this.postDoneExitGraceMs);
     if (!exited) {
@@ -434,10 +447,17 @@ export class RunExecutor {
       await this.finish(live);
       return;
     }
+    if (live.finished) {
+      await live.finished;
+      return;
+    }
     live.finishing = true;
-    this.endLinger(live);
-    await live.session.run.stop().catch(() => {});
-    this.forget(live);
+    live.finished = (async () => {
+      this.endLinger(live);
+      await live.session.run.stop().catch(() => {});
+      this.forget(live);
+    })();
+    await live.finished;
   }
 
   private forget(live: LiveProcess): void {
@@ -564,9 +584,13 @@ class EventFanout {
     } catch (err) {
       this.error = err;
     } finally {
-      await this.onDone();
+      // Start cleanup first (it frees the scope and pool slot synchronously),
+      // then end the subscriptions: consumers must not wait for the process
+      // to finish exiting, which can take a while (see exitGraceMs).
+      const cleanup = this.onDone();
       this.done = true;
       this.wakeAll();
+      await cleanup;
     }
   }
 
