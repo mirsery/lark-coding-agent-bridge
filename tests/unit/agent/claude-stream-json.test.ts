@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -165,6 +165,53 @@ describe('Claude stream-json reader behavior', () => {
     expect(usages).toHaveLength(2);
     expect(usages[0]).toMatchObject({ inputTokens: 1060, cachedInputTokens: 1000, outputTokens: 20, costUsd: 0.02 });
     expect((usages[1] as { costUsd: number }).costUsd).toBeCloseTo(0.015, 10);
+  });
+
+  it('subtracts the session total Claude restores on resume from the first turn', async () => {
+    const usage = { input_tokens: 64, output_tokens: 13164, cache_read_input_tokens: 12936660, cache_creation_input_tokens: 426269 };
+    const binary = await createFakeBinary([
+      JSON.stringify({ type: 'result', num_turns: 1, session_id: 'sess-c', usage, total_cost_usd: 161.8928 }),
+      JSON.stringify({ type: 'result', num_turns: 1, session_id: 'sess-c', usage, total_cost_usd: 162.5 }),
+    ], 0, '');
+    cleanup = binary.cleanup;
+    const config = await mkdtemp(join(tmpdir(), 'claude-config-'));
+    await mkdir(join(config, 'projects', 'p'), { recursive: true });
+    await writeFile(join(config, 'projects', 'p', 'sess-c.jsonl'), `${JSON.stringify({ type: 'cost-state', sessionId: 'sess-c', totalCostUSD: 155.6318 })}\n`);
+    const previous = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = config;
+    try {
+      const run = new ClaudeAdapter({ binary: binary.path }).run({ runId: 'run-resumed-cost', prompt: 'hi', cwd: tmpdir(), sessionId: 'sess-c' });
+      const costs = (await collect(run.events)).filter((e) => e.type === 'usage').map((e) => (e as { costUsd: number }).costUsd);
+      expect(costs[0]).toBeCloseTo(6.261, 3);
+      expect(costs[1]).toBeCloseTo(0.6072, 4);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previous;
+      await rm(config, { recursive: true, force: true });
+    }
+  });
+
+  it('counts from zero when the resumed session had no total to restore', async () => {
+    const usage = { input_tokens: 10, output_tokens: 20 };
+    const binary = await createFakeBinary([
+      JSON.stringify({ type: 'result', num_turns: 1, session_id: 'sess-z', usage, total_cost_usd: 0.4 }),
+    ], 0, '');
+    cleanup = binary.cleanup;
+    const config = await mkdtemp(join(tmpdir(), 'claude-config-'));
+    await mkdir(join(config, 'projects', 'p'), { recursive: true });
+    // A saved total above what Claude reports: it restored nothing this time.
+    await writeFile(join(config, 'projects', 'p', 'sess-z.jsonl'), `${JSON.stringify({ type: 'cost-state', sessionId: 'sess-z', totalCostUSD: 9 })}\n`);
+    const previous = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = config;
+    try {
+      const run = new ClaudeAdapter({ binary: binary.path }).run({ runId: 'run-unrestored', prompt: 'hi', cwd: tmpdir(), sessionId: 'sess-z' });
+      const usages = (await collect(run.events)).filter((e) => e.type === 'usage');
+      expect(usages).toEqual([expect.objectContaining({ costUsd: 0.4 })]);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previous;
+      await rm(config, { recursive: true, force: true });
+    }
   });
 
   it('still reports done when a no-turn result is the only result before exit', async () => {

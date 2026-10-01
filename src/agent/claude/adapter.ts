@@ -16,6 +16,7 @@ import {
   type AgentRun,
   type AgentRunOptions,
 } from '../types';
+import { restoredSessionCost } from './session-cost';
 import { encodeUserMessage, isNoTurnResult, translateEvent } from './stream-json';
 
 export interface ClaudeAdapterOptions {
@@ -97,6 +98,8 @@ export class ClaudeAdapter implements AgentAdapter {
     if (opts.model) args.push('--model', opts.model);
     if (opts.effort) args.push('--effort', opts.effort);
 
+    // Read before spawn: the session total Claude is about to restore.
+    const costBaseline = opts.sessionId ? (restoredSessionCost(opts.sessionId, opts.cwd) ?? 0) : 0;
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel)),
@@ -181,7 +184,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     return {
       runId: opts.runId,
-      events: createEventStream(child, stderrChunks, () => runtimeError, onEvent),
+      events: createEventStream(child, stderrChunks, () => runtimeError, onEvent, costBaseline),
       send,
       endInput: closeInput,
       async stop() {
@@ -231,6 +234,7 @@ async function* createEventStream(
   stderrChunks: Buffer[],
   getError: () => Error | null,
   onEvent: (evt: AgentEvent) => void,
+  costBaseline: number,
 ): AsyncGenerator<AgentEvent> {
   // If fork itself failed synchronously, child.pid is undefined. The 'error'
   // event (ENOENT etc.) fires in the next tick, so also check getError().
@@ -257,12 +261,15 @@ async function* createEventStream(
   // ends the run ~2s in and the post-done reap kills the turn that actually
   // carries the user's prompt. Replayed only if no real result follows.
   let heldResult: AgentEvent[] | undefined;
-  // `total_cost_usd` accumulates over every turn a streamed-input process
-  // runs; report each turn's own share.
-  let costSoFar = 0;
+  // `total_cost_usd` is the session's running total: restored on resume, then
+  // accumulated over every turn a streamed-input process runs. Report each
+  // turn's own share. A total below the baseline means Claude restored
+  // nothing, so count from zero rather than report a free turn.
+  let costSoFar = costBaseline;
   const perTurnCost = (evt: Extract<AgentEvent, { type: 'usage' }>): AgentEvent => {
     if (evt.costUsd === undefined) return evt;
-    const turnCost = Math.max(0, evt.costUsd - costSoFar);
+    if (evt.costUsd < costSoFar) costSoFar = 0;
+    const turnCost = evt.costUsd - costSoFar;
     costSoFar = evt.costUsd;
     return { ...evt, costUsd: turnCost };
   };
