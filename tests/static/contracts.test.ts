@@ -53,6 +53,7 @@ describe('static architecture contracts', () => {
       'src/card/callback-store.ts',
       'src/scheduler/store.ts',
       'src/bot/pending-store.ts',
+      'src/runtime/usage-ledger.ts',
     ]) {
       const source = read(file);
       expect(source, file).toContain('writeFileAtomic');

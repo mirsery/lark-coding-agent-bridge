@@ -77,7 +77,7 @@ describe('Claude stream-json translator', () => {
         total_cost_usd: 0.1234,
       }),
     ]).toEqual([
-      { type: 'usage', inputTokens: 12, outputTokens: 34, cachedInputTokens: 5, costUsd: 0.1234 },
+      { type: 'usage', inputTokens: 17, outputTokens: 34, cachedInputTokens: 5, costUsd: 0.1234 },
       { type: 'done', sessionId: 'sess-2', terminationReason: 'normal' },
     ]);
     expect([...translateEvent({ type: 'result', session_id: 'sess-2' })][0]).not.toHaveProperty('threadId');
@@ -149,6 +149,22 @@ describe('Claude stream-json reader behavior', () => {
       { type: 'text', delta: 'answer' },
       { type: 'done', sessionId: 'sess-r', terminationReason: 'normal' },
     ]);
+  });
+
+  it('reports each turn its own cost although Claude accumulates it over the process', async () => {
+    const usage = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 1000, cache_creation_input_tokens: 50 };
+    const binary = await createFakeBinary([
+      JSON.stringify({ type: 'result', num_turns: 1, session_id: 's', usage, total_cost_usd: 0.02 }),
+      JSON.stringify({ type: 'result', num_turns: 1, session_id: 's', usage, total_cost_usd: 0.035 }),
+    ], 0, '');
+    cleanup = binary.cleanup;
+
+    const run = new ClaudeAdapter({ binary: binary.path }).run({ runId: 'run-cost', prompt: 'hi', cwd: tmpdir() });
+    const usages = (await collect(run.events)).filter((e) => e.type === 'usage');
+
+    expect(usages).toHaveLength(2);
+    expect(usages[0]).toMatchObject({ inputTokens: 1060, cachedInputTokens: 1000, outputTokens: 20, costUsd: 0.02 });
+    expect((usages[1] as { costUsd: number }).costUsd).toBeCloseTo(0.015, 10);
   });
 
   it('still reports done when a no-turn result is the only result before exit', async () => {

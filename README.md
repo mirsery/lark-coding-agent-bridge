@@ -285,6 +285,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/exit <id\|#>` | Stop a bridge process |
 | `/reconnect` | Force a WebSocket reconnect |
 | `/doctor [description]` | Run low-sensitive diagnostics |
+| `/usage [today\|week\|month]` | Token and estimated-cost usage; everyone sees their own, admins see everyone in a private chat |
 | `/help` | Help card |
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.

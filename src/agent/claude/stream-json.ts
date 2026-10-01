@@ -23,6 +23,7 @@ interface ClaudeRawEvent {
     input_tokens?: number;
     output_tokens?: number;
     cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
   };
   total_cost_usd?: number;
   num_turns?: number;
@@ -93,11 +94,20 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
 
   if (evt.type === 'result') {
     if (evt.usage) {
+      // Claude counts cache reads / writes apart from `input_tokens`; the
+      // bridge's usage event reports the whole prompt, cached part included
+      // (Codex's convention). `total_cost_usd` is cumulative for the process —
+      // the adapter turns it into a per-turn figure.
+      const { input_tokens, cache_read_input_tokens, cache_creation_input_tokens } = evt.usage;
+      const anyInput =
+        input_tokens !== undefined || cache_read_input_tokens !== undefined || cache_creation_input_tokens !== undefined;
       yield {
         type: 'usage',
-        inputTokens: evt.usage.input_tokens,
+        inputTokens: anyInput
+          ? (input_tokens ?? 0) + (cache_read_input_tokens ?? 0) + (cache_creation_input_tokens ?? 0)
+          : undefined,
         outputTokens: evt.usage.output_tokens,
-        cachedInputTokens: evt.usage.cache_read_input_tokens,
+        cachedInputTokens: cache_read_input_tokens,
         costUsd: evt.total_cost_usd,
       };
     }

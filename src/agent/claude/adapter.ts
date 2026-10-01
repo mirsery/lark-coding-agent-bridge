@@ -247,6 +247,15 @@ async function* createEventStream(
   // ends the run ~2s in and the post-done reap kills the turn that actually
   // carries the user's prompt. Replayed only if no real result follows.
   let heldResult: AgentEvent[] | undefined;
+  // `total_cost_usd` accumulates over every turn a streamed-input process
+  // runs; report each turn's own share.
+  let costSoFar = 0;
+  const perTurnCost = (evt: Extract<AgentEvent, { type: 'usage' }>): AgentEvent => {
+    if (evt.costUsd === undefined) return evt;
+    const turnCost = Math.max(0, evt.costUsd - costSoFar);
+    costSoFar = evt.costUsd;
+    return { ...evt, costUsd: turnCost };
+  };
   try {
     for await (const line of rl) {
       sawStdout = true;
@@ -262,7 +271,8 @@ async function* createEventStream(
         heldResult = [...translateEvent(parsed)];
         continue;
       }
-      for (const evt of translateEvent(parsed)) {
+      for (const raw of translateEvent(parsed)) {
+        const evt = raw.type === 'usage' ? perTurnCost(raw) : raw;
         if (evt.type === 'done') heldResult = undefined;
         onEvent(evt);
         yield evt;

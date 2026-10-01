@@ -264,6 +264,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
         sessionId,
         threadId,
         stopGraceMs: getAgentStopGraceMs(controls.cfg),
+        actor: { id: evt.operator.openId },
         observability: {
           profile: controls.profile,
           agent: capability.agentId,

@@ -80,6 +80,7 @@ import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { PendingStore, type PendingRecord } from './pending-store';
+import { formatUsageLine, UsageLedger } from '../runtime/usage-ledger';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
 import { lookupMessageThreadId } from './thread-id';
@@ -222,7 +223,14 @@ export interface StartChannelDeps {
   controls: Controls;
   appPaths?: Pick<
     AppPaths,
-    'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'runsFile' | 'knowledgeDir' | 'jobsFile' | 'pendingFile'
+    | 'secretsFile'
+    | 'keystoreSaltFile'
+    | 'mediaDir'
+    | 'runsFile'
+    | 'knowledgeDir'
+    | 'jobsFile'
+    | 'pendingFile'
+    | 'usageFile'
   >;
 }
 
@@ -239,6 +247,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   const pendingStore = deps.appPaths?.pendingFile ? new PendingStore(deps.appPaths.pendingFile) : undefined;
   await pendingStore?.load();
   const leftoverPending = pendingStore?.takeAll() ?? [];
+  // Who consumed how much of the owner's agent quota (/usage, card byline).
+  const usageLedger = deps.appPaths?.usageFile ? new UsageLedger(deps.appPaths.usageFile) : undefined;
+  await usageLedger?.load();
+  controls.usage = usageLedger;
   // Cross-session memory + skills. Absent only in tests that omit appPaths,
   // where every run simply gets no knowledge block.
   const knowledge = deps.appPaths?.knowledgeDir
@@ -262,7 +274,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // Concurrency cap — reads `preferences.maxConcurrentRuns` on each acquire,
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
-  const executor = new RunExecutor({ agent, pool, activeRuns });
+  const executor = new RunExecutor({ agent, pool, activeRuns, ...(usageLedger ? { usage: usageLedger } : {}) });
 
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
@@ -641,6 +653,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       controls.scheduler = undefined;
       controls.meeting = undefined;
       controls.runsMonitor = undefined;
+      controls.usage = undefined;
       // Keep the durable copy: the next process (or the rebuilt channel after
       // /reconnect) picks the queued messages up again.
       pending.stop();
@@ -673,6 +686,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         workspaces.flush(),
         jobs?.flush(),
         pendingStore?.flush(),
+        usageLedger?.flush(),
       ]);
       for (const [idx, result] of flushResults.entries()) {
         if (result.status === 'rejected') {
@@ -1135,6 +1149,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     executor,
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
+    ...(firstMsg.senderName ? { actorName: firstMsg.senderName } : {}),
     onBackgroundTurn: (turn) => deliverBackgroundTurn?.(turn) ?? Promise.resolve(),
     observability: {
       profile: controls.profile,
@@ -1185,6 +1200,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     });
     if (evt.type === 'system' && evt.sessionId) {
       log.info('session', 'set', { sessionId: evt.sessionId });
+    }
+    if (evt.type === 'usage' && cardRenderOptions.meta) {
+      cardRenderOptions.meta.usage = usageLineOf([evt]);
     }
     // Ground truth for "which model is actually running": claude reports the
     // model it loaded in its init event. Logging requested-vs-actual reveals
@@ -1274,6 +1292,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   deliverBackgroundTurn = async (turn) => {
     const state = backgroundTurnState(turn, filterForPrefs);
     if (!state) return;
+    // The follow-up's byline reports the background turn's own consumption.
+    const usage = turn.kind === 'turn' ? usageLineOf(turn.events) : undefined;
     await sendFinalReply({
       channel,
       chatId,
@@ -1281,7 +1301,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       state: separateFinalReply ? finalAnswerOnlyState(state) : state,
       replyMode,
       sendOpts,
-      cardRenderOptions,
+      cardRenderOptions: cardRenderOptions.meta
+        ? { ...cardRenderOptions, meta: { ...cardRenderOptions.meta, usage } }
+        : cardRenderOptions,
     });
   };
 
@@ -2133,4 +2155,15 @@ async function sendExpiredPendingNotice(channel: LarkChannel, record: PendingRec
   } catch (err) {
     log.warn('pending', 'expired-notice-failed', { scope: record.scope, err: String(err) });
   }
+}
+
+/** Byline usage for a set of events (one turn), or undefined when none was reported. */
+function usageLineOf(events: readonly AgentEvent[]): string | undefined {
+  const usages = events.filter((e): e is Extract<AgentEvent, { type: 'usage' }> => e.type === 'usage');
+  if (usages.length === 0) return undefined;
+  return formatUsageLine({
+    inputTokens: usages.reduce((n, u) => n + (u.inputTokens ?? 0), 0),
+    outputTokens: usages.reduce((n, u) => n + (u.outputTokens ?? 0), 0),
+    costUsd: usages.reduce((n, u) => n + (u.costUsd ?? 0), 0),
+  });
 }

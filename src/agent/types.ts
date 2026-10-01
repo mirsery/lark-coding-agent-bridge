@@ -11,6 +11,11 @@ export type AgentEvent =
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; output: string; isError: boolean }
   | {
+      /**
+       * One turn's consumption. `inputTokens` is the whole prompt, the cached
+       * part (`cachedInputTokens`) included; `costUsd` is this turn's share
+       * (an estimate on subscription logins).
+       */
       type: 'usage';
       inputTokens?: number;
       outputTokens?: number;

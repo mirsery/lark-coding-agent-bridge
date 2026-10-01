@@ -5,6 +5,13 @@ import { basename, dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { agentCapability } from '../agent/capability';
 import { agentDescriptor, type AgentKind } from '../agent/registry';
+import {
+  emptyTotals,
+  formatTokens,
+  type UsageLedger,
+  type UsageReportRow,
+  type UsageTotals,
+} from '../runtime/usage-ledger';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedEfforts, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -167,6 +174,9 @@ export interface Controls {
   /** Scheduled-job engine backing `/cron`; present only while the channel is
    * connected and a profile data dir exists. Late-bound by startChannel. */
   scheduler?: Scheduler;
+  /** Per-person consumption backing `/usage`; present only while the channel
+   * is connected and a profile data dir exists. Late-bound by startChannel. */
+  usage?: UsageLedger;
 }
 
 export interface CommandContext {
@@ -249,6 +259,7 @@ const handlers: Record<string, Handler> = {
   '/knowledge': handleKnowledge,
   '/cron': handleCron,
   '/coffee': handleCoffee,
+  '/usage': handleUsage,
 };
 
 /**
@@ -1287,6 +1298,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
       policy,
       nowait: true,
       stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
+      actor: { id: ctx.msg.senderId, ...(ctx.msg.senderName ? { name: ctx.msg.senderName } : {}) },
       observability: {
         profile: ctx.controls.profile,
         agent: capability.agentId,
@@ -1439,6 +1451,72 @@ async function handleHelp(_args: string, ctx: CommandContext): Promise<void> {
 }
 
 // ─── /coffee ──────────────────────────────────────────────────────────────
+
+const USAGE_PERIODS: Record<string, { days: number; label: string }> = {
+  today: { days: 1, label: '今天' },
+  week: { days: 7, label: '近 7 天' },
+  month: { days: 30, label: '近 30 天' },
+};
+
+/**
+ * `/usage [today|week|month]`: whose runs consumed how much of the owner's
+ * agent quota. Everyone sees their own numbers; only an admin in a private
+ * chat sees everyone's, so one chat never learns another person's usage.
+ */
+async function handleUsage(args: string, ctx: CommandContext): Promise<void> {
+  const ledger = ctx.controls.usage;
+  if (!ledger) {
+    await reply(ctx, '当前 profile 没有开启用量统计。');
+    return;
+  }
+  const key = args.trim().toLowerCase();
+  if (key && !USAGE_PERIODS[key]) {
+    await reply(ctx, '用法：`/usage [today|week|month]`，默认显示今天和近 7 天。');
+    return;
+  }
+  const periods = key ? [USAGE_PERIODS[key]!] : [USAGE_PERIODS.today!, USAGE_PERIODS.week!];
+  const everyone =
+    ctx.chatMode === 'p2p' &&
+    canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok;
+  const sections = periods.map((period) => {
+    const rows = ledger.report({ days: period.days, ...(everyone ? {} : { actorId: ctx.msg.senderId }) });
+    return formatUsageSection(period.label, rows, { everyone, selfId: ctx.msg.senderId });
+  });
+  const notes = [
+    '_费用是按 API 价格估算的；订阅账号不实际扣费，只用来比较各人占用额度的多少。Codex 不报费用，只看 token。_',
+    ...(ctx.chatMode !== 'p2p' && !everyone ? ['_只显示你自己的用量；管理员私聊发 `/usage` 可看所有人。_'] : []),
+  ];
+  await reply(ctx, [...sections, ...notes].join('\n\n'));
+}
+
+function formatUsageSection(
+  label: string,
+  rows: UsageReportRow[],
+  opts: { everyone: boolean; selfId: string },
+): string {
+  if (rows.length === 0) return `**${label}**\n暂无用量记录。`;
+  const total = rows.reduce((acc, row) => {
+    acc.turns += row.total.turns;
+    acc.inputTokens += row.total.inputTokens;
+    acc.cachedInputTokens += row.total.cachedInputTokens;
+    acc.outputTokens += row.total.outputTokens;
+    acc.costUsd += row.total.costUsd;
+    return acc;
+  }, emptyTotals());
+  if (!opts.everyone) return `**${label}**\n你：${formatUsageTotals(total)}`;
+  const shown = rows.slice(0, 10).map((row, i) => {
+    const who = row.actorId === opts.selfId ? '你' : (row.actorName ?? `…${row.actorId.slice(-6)}`);
+    return `${i + 1}. ${who}：${formatUsageTotals(row.total)}`;
+  });
+  const more = rows.length > 10 ? [`…另有 ${rows.length - 10} 人`] : [];
+  return [`**${label}**（${rows.length} 人）`, `合计：${formatUsageTotals(total)}`, ...shown, ...more].join('\n');
+}
+
+function formatUsageTotals(t: UsageTotals): string {
+  const cached = t.cachedInputTokens > 0 ? `（缓存 ${formatTokens(t.cachedInputTokens)}）` : '';
+  const cost = t.costUsd > 0 ? ` · 估算 $${t.costUsd.toFixed(2)}` : '';
+  return `${t.turns} 轮 · 输入 ${formatTokens(t.inputTokens)}${cached} · 输出 ${formatTokens(t.outputTokens)}${cost}`;
+}
 
 async function handleCoffee(_args: string, ctx: CommandContext): Promise<void> {
   await ctx.channel.send(ctx.msg.chatId, { card: coffeeCard() }, commandReplyOptions(ctx));

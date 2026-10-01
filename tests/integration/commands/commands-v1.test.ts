@@ -8,6 +8,7 @@ import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/con
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
+import { UsageLedger } from '../../../src/runtime/usage-ledger.js';
 import { createFakeAgent } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
@@ -261,6 +262,46 @@ describe('Bridge command contracts', () => {
     const status = JSON.stringify(lastContent(h.channel));
     expect(status).toContain(jsonStringFragment(await realpath(h.tmp.workspace)));
     expect(status).toContain('chat-1');
+  });
+
+  it('/usage shows each person only their own numbers unless an admin asks in private', async () => {
+    const h = await createHarness();
+    const ledger = new UsageLedger(join(h.tmp.profile, 'usage.json'));
+    ledger.record({
+      actorId: 'ou-admin',
+      actorName: 'Boss',
+      source: 'im',
+      scopeId: 'chat-1',
+      usage: { type: 'usage', inputTokens: 2000, cachedInputTokens: 1500, outputTokens: 100, costUsd: 1.5 },
+    });
+    ledger.record({
+      actorId: 'ou-other',
+      actorName: 'Colleague',
+      source: 'im',
+      scopeId: 'chat-2',
+      usage: { type: 'usage', inputTokens: 500, outputTokens: 20, costUsd: 0.4 },
+    });
+    (h.controls as Controls).usage = ledger;
+    cleanups.push(() => ledger.flush());
+
+    await expect(h.run('/usage')).resolves.toBe(true);
+    const adminView = lastMarkdown(h.channel);
+    expect(adminView).toContain('2 人');
+    expect(adminView).toContain('Colleague');
+    expect(adminView).toContain('估算 $1.90');
+
+    await h.run('/usage', { senderId: 'ou-other' });
+    const ownView = lastMarkdown(h.channel);
+    expect(ownView).toContain('你：1 轮');
+    expect(ownView).not.toContain('Boss');
+
+    await h.run('/usage week', { chatMode: 'group' });
+    const groupView = lastMarkdown(h.channel);
+    expect(groupView).not.toContain('Colleague');
+    expect(groupView).toContain('私聊');
+
+    await h.run('/usage yesterday');
+    expect(lastMarkdown(h.channel)).toContain('用法');
   });
 
   it('rejects admin-only commands for non owner/admin users', async () => {

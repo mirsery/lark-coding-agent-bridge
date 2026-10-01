@@ -4,6 +4,7 @@ import { ActiveRuns } from '../../../src/bot/active-runs';
 import { ProcessPool } from '../../../src/bot/process-pool';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 import { RunExecutor, type BackgroundTurn } from '../../../src/runtime/run-executor';
+import type { UsageEntry } from '../../../src/runtime/usage-ledger';
 
 /**
  * A process the test drives by hand, shaped like `claude --input-format
@@ -104,6 +105,7 @@ class LiveAgent implements AgentAdapter {
 function harness(opts: { maxBackgroundLingerMs?: number } = {}) {
   const agent = new LiveAgent();
   const activeRuns = new ActiveRuns();
+  const booked: UsageEntry[] = [];
   let n = 0;
   const executor = new RunExecutor({
     agent,
@@ -112,9 +114,10 @@ function harness(opts: { maxBackgroundLingerMs?: number } = {}) {
     createRunId: () => `run-${++n}`,
     now: () => 1000,
     postDoneExitGraceMs: 50,
+    usage: { record: (entry) => booked.push(entry) },
     ...opts,
   });
-  return { agent, activeRuns, executor };
+  return { agent, activeRuns, executor, booked };
 }
 
 function policy(overrides: Partial<RunPolicyAllow> = {}): RunPolicyAllow {
@@ -326,5 +329,45 @@ describe('RunExecutor background tasks', () => {
 
     await until(() => live.stopped);
     expect(h.activeRuns.isLingering('chat-1')).toBe(false);
+  });
+
+  it('books each turn against the person behind it, background turns against the latest submitter', async () => {
+    const h = harness();
+    const first = await h.executor.submit({
+      scopeId: 'chat-1',
+      policy: policy(),
+      actor: { id: 'ou_a', name: 'A' },
+      observability: { profile: 'p', agent: 'claude', source: 'im', stage: 'submit' },
+    });
+    const live = h.agent.runs[0]!;
+    live.emit(
+      { type: 'system', sessionId: 'sess-1' },
+      { type: 'background', count: 1 },
+      { type: 'usage', inputTokens: 100, outputTokens: 10, costUsd: 0.1 },
+      done(),
+    );
+    await collect(first.subscribe());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+
+    const second = await h.executor.submit({
+      scopeId: 'chat-1',
+      policy: policy({ prompt: 'next' }),
+      sessionId: 'sess-1',
+      actor: { id: 'ou_b' },
+      observability: { profile: 'p', agent: 'claude', source: 'im', stage: 'submit' },
+    });
+    live.emit({ type: 'usage', inputTokens: 50, outputTokens: 5 }, done());
+    await collect(second.subscribe());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+    live.emit({ type: 'background', count: 0 }, { type: 'usage', inputTokens: 7, outputTokens: 1 }, done());
+    await until(() => h.booked.length === 3);
+
+    expect(h.booked.map((b) => [b.actorId, b.source, b.scopeId, b.usage.inputTokens])).toEqual([
+      ['ou_a', 'im', 'chat-1', 100],
+      ['ou_b', 'im', 'chat-1', 50],
+      ['ou_b', 'im', 'chat-1', 7],
+    ]);
+    expect(h.booked[0]?.actorName).toBe('A');
+    live.exit();
   });
 });

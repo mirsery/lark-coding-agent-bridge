@@ -18,6 +18,8 @@ export interface AppPaths {
   runsFile: string;
   /** Durable copy of messages queued behind a run (PendingStore). */
   pendingFile: string;
+  /** Per-person token / cost consumption (UsageLedger). */
+  usageFile: string;
   /** Bridge-managed memory + skills for this profile (optionally a git repo). */
   knowledgeDir: string;
   /** Scheduled jobs (`/cron`), one file per profile. */
@@ -67,6 +69,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     workspacesFile: join(profileDir, 'workspaces.json'),
     runsFile: join(profileDir, 'runs.json'),
     pendingFile: join(profileDir, 'pending.json'),
+    usageFile: join(profileDir, 'usage.json'),
     knowledgeDir: join(profileDir, 'knowledge'),
     jobsFile: join(profileDir, 'jobs.json'),
     secretsFile: join(profileDir, 'secrets.enc'),

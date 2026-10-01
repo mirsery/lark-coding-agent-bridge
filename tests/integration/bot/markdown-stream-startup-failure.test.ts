@@ -762,5 +762,6 @@ function testAppPaths(tmp: TmpProfile) {
     knowledgeDir: join(tmp.profile, 'knowledge'),
     jobsFile: join(tmp.profile, 'jobs.json'),
     pendingFile: join(tmp.profile, 'pending.json'),
+    usageFile: join(tmp.profile, 'usage.json'),
   };
 }

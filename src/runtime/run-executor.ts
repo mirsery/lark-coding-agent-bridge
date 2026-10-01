@@ -6,6 +6,7 @@ import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
 import { RunRejected, SpawnFailed } from './errors';
 import { isTerminalEvent, ProcessSession } from './process-session';
+import type { UsageEntry } from './usage-ledger';
 
 export interface RunExecutorDeps {
   agent: AgentAdapter;
@@ -19,6 +20,8 @@ export interface RunExecutorDeps {
    * user turn before it is stopped anyway.
    */
   maxBackgroundLingerMs?: number;
+  /** Where each turn's token / cost report is booked against the person behind it. */
+  usage?: { record(entry: UsageEntry): void };
 }
 
 /**
@@ -43,6 +46,8 @@ export interface SubmitRunInput {
   images?: readonly string[];
   stopGraceMs?: number;
   nowait?: boolean;
+  /** Who this run is for — the person its usage is booked against. */
+  actor?: { id: string; name?: string };
   /**
    * Receives background turns once this run's user turn is over. A later
    * submission for the same scope replaces it, so follow-ups go to whoever
@@ -77,6 +82,9 @@ interface LiveProcess {
   compatKey: string;
   dimensions: Record<string, unknown>;
   onBackgroundTurn: BackgroundTurnHandler | undefined;
+  /** Latest submitter: background turns are booked against them. */
+  actor: { id: string; name?: string } | undefined;
+  source: string;
   lingerTimer: NodeJS.Timeout | undefined;
   finishing: boolean;
 }
@@ -89,6 +97,7 @@ export class RunExecutor {
   private readonly now: () => number;
   private readonly postDoneExitGraceMs: number;
   private readonly maxBackgroundLingerMs: number;
+  private readonly usage: RunExecutorDeps['usage'];
   private readonly live = new Map<string, LiveProcess>();
 
   constructor(deps: RunExecutorDeps) {
@@ -99,6 +108,7 @@ export class RunExecutor {
     this.now = deps.now ?? Date.now;
     this.postDoneExitGraceMs = deps.postDoneExitGraceMs ?? DEFAULT_POST_DONE_EXIT_GRACE_MS;
     this.maxBackgroundLingerMs = deps.maxBackgroundLingerMs ?? DEFAULT_MAX_BACKGROUND_LINGER_MS;
+    this.usage = deps.usage;
   }
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {
@@ -223,6 +233,8 @@ export class RunExecutor {
         compatKey,
         dimensions,
         onBackgroundTurn: undefined,
+        actor: undefined,
+        source: 'unknown',
         lingerTimer: undefined,
         finishing: false,
       };
@@ -231,6 +243,8 @@ export class RunExecutor {
       this.live.set(input.scopeId, created);
     }
     live.onBackgroundTurn = input.onBackgroundTurn;
+    live.actor = input.actor;
+    live.source = dimensions.source;
     log.info('run', 'started', {
       ...dimensions,
       queueWaitMs,
@@ -273,7 +287,8 @@ export class RunExecutor {
     let terminal: AgentEvent | undefined;
     const fanout = new EventFanout(
       observeRunEvents(turnEvents, { dimensions, startedAt, now: this.now }, (event) => {
-        terminal = event;
+        if (event.type === 'usage') this.bookUsage(owner, event);
+        else terminal = event;
       }),
       async () => {
         await cleanup(terminal);
@@ -346,7 +361,23 @@ export class RunExecutor {
     await this.retire(live, 'max-linger');
   }
 
+  private bookUsage(live: LiveProcess, usage: Extract<AgentEvent, { type: 'usage' }>): void {
+    if (!this.usage || !live.actor) return;
+    try {
+      this.usage.record({
+        actorId: live.actor.id,
+        ...(live.actor.name ? { actorName: live.actor.name } : {}),
+        source: live.source,
+        scopeId: live.scopeId,
+        usage,
+      });
+    } catch (err) {
+      log.warn('run', 'usage-record-failed', { ...live.dimensions, err: String(err) });
+    }
+  }
+
   private deliverBackgroundTurn(live: LiveProcess, events: AgentEvent[]): void {
+    for (const event of events) if (event.type === 'usage') this.bookUsage(live, event);
     log.info('run', 'background-turn', {
       ...live.dimensions,
       events: events.length,
@@ -442,12 +473,12 @@ function observeRunEvents(
     startedAt: number;
     now: () => number;
   },
-  onTerminal: (event: AgentEvent) => void,
+  onEvent: (event: AgentEvent) => void,
 ): AsyncIterable<AgentEvent> {
   return {
     async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
       for await (const event of events) {
-        if (isTerminalEvent(event)) onTerminal(event);
+        if (isTerminalEvent(event) || event.type === 'usage') onEvent(event);
         if (event.type === 'done') {
           log.info('run', 'completed', {
             ...opts.dimensions,

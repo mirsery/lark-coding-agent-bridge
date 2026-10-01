@@ -285,6 +285,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/exit <id\|#>` | 停止指定 bridge 进程 |
 | `/reconnect` | 强制 WebSocket 重连 |
 | `/doctor [描述]` | 执行低敏诊断 |
+| `/usage [today\|week\|month]` | 用量统计（token 与估算费用）；每个人看自己的，管理员私聊可看所有人 |
 | `/help` | 帮助卡片 |
 
 私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。

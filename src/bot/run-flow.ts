@@ -34,6 +34,8 @@ export interface StartRunFlowInput {
   workspaces: WorkspaceStore;
   executor: RunExecutor;
   now: number;
+  /** Display name of `scope.actorId`, for usage reports. */
+  actorName?: string;
   /** Passed to the executor as `SubmitRunInput.onBackgroundTurn`. */
   onBackgroundTurn?: BackgroundTurnHandler;
   stopGraceMs?: number;
@@ -156,6 +158,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
               .filter((path): path is string => Boolean(path))
           : undefined,
       stopGraceMs: input.stopGraceMs,
+      actor: { id: input.scope.actorId, ...(input.actorName ? { name: input.actorName } : {}) },
       onBackgroundTurn: input.onBackgroundTurn,
       observability: input.observability,
     });
