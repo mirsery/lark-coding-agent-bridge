@@ -62,6 +62,14 @@ export interface CodexConfig {
   ignoreUserConfig?: boolean;
   ignoreRules?: boolean;
   /**
+   * How runs talk to Codex. `app-server` (default) keeps one process per
+   * conversation and runs later turns in it; `exec` spawns `codex exec` per
+   * message. The adapter falls back to `exec` on its own when the app-server
+   * can't honour the profile (ignoreUserConfig, or execpolicy rules that
+   * ignoreRules must keep out).
+   */
+  transport?: 'app-server' | 'exec';
+  /**
    * Extra environment for the `codex` child process only — e.g. a proxy the
    * Codex CLI needs while the bridge itself talks to Feishu directly.
    * Bridge-managed variables (`CODEX_HOME`, `LARK_CHANNEL*`,
@@ -422,6 +430,7 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
     inheritCodexHome: input.inheritCodexHome !== false,
     ignoreUserConfig: input.ignoreUserConfig === true,
     ignoreRules: input.ignoreRules !== false,
+    ...(input.transport === 'exec' || input.transport === 'app-server' ? { transport: input.transport } : {}),
   };
   const env = normalizeCodexEnv(input.env);
   if (env) codex.env = env;

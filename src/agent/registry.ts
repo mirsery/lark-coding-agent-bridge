@@ -71,6 +71,12 @@ export interface AgentDescriptor {
    * this: replies go out at `done`, and a new turn starts its own process.
    */
   readonly exitGraceMs: number;
+  /**
+   * How long a process that can take further turns (`AgentRun.send`) stays
+   * up idle after a turn, waiting for the conversation's next message. 0 =
+   * close it right away (Claude: it is only kept while background tasks run).
+   */
+  readonly idleKeepAliveMs: number;
 }
 
 export const AGENT_DESCRIPTORS: Readonly<Record<AgentKind, AgentDescriptor>> = {
@@ -89,6 +95,7 @@ export const AGENT_DESCRIPTORS: Readonly<Record<AgentKind, AgentDescriptor>> = {
     legacyCallbackMarkers: ['__claude_cb'],
     effortDefaultHint: '「跟随默认」= 不传 --effort',
     exitGraceMs: 2_000,
+    idleKeepAliveMs: 0,
   },
   codex: {
     kind: 'codex',
@@ -109,6 +116,9 @@ export const AGENT_DESCRIPTORS: Readonly<Record<AgentKind, AgentDescriptor>> = {
     // memories / thread-state sqlite stores (what thread listing reads);
     // the rollout itself is already complete by then.
     exitGraceMs: 30_000,
+    // The app-server transport keeps the conversation's process for the next
+    // message instead of paying Codex start-up again.
+    idleKeepAliveMs: 10 * 60_000,
   },
 };
 

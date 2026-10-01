@@ -90,6 +90,11 @@ export interface AgentRun {
    * fresh run instead.
    */
   send?(prompt: string): boolean;
+  /**
+   * No more turns are coming: close the process's input so it exits on its
+   * own. Offered by adapters whose processes otherwise stay up between turns.
+   */
+  endInput?(): void;
 }
 
 /**

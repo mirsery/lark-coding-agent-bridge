@@ -174,6 +174,7 @@ export class ClaudeAdapter implements AgentAdapter {
       runId: opts.runId,
       events: createEventStream(child, stderrChunks, () => runtimeError, onEvent),
       send,
+      endInput: closeInput,
       async stop() {
         if (child.exitCode !== null || child.signalCode !== null) return;
         log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs });

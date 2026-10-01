@@ -210,6 +210,8 @@ lark-channel-bridge profile list
 
 Lark 国际版应用加 `--tenant lark`。日常管理和其他 profile 一样：`restart` / `stop --profile codex`，或用 `lark-channel-bridge ui` 打开网页控制台。
 
+Codex 默认通过 `codex app-server` 运行：同一会话的后续消息交给已经启动的 Codex 进程，不用每条消息重新启动；进程空闲 10 分钟后自动关闭，`/stop` 通过协议干净地中断当前这一轮。profile 开启了 `ignoreUserConfig`，或者要靠 `ignoreRules` 挡住的 execpolicy `.rules` 文件存在时，会自动改用每条消息一个 `codex exec` 进程；也可以在 profile 的 `codex` 配置里写 `"transport": "exec"` 强制使用。
+
 ### 重启 `npm link` 出来的本地开发副本
 
 如果 `PATH` 里的 `lark-channel-bridge` 是 `npm link` 到本仓库某个本地 checkout 的（`npm ls -g lark-channel-bridge` 显示的是软链到仓库目录，而不是一个带版本号的 npm 安装），那正在跑的 daemon 只反映它**启动那一刻** `dist/` 里的内容——Node 进程启动时把编译好的 JS 一次性加载进内存，不会热更新。之后改源码、甚至跑了 `pnpm build`，对这个已经在跑的 daemon 都不生效。

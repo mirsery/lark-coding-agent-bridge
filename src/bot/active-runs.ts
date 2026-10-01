@@ -16,7 +16,7 @@ export class ActiveRuns {
    * tasks the agent started (see RunExecutor). Not "active": new messages for
    * the scope are handed to them rather than queued. Interrupts stop them.
    */
-  private readonly lingering = new Map<string, AgentRun>();
+  private readonly lingering = new Map<string, { run: AgentRun; kind: 'background' | 'idle' }>();
   private pauseDepth = 0;
   private pauseReason: string | undefined;
 
@@ -83,20 +83,30 @@ export class ActiveRuns {
     return [...this.handles.keys()];
   }
 
-  setLingering(chatId: string, run: AgentRun): void {
-    this.lingering.set(chatId, run);
+  /**
+   * `background`: still running tasks the agent started. `idle`: merely kept
+   * up for the conversation's next message (Codex app-server).
+   */
+  setLingering(chatId: string, run: AgentRun, kind: 'background' | 'idle' = 'background'): void {
+    this.lingering.set(chatId, { run, kind });
   }
 
   clearLingering(chatId: string, run: AgentRun): void {
-    if (this.lingering.get(chatId) === run) this.lingering.delete(chatId);
+    if (this.lingering.get(chatId)?.run === run) this.lingering.delete(chatId);
   }
 
+  /** The scope's process is still running background tasks. */
   isLingering(chatId: string): boolean {
+    return this.lingering.get(chatId)?.kind === 'background';
+  }
+
+  /** The scope has a process kept between turns, idle or busy with background work. */
+  hasKeptProcess(chatId: string): boolean {
     return this.lingering.has(chatId);
   }
 
   lingeringScopes(): string[] {
-    return [...this.lingering.keys()];
+    return [...this.lingering.entries()].filter(([, l]) => l.kind === 'background').map(([scope]) => scope);
   }
 
   /**
@@ -106,6 +116,7 @@ export class ActiveRuns {
    * its own as the subprocess dies.
    */
   interrupt(chatId: string): boolean {
+    // An idle kept process is stopped too, but quietly: nothing was running.
     const result = this.interruptDetailed(chatId);
     return result.active || result.background;
   }
@@ -115,24 +126,25 @@ export class ActiveRuns {
     const lingering = this.lingering.get(chatId);
     if (lingering) {
       this.lingering.delete(chatId);
-      void lingering.stop().catch(() => {
+      void lingering.run.stop().catch(() => {
         /* stop errors are non-fatal */
       });
     }
+    const background = lingering?.kind === 'background';
     const h = this.handles.get(chatId);
-    if (!h) return { active: false, background: Boolean(lingering) };
+    if (!h) return { active: false, background };
     this.reservations.delete(chatId);
     h.interrupted = true;
     this.handles.delete(chatId);
     void h.run.stop().catch(() => {
       /* stop errors are non-fatal */
     });
-    return { active: true, background: Boolean(lingering) };
+    return { active: true, background };
   }
 
   async stopAll(): Promise<void> {
     const all = [...this.handles.values()];
-    const lingering = [...this.lingering.values()];
+    const lingering = [...this.lingering.values()].map((l) => l.run);
     this.handles.clear();
     this.reservations.clear();
     this.lingering.clear();

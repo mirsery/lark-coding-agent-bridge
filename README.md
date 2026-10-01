@@ -210,6 +210,8 @@ Before step 2, make sure the app is ready on the Open Platform:
 
 Add `--tenant lark` for a Lark global app. Day-to-day management is the same as any profile: `restart` / `stop --profile codex`, or `lark-channel-bridge ui` for the web console.
 
+Codex runs through `codex app-server` by default: later messages in a conversation go to the Codex process that is already up instead of starting a new one, an idle process closes after 10 minutes, and `/stop` interrupts the turn cleanly over the protocol. Profiles with `ignoreUserConfig`, or with execpolicy `.rules` files that `ignoreRules` must keep out, fall back to one `codex exec` per message; set `"transport": "exec"` in the profile's `codex` config to force that.
+
 ### Restarting a `npm link`'d local dev checkout
 
 If `lark-channel-bridge` on your `PATH` is `npm link`'d to a local clone of this repo (`npm ls -g lark-channel-bridge` shows a symlink into the repo instead of a versioned npm install), the running daemon only reflects whatever was in `dist/` the moment it started — Node loads the built JS into memory once at process start and does not hot-reload. Editing source or even running `pnpm build` afterwards changes nothing for an already-running daemon.

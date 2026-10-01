@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
+import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { SandboxMode } from '../../config/profile-schema';
@@ -21,6 +22,8 @@ import { clampCodexEffort } from '../models';
 import { buildCodexArgs } from './argv';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 import { readThreadUsageBaseline, subtractBaseline, type CodexUsageTotals } from './thread-usage';
+import { startCodexAppServerRun } from './app-server-run';
+import pkg from '../../../package.json';
 
 export interface CodexAdapterOptions {
   binary: string;
@@ -34,6 +37,8 @@ export interface CodexAdapterOptions {
   larkChannel?: LarkChannelEnvContext;
   /** Profile-configured extras for the codex child (`codex.env`); bridge-managed keys win. */
   env?: Record<string, string>;
+  /** See CodexConfig.transport; defaults to `app-server`. */
+  transport?: 'app-server' | 'exec';
 }
 
 /** Variables the bridge sets itself; a profile's `codex.env` must not shadow them. */
@@ -59,6 +64,11 @@ export class CodexAdapter implements AgentAdapter {
   private readonly larkChannel: LarkChannelEnvContext | undefined;
   /** Thread usage read in prepareRun, keyed by runId, consumed by run. */
   private readonly usageBaselines = new Map<string, CodexUsageTotals | undefined>();
+  /** Transport chosen in prepareRun, keyed by runId; unprepared runs use `exec`. */
+  private readonly transports = new Map<string, 'app-server' | 'exec'>();
+  private readonly transport: 'app-server' | 'exec';
+  /** Set once an app-server never managed to open a conversation; later runs use exec. */
+  private appServerUnavailable: string | undefined;
   private readonly extraEnv: Record<string, string>;
   private botIdentity: AgentBotIdentity | undefined;
 
@@ -69,6 +79,7 @@ export class CodexAdapter implements AgentAdapter {
     this.inheritCodexHome = opts.inheritCodexHome !== false;
     this.ignoreUserConfig = opts.ignoreUserConfig === true;
     this.ignoreRules = opts.ignoreRules !== false;
+    this.transport = opts.transport ?? 'app-server';
     this.sandbox = opts.sandbox ?? 'danger-full-access';
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.larkChannel = opts.larkChannel;
@@ -104,11 +115,36 @@ export class CodexAdapter implements AgentAdapter {
         availability.diagnostic,
       );
     }
-    // Read the resumed thread's usage so far before Codex starts appending
-    // this run's turn to the same rollout.
-    if (opts?.threadId) {
+    if (!opts) return;
+    const transport = await this.chooseTransport(opts);
+    this.transports.set(opts.runId, transport);
+    // `exec` reports thread-cumulative usage: read the resumed thread's usage
+    // so far before Codex starts appending this run's turn to the rollout.
+    // (The app-server reports per-call usage, so it needs no baseline.)
+    if (transport === 'exec' && opts.threadId) {
       this.usageBaselines.set(opts.runId, await this.readBaseline(opts.threadId));
     }
+  }
+
+  /**
+   * The app-server keeps one process per conversation, but it has no
+   * equivalent of `exec`'s --ignore-user-config / --ignore-rules; profiles
+   * that rely on those stay on `exec`.
+   */
+  private async chooseTransport(opts: AgentRunOptions): Promise<'app-server' | 'exec'> {
+    if (this.transport === 'exec' || this.ignoreUserConfig || this.appServerUnavailable) return 'exec';
+    if (this.ignoreRules && (await hasExecpolicyRules(this.codexHomeDir(), opts.cwd))) return 'exec';
+    return 'app-server';
+  }
+
+  private childEnv(): NodeJS.ProcessEnv {
+    const envOverrides: NodeJS.ProcessEnv = { ...this.extraEnv, ...buildLarkChannelEnv(this.larkChannel) };
+    if (this.codexHome) {
+      envOverrides.CODEX_HOME = this.codexHome;
+    } else if (!this.inheritCodexHome) {
+      envOverrides.CODEX_HOME = join(this.profileStateDir, 'codex-home');
+    }
+    return mergeProcessEnv(process.env, envOverrides);
   }
 
   private readBaseline(threadId: string): Promise<CodexUsageTotals | undefined> {
@@ -130,6 +166,33 @@ export class CodexAdapter implements AgentAdapter {
     // Fit the stored level to the chosen model so an over-high pick steps
     // down instead of Codex rejecting the run.
     const effort = clampCodexEffort(opts.model, opts.effort as EffortLevel | undefined);
+    const transport = this.transports.get(opts.runId) ?? 'exec';
+    this.transports.delete(opts.runId);
+    if (transport === 'app-server') {
+      const run = startCodexAppServerRun({
+        runId: opts.runId,
+        binary: this.binary,
+        cwd: opts.cwd,
+        env: this.childEnv(),
+        config: ['-c', 'approval_policy="never"', '-c', 'shell_environment_policy.inherit="all"'],
+        prompt: prefixBridgeSystemPrompt(opts.prompt, this.botIdentity),
+        ...(opts.images?.length ? { images: opts.images } : {}),
+        ...(opts.threadId ? { threadId: opts.threadId } : {}),
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(effort ? { effort } : {}),
+        sandbox: opts.sandbox ?? this.sandbox,
+        stopGraceMs: opts.stopGraceMs ?? this.defaultStopGraceMs,
+        clientVersion: pkg.version,
+        onStartupFailure: (reason) => {
+          // This Codex can't serve the app-server protocol (too old, or it
+          // hangs): stop trying, so the next message goes through exec.
+          this.appServerUnavailable = reason;
+          log.warn('agent', 'codex-app-server-disabled', { reason: reason.slice(0, 300) });
+        },
+      });
+      // Later turns get the same bridge system prompt the first one did.
+      return { ...run, send: (prompt: string) => run.send?.(prefixBridgeSystemPrompt(prompt, this.botIdentity)) ?? false };
+    }
     const args = buildCodexArgs({
       cwd: opts.cwd,
       sandbox: opts.sandbox ?? this.sandbox,
@@ -140,15 +203,9 @@ export class CodexAdapter implements AgentAdapter {
       model: opts.model,
       effort,
     });
-    const envOverrides: NodeJS.ProcessEnv = { ...this.extraEnv, ...buildLarkChannelEnv(this.larkChannel) };
-    if (this.codexHome) {
-      envOverrides.CODEX_HOME = this.codexHome;
-    } else if (!this.inheritCodexHome) {
-      envOverrides.CODEX_HOME = join(this.profileStateDir, 'codex-home');
-    }
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
-      env: mergeProcessEnv(process.env, envOverrides),
+      env: this.childEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as CodexChild;
 
@@ -343,4 +400,21 @@ function isWindowsCommandNotFoundLine(line: string): boolean {
     process.platform === 'win32' &&
     /is not recognized as an internal or external command|operable program or batch file/i.test(line)
   );
+}
+
+/**
+ * Whether Codex would load execpolicy `.rules` files for this run — the user
+ * ones under CODEX_HOME or the project's own — which `--ignore-rules` keeps
+ * out on `exec` but the app-server has no switch for.
+ */
+async function hasExecpolicyRules(codexHome: string, cwd: string | undefined): Promise<boolean> {
+  const dirs = [join(codexHome, 'rules'), ...(cwd ? [join(cwd, '.codex', 'rules')] : [])];
+  for (const dir of dirs) {
+    try {
+      if ((await readdir(dir)).some((name) => name.endsWith('.rules'))) return true;
+    } catch {
+      // No such directory: nothing to load from it.
+    }
+  }
+  return false;
 }

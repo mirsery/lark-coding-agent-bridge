@@ -31,7 +31,7 @@
 ## 质量门禁
 
 - 通过标准只有一个：`pnpm ci:local` 全绿。迭代中可以先跑 `npx vitest run <文件或目录>` 缩小范围，但交付前必须跑全量。
-- 已知噪声：机器负载高时，spawn 真实子进程的用例（`tests/process/`、`tests/unit/agent/*` 里的 fake binary 读流测试、`tests/integration/ui/server.test.ts`）可能撞 vitest 默认 5s 超时。处理方式：单独重跑该文件；必要时在未改动的 main 上跑同一文件对照，确认与本次改动无关，并在汇报里写明。不许把失败说成通过。
+- 已知噪声：机器负载高时，spawn 真实子进程的用例（`tests/process/`、`tests/unit/agent/*` 里的 fake binary 读流测试）可能撞 vitest 默认 5s 超时。（`tests/integration/ui/server.test.ts` 曾经偶发的 `4999 >= 5000` 是测试自身的时钟先后问题，已修。）处理方式：单独重跑该文件；必要时在未改动的 main 上跑同一文件对照，确认与本次改动无关，并在汇报里写明。不许把失败说成通过。
 - CI（`.github/workflows/ci.yml`）在 macOS / Ubuntu / Windows 三平台跑 test + typecheck + build。Windows 上 `claude` 是 `.cmd` shim、经 `cmd.exe` 启动：prompt 和系统提示词不能走 argv（`<` `>` 会被当重定向吃掉），一律走 stdin / 临时文件。
 
 ## 架构地图
@@ -58,6 +58,7 @@
 
 - **agent 分支只走注册表。** 共享代码不写 `agentKind === 'codex'` 这类字面判断（隐含的 else 会把新 agent 当成 Claude）。`tests/static/contracts.test.ts` 会拦；只有 agent 自己的代码（`src/agent/`、codex 配置段所在的 `src/config/` / `src/cli/`、`profile-runtime.ts` 里的历史迁移）可以点名某个 agent。
 - **一轮在 `done` 结束，进程不一定。** Claude 以 `--input-format stream-json` 运行：一轮结束时没有后台任务，adapter 关闭 stdin，进程自己退出（executor 按 agent 描述里的 `exitGraceMs` 等它退出（Claude 2s；Codex 30s——`turn.completed` 后它还要花 5–15s 写 memories / thread-state 的 sqlite，过早杀会丢 `/resume` 列表等数据），超时才杀；等待只在后台进行，回复在 `done` 时就发出，下一轮也不等旧进程）；还有后台任务（后台 Bash、后台子 agent、Monitor）时进程留着（`ProcessSession` / `RunExecutor` 的 linger，最长 30 分钟），后台任务触发的续跑轮经 `onBackgroundTurn` 作为补充回复发出，期间同一会话的新消息直接 `send` 进这个进程，不重开、不杀后台任务；运行参数（cwd、model、effort、权限、会话）不一致时才停掉重开。`/stop`、`/new`、`/cd` 会连后台任务一起停。Claude `--resume` 时若有上个进程残留的后台任务通知，会先吐一个 `num_turns: 0` 的 `result`——adapter 暂存它，不当成 `done`。相关测试：`tests/integration/executor/background-linger.test.ts`、`tests/unit/agent/claude-stream-json.test.ts`、`tests/process/claude-adapter.test.ts`。
+- **Codex 走 `codex app-server`**（`src/agent/codex/app-server-run.ts`）：一个会话一个常驻进程，`send` 即 `turn/start`，`stop` 先 `turn/interrupt`；空闲按 `idleKeepAliveMs`（10 分钟）后 `endInput` 让它退出——这类「空闲保留」不算后台任务（`/status`、`/stop` 回复、重启通知都不提）。app-server 没有 `--ignore-user-config` / `--ignore-rules`，相关 profile（或 `codex.transport: "exec"`）在 `prepareRun` 里退回 `codex exec`；未经 `prepareRun` 的直接调用也走 exec。协议是 experimental，翻译层测试用的是真实抓包 `tests/fixtures/codex-app-server-turns.json`，升级 codex-cli 后先重新抓包核对。
 - **用量按人记账**（`usage.json`，`UsageLedger`）：executor 在每轮的 `usage` 事件上记到 `SubmitRunInput.actor` 名下，后台续跑轮记到最近一次提交的人；Claude 的 `total_cost_usd` 在同一进程内累加，adapter 换算成每轮差值；Codex 的 `turn.completed.usage` 是整个 thread 的累计值，adapter 在 `prepareRun` 里从该 thread 的 rollout（`token_count`）读出此前的累计作为基线再相减；`inputTokens` 一律含缓存部分。`/usage` 只有管理员私聊才显示所有人。
 - **排队中的消息落盘**（`pending.json`，`PendingStore`）：重启 / 重连后 10 分钟内的自动补处理，更早的回一条通知请对方重发；重启时被停掉的后台任务也会在会话里说明。
 - **新增斜杠命令要过三处**：`handlers` 表；是否进 `ADMIN_COMMANDS`；帮助卡（`src/card/templates.ts`）。别名（如 `/reset` 之于 `/new`）要和本名一起进权限表，否则就是绕过。卡片按钮走 `runCommandHandler`，同样受管理员检查。

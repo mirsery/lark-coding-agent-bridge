@@ -40,6 +40,10 @@ class LiveRun implements AgentRun {
     this.inputClosed = true;
   }
 
+  /** Like a streamed-input CLI asked to finish: input closes, then it exits. */
+  endInputCalls = 0;
+  endInput?: () => void;
+
   readonly events: AsyncIterable<AgentEvent> = {
     [Symbol.asyncIterator]: () => this.iterate(),
   };
@@ -87,9 +91,11 @@ class LiveRun implements AgentRun {
 }
 
 class LiveAgent implements AgentAdapter {
-  readonly id = 'claude';
+  readonly id: string = 'claude';
   readonly displayName = 'Live fake';
   readonly runs: LiveRun[] = [];
+  /** Give runs `endInput`, like the Codex app-server transport. */
+  endInput = false;
 
   async isAvailable(): Promise<boolean> {
     return true;
@@ -97,13 +103,21 @@ class LiveAgent implements AgentAdapter {
 
   run(opts: AgentRunOptions): AgentRun {
     const run = new LiveRun(opts);
+    if (this.endInput) {
+      run.endInput = () => {
+        run.endInputCalls++;
+        run.closeInput();
+        setTimeout(() => run.exit(), 5);
+      };
+    }
     this.runs.push(run);
     return run;
   }
 }
 
-function harness(opts: { maxBackgroundLingerMs?: number; postDoneExitGraceMs?: number } = {}) {
+function harness(opts: { maxBackgroundLingerMs?: number; postDoneExitGraceMs?: number; idleKeepAliveMs?: number } = {}) {
   const agent = new LiveAgent();
+  agent.endInput = (opts.idleKeepAliveMs ?? 0) > 0;
   const activeRuns = new ActiveRuns();
   const booked: UsageEntry[] = [];
   let n = 0;
@@ -414,5 +428,61 @@ describe('RunExecutor background tasks', () => {
     const claude = new RunExecutor({ agent: new LiveAgent(), pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
     expect((codex as unknown as { postDoneExitGraceMs: number }).postDoneExitGraceMs).toBe(30_000);
     expect((claude as unknown as { postDoneExitGraceMs: number }).postDoneExitGraceMs).toBe(2_000);
+  });
+
+  it('keeps an idle process for the next message where the agent supports it, then closes it quietly', async () => {
+    const h = harness({ idleKeepAliveMs: 80 });
+    const turns: BackgroundTurn[] = [];
+    const first = await h.executor.submit({
+      scopeId: 'chat-1',
+      policy: policy(),
+      onBackgroundTurn: async (turn) => {
+        turns.push(turn);
+      },
+    });
+    const live = h.agent.runs[0]!;
+    live.emit({ type: 'system', threadId: 'thr-1' }, { type: 'done', threadId: 'thr-1', terminationReason: 'normal' });
+    await collect(first.subscribe());
+    await until(() => h.activeRuns.hasKeptProcess('chat-1'));
+    // Idle is not background work: /status and notices treat it as nothing running.
+    expect(h.activeRuns.isLingering('chat-1')).toBe(false);
+
+    const second = await h.executor.submit({ scopeId: 'chat-1', policy: policy({ prompt: 'next' }), threadId: 'thr-1' });
+    expect(h.agent.runs).toHaveLength(1);
+    expect(live.sent).toEqual(['next']);
+    live.emit({ type: 'done', threadId: 'thr-1', terminationReason: 'normal' });
+    await collect(second.subscribe());
+
+    // Nobody comes back: input is closed and the process exits on its own.
+    await until(() => live.endInputCalls === 1, 2_000);
+    await until(() => !h.activeRuns.hasKeptProcess('chat-1'));
+    expect(live.stopped).toBe(false);
+    expect(turns).toEqual([]);
+  });
+
+  it('stops an idle kept process on interrupt without reporting background work', async () => {
+    const h = harness({ idleKeepAliveMs: 60_000 });
+    const first = await h.executor.submit({ scopeId: 'chat-1', policy: policy() });
+    const live = h.agent.runs[0]!;
+    live.emit({ type: 'done', threadId: 'thr-1', terminationReason: 'normal' });
+    await collect(first.subscribe());
+    await until(() => h.activeRuns.hasKeptProcess('chat-1'));
+
+    expect(h.activeRuns.interruptDetailed('chat-1')).toEqual({ active: false, background: false });
+    expect(live.stopped).toBe(true);
+  });
+
+  it('does not tell the chat about idle processes stopped at shutdown', async () => {
+    const h = harness({ idleKeepAliveMs: 60_000 });
+    const turns: BackgroundTurn[] = [];
+    const first = await h.executor.submit({ scopeId: 'chat-1', policy: policy(), onBackgroundTurn: async (t) => void turns.push(t) });
+    const live = h.agent.runs[0]!;
+    live.emit({ type: 'done', threadId: 'thr-1', terminationReason: 'normal' });
+    await collect(first.subscribe());
+    await until(() => h.activeRuns.hasKeptProcess('chat-1'));
+
+    await h.executor.stopLingering();
+    expect(live.stopped).toBe(true);
+    expect(turns).toEqual([]);
   });
 });

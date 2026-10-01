@@ -238,6 +238,9 @@ describe('ui server (supervisor-backed)', () => {
   });
 
   it('lists runs from a hosted profile via its runsMonitor', async () => {
+    // Fixed before the request: computing it inside snapshot() would land
+    // after the server read its clock and make the elapsed time 4999ms.
+    const startedAt = Date.now() - 5_000;
     online.get('claude').runsMonitor = {
       snapshot: () => [
         {
@@ -245,7 +248,7 @@ describe('ui server (supervisor-backed)', () => {
           source: 'im',
           chatId: 'oc_chat_a',
           promptPreview: '写周报',
-          startedAt: Date.now() - 5_000,
+          startedAt,
           queueDepth: 1,
         },
       ],

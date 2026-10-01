@@ -58,6 +58,7 @@ const ADAPTER_FACTORIES: Record<AgentKind, (profileConfig: ProfileConfig, ctx: A
       inheritCodexHome: codex.inheritCodexHome === true,
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
+      ...(codex.transport ? { transport: codex.transport } : {}),
       ...(codex.env ? { env: codex.env } : {}),
       sandbox: profileConfig.sandbox.defaultMode,
       larkChannel: ctx.larkChannel,

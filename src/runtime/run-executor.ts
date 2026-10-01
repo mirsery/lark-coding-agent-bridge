@@ -21,6 +21,8 @@ export interface RunExecutorDeps {
    * user turn before it is stopped anyway.
    */
   maxBackgroundLingerMs?: number;
+  /** Override of the agent's `idleKeepAliveMs` (tests). */
+  idleKeepAliveMs?: number;
   /** Where each turn's token / cost report is booked against the person behind it. */
   usage?: { record(entry: UsageEntry): void };
 }
@@ -99,6 +101,7 @@ export class RunExecutor {
   private readonly now: () => number;
   private readonly postDoneExitGraceMs: number;
   private readonly maxBackgroundLingerMs: number;
+  private readonly idleKeepAliveMs: number;
   private readonly usage: RunExecutorDeps['usage'];
   private readonly live = new Map<string, LiveProcess>();
 
@@ -112,6 +115,8 @@ export class RunExecutor {
       deps.postDoneExitGraceMs ?? agentDescriptor(isAgentKind(deps.agent.id) ? deps.agent.id : undefined).exitGraceMs;
     this.maxBackgroundLingerMs = deps.maxBackgroundLingerMs ?? DEFAULT_MAX_BACKGROUND_LINGER_MS;
     this.usage = deps.usage;
+    this.idleKeepAliveMs =
+      deps.idleKeepAliveMs ?? agentDescriptor(isAgentKind(deps.agent.id) ? deps.agent.id : undefined).idleKeepAliveMs;
   }
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {
@@ -280,14 +285,15 @@ export class RunExecutor {
       this.activeRuns.unregister(input.scopeId, run);
       release();
       if (handle.interrupted) return;
-      if (
-        terminal?.type === 'done' &&
-        owner.session.background > 0 &&
-        run.send &&
-        !owner.session.hasExited
-      ) {
-        this.startLinger(owner);
-        return;
+      if (terminal?.type === 'done' && run.send && !owner.session.hasExited) {
+        if (owner.session.background > 0) {
+          this.startLinger(owner, 'background');
+          return;
+        }
+        if (this.keepsIdleProcesses(run)) {
+          this.startLinger(owner, 'idle');
+          return;
+        }
       }
       await this.finish(owner);
     };
@@ -329,25 +335,42 @@ export class RunExecutor {
     await Promise.allSettled(
       lingering.map(async (live) => {
         log.info('run', 'linger-stopped', { ...live.dimensions, reason: 'shutdown', background: live.session.background });
-        await this.notify(live, { kind: 'stopped', reason: 'shutdown' });
+        // Only real background work is worth telling the chat about; an idle
+        // kept process just goes away.
+        if (live.session.background > 0) await this.notify(live, { kind: 'stopped', reason: 'shutdown' });
         await this.retire(live, 'shutdown');
       }),
     );
   }
 
-  /** Keep a process whose user turn ended while its background tasks run on. */
-  private startLinger(live: LiveProcess): void {
+  /** Whether this agent's processes wait idle for the next turn (Codex app-server). */
+  private keepsIdleProcesses(run: AgentRun): boolean {
+    return this.idleKeepAliveMs > 0 && Boolean(run.send && run.endInput);
+  }
+
+  /**
+   * Keep a process after its user turn: `background` while tasks the agent
+   * started run on (capped, stopping them says so), `idle` while it simply
+   * waits for the conversation's next message (closed quietly when unused).
+   */
+  private startLinger(live: LiveProcess, kind: 'background' | 'idle'): void {
     this.endLinger(live);
-    this.activeRuns.setLingering(live.scopeId, live.session.run);
+    this.activeRuns.setLingering(live.scopeId, live.session.run, kind);
+    const ms = kind === 'background' ? this.maxBackgroundLingerMs : this.idleKeepAliveMs;
     live.lingerTimer = setTimeout(() => {
-      void this.expireLinger(live);
-    }, this.maxBackgroundLingerMs);
+      void (kind === 'background' ? this.expireLinger(live) : this.closeIdle(live));
+    }, ms);
     live.lingerTimer.unref?.();
-    log.info('run', 'linger-start', {
-      ...live.dimensions,
-      background: live.session.background,
-      maxLingerMs: this.maxBackgroundLingerMs,
-    });
+    log.info('run', 'linger-start', { ...live.dimensions, kind, background: live.session.background, lingerMs: ms });
+  }
+
+  /** An idle kept process nobody came back to: let it exit on its own. */
+  private async closeIdle(live: LiveProcess): Promise<void> {
+    live.lingerTimer = undefined;
+    if (live.session.hasExited || live.session.hasAttachedTurn) return;
+    log.info('run', 'idle-close', { ...live.dimensions, idleMs: this.idleKeepAliveMs });
+    live.session.run.endInput?.();
+    await this.finish(live);
   }
 
   private endLinger(live: LiveProcess): void {
@@ -391,9 +414,12 @@ export class RunExecutor {
       background: live.session.background,
     });
     void this.notify(live, { kind: 'turn', events }).then(async () => {
-      // The adapter closes input after a turn that leaves no background tasks;
-      // make sure the process then actually goes away.
-      if (live.session.background === 0 && !live.session.hasAttachedTurn) await this.finish(live);
+      if (live.session.background > 0 || live.session.hasAttachedTurn || live.session.hasExited) return;
+      // No background work left: wait idle for the next message where the
+      // agent supports it, otherwise make sure the process goes away (the
+      // Claude adapter has already closed its input).
+      if (this.keepsIdleProcesses(live.session.run)) this.startLinger(live, 'idle');
+      else await this.finish(live);
     });
   }
 

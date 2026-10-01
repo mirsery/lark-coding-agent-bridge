@@ -465,7 +465,8 @@ describe('CodexAdapter process contract', () => {
       [tokenCount(16_942, 11_008, 5), tokenCount(33_902, 27_136, 12), ''].join('\n'),
     );
 
-    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome });
+    // The exec transport is the one that reports thread-cumulative usage.
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome, transport: 'exec' });
     const opts = { runId: 'run-usage', prompt: 'three', cwd, threadId: 'thread-u' };
     await adapter.prepareRun(opts);
     const usage = (await collect(adapter.run(opts).events)).find((e) => e.type === 'usage');
@@ -485,7 +486,7 @@ describe('CodexAdapter process contract', () => {
     });
     cleanup.push(fake.dir);
     const cwd = await realpath(fake.dir);
-    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: join(fake.dir, 'none') });
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: join(fake.dir, 'none'), transport: 'exec' });
     const opts = { runId: 'run-fresh-usage', prompt: 'one', cwd };
     await adapter.prepareRun(opts);
     const usage = (await collect(adapter.run(opts).events)).find((e) => e.type === 'usage');
