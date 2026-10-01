@@ -32,7 +32,7 @@ const argv = process.argv.slice(2);
 if (argv[0] === '--version') { console.log('codex-cli 0.159.2'); process.exit(0); }
 appendFileSync(${JSON.stringify(argvPath)}, JSON.stringify(argv) + '\\n');
 const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n');
-let turns = 0; let slow; let asked;
+let turns = 0; let slow; let asked; let gated; const decisions = [];
 const finish = (threadId, turnId, status, text) => {
   if (text) send({ method: 'item/completed', params: { threadId, turnId, item: { type: 'agentMessage', id: 'm' + turnId, text } } });
   send({ method: 'thread/tokenUsage/updated', params: { threadId, turnId, tokenUsage: { last: { inputTokens: 100, cachedInputTokens: 60, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 105 }, total: {} } } });
@@ -41,6 +41,16 @@ const finish = (threadId, turnId, status, text) => {
 createInterface({ input: process.stdin }).on('line', (line) => {
   const msg = JSON.parse(line);
   appendFileSync(${JSON.stringify(messagesPath)}, line + '\\n');
+  if (gated && (msg.id === 501 || msg.id === 502)) {
+    decisions.push(msg.result?.decision);
+    if (gated.step === 'command') {
+      gated.step = 'file';
+      send({ method: 'item/started', params: { threadId: gated.threadId, turnId: gated.turnId, item: { type: 'fileChange', id: 'fc-1', status: 'inProgress', changes: [{ path: '/repo/notes.md', kind: { type: 'add' }, diff: 'hi' }] } } });
+      return send({ id: 502, method: 'item/fileChange/requestApproval', params: { threadId: gated.threadId, turnId: gated.turnId, itemId: 'fc-1', startedAtMs: 2 } });
+    }
+    const g = gated; gated = undefined;
+    return finish(g.threadId, g.turnId, 'completed', 'decisions: ' + decisions.join(','));
+  }
   if (msg.id === 99 && asked) { const a = asked; asked = undefined; return finish(a.threadId, a.turnId, 'completed', 'after refusal'); }
   if (msg.method === 'initialize') return send({ id: msg.id, result: { userAgent: 'fake' } });
   if (msg.method === 'thread/start') return send({ id: msg.id, result: { thread: { id: 'thr-new' } } });
@@ -57,6 +67,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return send({ id: 99, method: 'item/commandExecution/requestApproval', params: { threadId, turnId } });
     }
     if (text.includes('SLOW')) { slow = { threadId, turnId }; return; }
+    if (text.includes('TOUCH')) {
+      gated = { threadId, turnId, step: 'command' };
+      return send({ id: 501, method: 'item/commandExecution/requestApproval', params: { threadId, turnId, itemId: 'cmd-1', command: 'touch x.txt', startedAtMs: 1 } });
+    }
     return finish(threadId, turnId, 'completed', 'reply ' + turns);
   }
   if (msg.method === 'turn/interrupt') {
@@ -203,5 +217,36 @@ process.stdin.resume(); process.stdin.on('end', () => { console.log(JSON.stringi
     const second = await preparedRun(adapter, { runId: 'f2', prompt: 'y', cwd });
     expect(second.send).toBeUndefined();
     expect((await nextTurn(second.events[Symbol.asyncIterator]())).at(-1)).toMatchObject({ type: 'done' });
+  });
+
+  it('asks the bridge before commands and file changes on a gated run, inside a read-only sandbox', async () => {
+    const fake = await createFakeAppServer();
+    const cwd = await realpath(fake.dir);
+    const asked: Array<{ tool: string; summary: string }> = [];
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: join(fake.dir, 'home') });
+    const run = await preparedRun(adapter, {
+      runId: 'g1',
+      prompt: 'TOUCH and write notes',
+      cwd,
+      sandbox: 'danger-full-access',
+      approvals: {
+        decide: async (request) => {
+          asked.push(request);
+          return request.tool === 'command_execution'
+            ? { decision: 'allow', reason: 'ok' }
+            : { decision: 'deny', reason: 'no' };
+        },
+      },
+    });
+    const turn = await nextTurn(run.events[Symbol.asyncIterator]());
+
+    expect(asked).toEqual([
+      { tool: 'command_execution', summary: 'touch x.txt', readOnly: false },
+      { tool: 'file_change', summary: '修改文件：/repo/notes.md' },
+    ]);
+    expect(turn).toContainEqual({ type: 'final_text', content: 'decisions: accept,decline' });
+    expect(turn).toContainEqual({ type: 'tool_use', id: 'fc-1', name: 'file_change', input: { paths: ['/repo/notes.md'] } });
+    expect((await fake.messages())[2]?.params).toMatchObject({ sandbox: 'read-only', approvalPolicy: 'untrusted' });
+    await run.stop();
   });
 });

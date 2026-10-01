@@ -248,6 +248,42 @@ describe('ClaudeAdapter process contract', () => {
     expect(received.map((m) => m.message.content[0].text)).toEqual(['first', 'second']);
   });
 
+  it('routes every tool call of a gated run through the approval hook', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-gated' }] });
+    cleanup.push(fake.dir);
+    const decide = async () => ({ decision: 'deny' as const, reason: 'n/a' });
+
+    await collect(
+      new ClaudeAdapter({ binary: fake.path }).run({
+        runId: 'run-gated',
+        prompt: 'x',
+        cwd: fake.dir,
+        approvals: { hookCommand: "node /opt/hook.mjs '/tmp/s.sock' tok", hookTimeoutSec: 330, decide },
+      }).events,
+    );
+    const gated = await readRecord(fake.recordPath);
+    expect(gated.settings).toEqual({
+      hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: "node /opt/hook.mjs '/tmp/s.sock' tok", timeout: 330 }] }] },
+    });
+    expect(gated.argv[gated.argv.indexOf('--permission-mode') + 1]).toBe('bypassPermissions');
+  });
+
+  it('keeps a gated run read-only when no approval hook could be set up', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-ro' }] });
+    cleanup.push(fake.dir);
+    await collect(
+      new ClaudeAdapter({ binary: fake.path }).run({
+        runId: 'run-ro',
+        prompt: 'x',
+        cwd: fake.dir,
+        approvals: { decide: async () => ({ decision: 'deny', reason: 'n/a' }) },
+      }).events,
+    );
+    const record = await readRecord(fake.recordPath);
+    expect(record.argv[record.argv.indexOf('--permission-mode') + 1]).toBe('plan');
+    expect(record.settings).toBeNull();
+  });
+
   it('requires cwd to be resolved by policy before spawning', () => {
     expect(() =>
       new ClaudeAdapter({ binary: 'unused' }).run({ runId: 'run-no-cwd', prompt: 'hi' }),
@@ -279,6 +315,8 @@ async function createFakeClaude(options: {
       'const argv = process.argv.slice(2);',
       'const spIdx = argv.indexOf("--append-system-prompt-file");',
       'const systemPrompt = spIdx !== -1 ? readFileSync(argv[spIdx + 1], "utf8") : null;',
+      'const setIdx = argv.indexOf("--settings");',
+      'const settings = setIdx !== -1 ? JSON.parse(readFileSync(argv[setIdx + 1], "utf8")) : null;',
       // Like `claude --input-format stream-json`: answer the first message,
       // then stay alive until stdin closes (the adapter closes it after a
       // turn that leaves no background tasks).
@@ -292,6 +330,7 @@ async function createFakeClaude(options: {
       '    argv,',
       '    stdin: stdin.slice(0, stdin.indexOf("\\n")),',
       '    systemPrompt,',
+      '    settings,',
       '    cwd: process.cwd(),',
       '    env: {',
       '      LARK_CHANNEL: process.env.LARK_CHANNEL,',
@@ -322,6 +361,7 @@ async function readRecord(path: string): Promise<{
   argv: string[];
   stdin: string;
   systemPrompt: string | null;
+  settings: unknown;
   cwd: string;
   env: {
     LARK_CHANNEL?: string;
@@ -335,6 +375,7 @@ async function readRecord(path: string): Promise<{
     argv: string[];
     stdin: string;
     systemPrompt: string | null;
+    settings: unknown;
     cwd: string;
     env: {
       LARK_CHANNEL?: string;

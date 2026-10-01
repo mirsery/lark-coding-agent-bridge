@@ -82,10 +82,17 @@ export class ClaudeAdapter implements AgentAdapter {
       'stream-json',
       '--verbose',
       '--permission-mode',
-      opts.permissionMode ?? CLAUDE_DEFAULT_PERMISSION_MODE,
+      gatedPermissionMode(opts),
       '--append-system-prompt-file',
       systemPromptFile.path,
     ];
+    // Gated runs: every tool call first goes through the bridge's approval
+    // hook. A settings *file* rather than inline JSON keeps quotes off argv
+    // (cmd.exe on Windows).
+    const settingsFile = opts.approvals?.hookCommand
+      ? writeSettingsFile(approvalHookSettings(opts.approvals.hookCommand, opts.approvals.hookTimeoutSec ?? 330))
+      : undefined;
+    if (settingsFile) args.push('--settings', settingsFile.path);
     if (opts.sessionId) args.push('--resume', opts.sessionId);
     if (opts.model) args.push('--model', opts.model);
     if (opts.effort) args.push('--effort', opts.effort);
@@ -132,10 +139,12 @@ export class ClaudeAdapter implements AgentAdapter {
     child.on('error', (err) => {
       runtimeError = err;
       systemPromptFile.cleanup();
+      settingsFile?.cleanup();
     });
     child.on('exit', (code, signal) => {
       log.info('agent', 'exit', { pid: child.pid ?? null, code, signal });
       systemPromptFile.cleanup();
+      settingsFile?.cleanup();
     });
     child.stdin.on('error', (err) => {
       log.warn('agent', 'stdin-error', { message: err.message });
@@ -341,6 +350,37 @@ function writeSystemPromptFile(content: string): { path: string; cleanup: () => 
         rmSync(dir, { recursive: true, force: true });
       } catch {
         // best-effort: the OS will reclaim the temp dir eventually
+      }
+    },
+  };
+}
+
+/** A gated run whose approval hook could not be set up stays read-only (plan mode). */
+function gatedPermissionMode(opts: AgentRunOptions): string {
+  if (opts.approvals && !opts.approvals.hookCommand) return 'plan';
+  return opts.permissionMode ?? CLAUDE_DEFAULT_PERMISSION_MODE;
+}
+
+/** Claude Code settings that route every tool call through the approval hook. */
+export function approvalHookSettings(command: string, timeoutSec: number): object {
+  return {
+    hooks: {
+      PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command, timeout: timeoutSec }] }],
+    },
+  };
+}
+
+function writeSettingsFile(settings: object): { path: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'lark-claude-settings-'));
+  const path = join(dir, 'settings.json');
+  writeFileSync(path, JSON.stringify(settings), { encoding: 'utf8', mode: 0o600 });
+  return {
+    path,
+    cleanup: () => {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort
       }
     },
   };

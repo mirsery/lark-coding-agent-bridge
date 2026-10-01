@@ -12,6 +12,9 @@ import {
   type UsageReportRow,
   type UsageTotals,
 } from '../runtime/usage-ledger';
+import type { ApprovalBroker } from '../runtime/approvals';
+import { toolLabel } from '../card/approval-cards';
+import type { AuditLog } from '../runtime/audit-log';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedEfforts, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -177,6 +180,10 @@ export interface Controls {
   /** Per-person consumption backing `/usage`; present only while the channel
    * is connected and a profile data dir exists. Late-bound by startChannel. */
   usage?: UsageLedger;
+  /** Pending approvals for runs non-admins drive (`approval.*` card buttons). Late-bound by startChannel. */
+  approvals?: ApprovalBroker;
+  /** Who had the bot do what, backing `/audit`. Late-bound by startChannel. */
+  audit?: AuditLog;
 }
 
 export interface CommandContext {
@@ -260,6 +267,9 @@ const handlers: Record<string, Handler> = {
   '/cron': handleCron,
   '/coffee': handleCoffee,
   '/usage': handleUsage,
+  '/audit': handleAudit,
+  // Card buttons of approval prompts (not typed by people; see ApprovalBroker).
+  '/approval': handleApproval,
 };
 
 /**
@@ -297,6 +307,8 @@ const ADMIN_COMMANDS = new Set([
   // handler, so it has to be gated too or it becomes a bypass.
   '/new',
   '/reset',
+  // Shows who had the bot do what across every chat of the profile.
+  '/audit',
 ]);
 
 function isAdminCommand(cmd: string): boolean {
@@ -1516,6 +1528,77 @@ function formatUsageTotals(t: UsageTotals): string {
   const cached = t.cachedInputTokens > 0 ? `（缓存 ${formatTokens(t.cachedInputTokens)}）` : '';
   const cost = t.costUsd > 0 ? ` · 估算 $${t.costUsd.toFixed(2)}` : '';
   return `${t.turns} 轮 · 输入 ${formatTokens(t.inputTokens)}${cached} · 输出 ${formatTokens(t.outputTokens)}${cost}`;
+}
+
+/**
+ * `approval.allow|allowturn|deny <id>` from an approval card. Allowing needs
+ * an admin; the requester may cancel (deny) their own pending step. A click
+ * that changes something gets no reply — the cards themselves update.
+ */
+async function handleApproval(args: string, ctx: CommandContext): Promise<void> {
+  const [verb, id] = args.trim().split(/\s+/);
+  const action = verb === 'allow' ? 'allow' : verb === 'allowturn' ? 'allow-turn' : verb === 'deny' ? 'deny' : undefined;
+  const broker = ctx.controls.approvals;
+  if (!broker || !action || !id) return;
+  const isAdmin = canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok;
+  const result = broker.decide(id, ctx.msg.senderId, action, isAdmin);
+  log.info('command', 'approval', { action, result, operator: ctx.msg.senderId.slice(-6) });
+  if (result === 'forbidden') {
+    await reply(ctx, action === 'deny' ? '只有发起人或管理员可以取消这一步。' : '只有管理员可以允许这一步。');
+  } else if (result === 'not-found') {
+    await reply(ctx, '这条审批已经处理过或已过期。');
+  }
+}
+
+const AUDIT_EVENT_LABELS: Record<string, string> = {
+  allowed: '已允许',
+  'auto-allowed': '本轮已允许',
+  denied: '已拒绝',
+  timeout: '超时拒绝',
+  cancelled: '已取消',
+};
+
+/**
+ * `/audit [N]`: the latest side-effecting steps (commands, file writes,
+ * external tools) and approval decisions, newest first. Private chat only —
+ * it spans every chat of the profile.
+ */
+async function handleAudit(args: string, ctx: CommandContext): Promise<void> {
+  if (ctx.chatMode !== 'p2p') {
+    await reply(ctx, '审计记录涉及所有会话，请私聊 bot 发送 `/audit` 查看。');
+    return;
+  }
+  const audit = ctx.controls.audit;
+  if (!audit) {
+    await reply(ctx, '当前 profile 没有开启审计记录。');
+    return;
+  }
+  const n = Number.parseInt(args.trim(), 10);
+  const limit = Number.isFinite(n) && n > 0 ? Math.min(n, 100) : 20;
+  const entries = (await audit.query({ limit: limit * 3 }))
+    .filter((e) => e.kind === 'tool' || (e.event && e.event in AUDIT_EVENT_LABELS))
+    .slice(0, limit);
+  if (entries.length === 0) {
+    await reply(ctx, '还没有审计记录。');
+    return;
+  }
+  const chats = new Map((ctx.controls.knownChats ?? []).map((c) => [c.id, c.name]));
+  const lines = entries.map((e) => {
+    const d = new Date(e.at);
+    const pad = (x: number): string => String(x).padStart(2, '0');
+    const when = `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const who = e.actorId === ctx.msg.senderId ? '你' : (e.actorName ?? `…${e.actorId.slice(-6)}`);
+    const where = e.chatId ? (chats.get(e.chatId) ?? '会话') : e.source;
+    const what = `${toolLabel(e.tool)} \`${e.summary.replace(/`/g, "'").slice(0, 80)}\``;
+    const outcome =
+      e.kind === 'approval'
+        ? ` · ${AUDIT_EVENT_LABELS[e.event!]}`
+        : e.gated
+          ? ' · 非管理员会话'
+          : '';
+    return `- ${when} ${who}（${where}）${what}${outcome}`;
+  });
+  await reply(ctx, [`**最近 ${entries.length} 条操作记录**`, ...lines].join('\n'));
 }
 
 async function handleCoffee(_args: string, ctx: CommandContext): Promise<void> {

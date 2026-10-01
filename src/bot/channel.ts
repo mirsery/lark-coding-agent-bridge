@@ -54,13 +54,18 @@ import {
   toPolicyAttachment,
   toPromptAttachment,
 } from '../media/attachment';
-import { canUseDm, canUseGroup, requireMentionForChat } from '../policy/access';
+import { canRunAdminCommand, canUseDm, canUseGroup, requireMentionForChat } from '../policy/access';
 import { MeetingManager } from '../meeting/manager';
 import type { VcRequestClient } from '../meeting/api';
 import { attachMeetingAgent, summarizeEndedMeeting } from '../meeting/orchestrator';
 import type { ScopeContext } from '../policy/run-policy';
 import { createOwnerRefreshController } from '../policy/owner';
-import { RunExecutor, type BackgroundTurn, type BackgroundTurnHandler } from '../runtime/run-executor';
+import {
+  RunExecutor,
+  type BackgroundTurn,
+  type BackgroundTurnHandler,
+  type RunApprovalGates,
+} from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -81,6 +86,10 @@ import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { PendingStore, type PendingRecord } from './pending-store';
 import { formatUsageLine, UsageLedger } from '../runtime/usage-ledger';
+import { ApprovalBroker, type GateContext } from '../runtime/approvals';
+import { ApprovalSocketServer } from '../runtime/approval-socket';
+import { AuditLog } from '../runtime/audit-log';
+import { createApprovalNotifier } from './approval-notifier';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
 import { lookupMessageThreadId } from './thread-id';
@@ -231,6 +240,8 @@ export interface StartChannelDeps {
     | 'jobsFile'
     | 'pendingFile'
     | 'usageFile'
+    | 'auditFile'
+    | 'profileDir'
   >;
 }
 
@@ -274,7 +285,55 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // Concurrency cap — reads `preferences.maxConcurrentRuns` on each acquire,
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
-  const executor = new RunExecutor({ agent, pool, activeRuns, ...(usageLedger ? { usage: usageLedger } : {}) });
+  // Who had the bot do what (/audit), and approvals for runs non-admins drive.
+  const auditLog = deps.appPaths?.auditFile ? new AuditLog(deps.appPaths.auditFile) : undefined;
+  await auditLog?.load().catch((err: unknown) => log.warn('audit', 'load-failed', { err: String(err) }));
+  controls.audit = auditLog;
+  let channelRef: LarkChannel | undefined;
+  const approvalBroker: ApprovalBroker = new ApprovalBroker({
+    notifier: createApprovalNotifier({
+      channel: () => {
+        if (!channelRef) throw new Error('channel not ready');
+        return channelRef;
+      },
+      controls,
+      timeoutMinutes: () => approvalBroker.timeoutMinutes,
+    }),
+    ...(auditLog ? { audit: auditLog } : {}),
+  });
+  controls.approvals = approvalBroker;
+  // Claude's approval hook calls back over this socket. Without it, gated
+  // Claude runs are read-only rather than unguarded.
+  const approvalSocket = deps.appPaths?.profileDir
+    ? await ApprovalSocketServer.listen(approvalBroker, deps.appPaths.profileDir, controls.profile).catch((err: unknown) => {
+        log.warn('approvals', 'socket-listen-failed', { err: String(err) });
+        return undefined;
+      })
+    : undefined;
+  const approvalGates: RunApprovalGates = {
+    open: (ctx) => {
+      const gate = approvalBroker.openGate(ctx);
+      return {
+        token: gate.token,
+        approvals: {
+          ...(approvalSocket
+            ? { hookCommand: approvalSocket.hookCommand(gate.token), hookTimeoutSec: approvalBroker.timeoutMinutes * 60 + 30 }
+            : {}),
+          decide: gate.decide,
+        },
+      };
+    },
+    update: (token, ctx) => approvalBroker.updateGate(token, ctx),
+    close: (token) => approvalBroker.closeGate(token),
+  };
+  const executor = new RunExecutor({
+    agent,
+    pool,
+    activeRuns,
+    approvals: approvalGates,
+    ...(usageLedger ? { usage: usageLedger } : {}),
+    ...(auditLog ? { audit: auditLog } : {}),
+  });
 
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
@@ -354,6 +413,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   };
 
   const channel = createLarkChannel(opts);
+  channelRef = channel;
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
 
   // Pending → run handoff: while a run is active on a chat, block its pending
@@ -654,9 +714,14 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       controls.meeting = undefined;
       controls.runsMonitor = undefined;
       controls.usage = undefined;
+      controls.approvals = undefined;
+      controls.audit = undefined;
+      await approvalSocket?.close().catch(() => undefined);
       // Keep the durable copy: the next process (or the rebuilt channel after
       // /reconnect) picks the queued messages up again.
       pending.stop();
+      // Nothing still waiting for a decision may slip through after this.
+      approvalBroker.cancelAll('bridge 正在重启或断开');
       // Background work dies with this daemon; say so while the channel is up.
       await executor.stopLingering().catch((err: unknown) => {
         log.fail('disconnect', err, { step: 'stopLingering' });
@@ -687,6 +752,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         jobs?.flush(),
         pendingStore?.flush(),
         usageLedger?.flush(),
+        auditLog?.flush(),
       ]);
       for (const [idx, result] of flushResults.entries()) {
         if (result.status === 'rejected') {
@@ -1135,6 +1201,26 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Assigned once the reply surface below is set up. A background turn only
   // arrives after this run's own reply, so it is always ready by then.
   let deliverBackgroundTurn: BackgroundTurnHandler | undefined;
+  // A batch carrying anyone's words but an admin's is gated: the agent may
+  // read freely, but each side-effecting step waits for an admin.
+  const requester = batch.find(
+    (m) => !canRunAdminCommand(controls.profileConfig, controls, m.senderId).ok,
+  );
+  const gate: GateContext | undefined = requester
+    ? {
+        actor: { id: requester.senderId, ...(requester.senderName ? { name: requester.senderName } : {}) },
+        source: 'im',
+        scopeId: scope,
+        chatId,
+        ...(threadId ? { threadId } : {}),
+        originMessageId: lastMsg.messageId,
+        where:
+          mode === 'p2p'
+            ? '私聊'
+            : (controls.knownChats?.find((c) => c.id === chatId)?.name ?? '群聊'),
+        agent: capability.agentId,
+      }
+    : undefined;
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -1150,6 +1236,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     ...(firstMsg.senderName ? { actorName: firstMsg.senderName } : {}),
+    ...(gate ? { gate } : {}),
     onBackgroundTurn: (turn) => deliverBackgroundTurn?.(turn) ?? Promise.resolve(),
     observability: {
       profile: controls.profile,

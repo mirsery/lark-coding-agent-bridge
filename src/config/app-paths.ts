@@ -20,6 +20,8 @@ export interface AppPaths {
   pendingFile: string;
   /** Per-person token / cost consumption (UsageLedger). */
   usageFile: string;
+  /** Who had the bot run what, and approvals (AuditLog). */
+  auditFile: string;
   /** Bridge-managed memory + skills for this profile (optionally a git repo). */
   knowledgeDir: string;
   /** Scheduled jobs (`/cron`), one file per profile. */
@@ -70,6 +72,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     runsFile: join(profileDir, 'runs.json'),
     pendingFile: join(profileDir, 'pending.json'),
     usageFile: join(profileDir, 'usage.json'),
+    auditFile: join(profileDir, 'audit.jsonl'),
     knowledgeDir: join(profileDir, 'knowledge'),
     jobsFile: join(profileDir, 'jobs.json'),
     secretsFile: join(profileDir, 'secrets.enc'),

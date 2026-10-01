@@ -286,6 +286,29 @@ describe('markdown stream startup failures', () => {
     expect(h.agent.runOptions.some((o) => o.prompt.includes('stale question'))).toBe(false);
   });
 
+  it('gates runs a non-admin drives, and only those', async () => {
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [
+        [{ type: 'done', terminationReason: 'normal' }],
+        [{ type: 'done', terminationReason: 'normal' }],
+        [{ type: 'done', terminationReason: 'normal' }],
+      ],
+    });
+    await startTestBridge(h, testAppPaths(h.tmp));
+
+    await h.channel.handlers.message?.(message('om_user', 'please deploy'));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    // A non-admin: the run carries an approval channel, with the Claude hook.
+    expect(h.agent.runOptions[0]?.approvals?.hookCommand).toContain('approval-hook.mjs');
+
+    h.profileConfig.access.admins = ['ou_user'];
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await h.channel.handlers.message?.(message('om_admin', 'now as admin'));
+    await waitFor(() => h.agent.runOptions.length === 2);
+    expect(h.agent.runOptions[1]?.approvals).toBeUndefined();
+  });
+
   it('opens no progress stream for a final-only round', async () => {
     // The regression this guards: Codex answering without any commentary. The
     // SDK sends its streaming card as soon as `stream()` is called and finishes
@@ -763,5 +786,7 @@ function testAppPaths(tmp: TmpProfile) {
     jobsFile: join(tmp.profile, 'jobs.json'),
     pendingFile: join(tmp.profile, 'pending.json'),
     usageFile: join(tmp.profile, 'usage.json'),
+    auditFile: join(tmp.profile, 'audit.jsonl'),
+    profileDir: tmp.profile,
   };
 }

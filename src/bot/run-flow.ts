@@ -16,6 +16,7 @@ import {
   type WorkingDirectoryResolveResult,
 } from '../policy/workspace';
 import type { BackgroundTurnHandler, RunExecution, RunExecutor } from '../runtime/run-executor';
+import type { GateContext } from '../runtime/approvals';
 import { RunRejected, type RunRejectedCode } from '../runtime/errors';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
@@ -36,6 +37,8 @@ export interface StartRunFlowInput {
   now: number;
   /** Display name of `scope.actorId`, for usage reports. */
   actorName?: string;
+  /** Set when a non-admin drives the run (see SubmitRunInput.gate). */
+  gate?: GateContext;
   /** Passed to the executor as `SubmitRunInput.onBackgroundTurn`. */
   onBackgroundTurn?: BackgroundTurnHandler;
   stopGraceMs?: number;
@@ -159,6 +162,8 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
           : undefined,
       stopGraceMs: input.stopGraceMs,
       actor: { id: input.scope.actorId, ...(input.actorName ? { name: input.actorName } : {}) },
+      ...(input.scope.chatId ? { chatId: input.scope.chatId } : {}),
+      ...(input.gate ? { gate: input.gate } : {}),
       onBackgroundTurn: input.onBackgroundTurn,
       observability: input.observability,
     });

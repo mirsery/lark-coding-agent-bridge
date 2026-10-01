@@ -3,7 +3,8 @@ import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../../
 import { ActiveRuns } from '../../../src/bot/active-runs';
 import { ProcessPool } from '../../../src/bot/process-pool';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
-import { RunExecutor, type BackgroundTurn } from '../../../src/runtime/run-executor';
+import { RunExecutor, type BackgroundTurn, type RunApprovalGates } from '../../../src/runtime/run-executor';
+import type { GateContext } from '../../../src/runtime/approvals';
 import type { UsageEntry } from '../../../src/runtime/usage-ledger';
 
 /**
@@ -115,11 +116,23 @@ class LiveAgent implements AgentAdapter {
   }
 }
 
-function harness(opts: { maxBackgroundLingerMs?: number; postDoneExitGraceMs?: number; idleKeepAliveMs?: number } = {}) {
+function harness(
+  opts: { maxBackgroundLingerMs?: number; postDoneExitGraceMs?: number; idleKeepAliveMs?: number; noApprovals?: boolean } = {},
+) {
   const agent = new LiveAgent();
   agent.endInput = (opts.idleKeepAliveMs ?? 0) > 0;
   const activeRuns = new ActiveRuns();
   const booked: UsageEntry[] = [];
+  const gates = { opened: [] as GateContext[], updated: [] as GateContext[], closed: [] as string[] };
+  const audited: Array<Record<string, unknown>> = [];
+  const approvals: RunApprovalGates = {
+    open: (ctx) => {
+      gates.opened.push(ctx);
+      return { token: `tok-${gates.opened.length}`, approvals: { hookCommand: 'hook', decide: async () => ({ decision: 'allow', reason: '' }) } };
+    },
+    update: (_token, ctx) => void gates.updated.push(ctx),
+    close: (token) => void gates.closed.push(token),
+  };
   let n = 0;
   const executor = new RunExecutor({
     agent,
@@ -129,9 +142,11 @@ function harness(opts: { maxBackgroundLingerMs?: number; postDoneExitGraceMs?: n
     now: () => 1000,
     postDoneExitGraceMs: 50,
     usage: { record: (entry) => booked.push(entry) },
+    audit: { append: (entry) => audited.push(entry) },
+    ...(opts.noApprovals ? {} : { approvals }),
     ...opts,
   });
-  return { agent, activeRuns, executor, booked };
+  return { agent, activeRuns, executor, booked, gates, audited };
 }
 
 function policy(overrides: Partial<RunPolicyAllow> = {}): RunPolicyAllow {
@@ -484,5 +499,49 @@ describe('RunExecutor background tasks', () => {
     await h.executor.stopLingering();
     expect(live.stopped).toBe(true);
     expect(turns).toEqual([]);
+  });
+
+  const gate = (actor: string): GateContext => ({ actor: { id: actor }, source: 'im', scopeId: 'chat-1', chatId: 'chat-1', agent: 'claude' });
+
+  it('opens an approval channel for a gated run and keeps gated and ungated turns apart', async () => {
+    const h = harness();
+    const first = await h.executor.submit({ scopeId: 'chat-1', policy: policy(), gate: gate('ou_a'), actor: { id: 'ou_a' } });
+    const live = h.agent.runs[0]!;
+    expect(live.opts.approvals?.hookCommand).toBe('hook');
+    live.emit(
+      { type: 'system', sessionId: 'sess-1' },
+      { type: 'background', count: 1 },
+      { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } },
+      { type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/repo/a.ts' } },
+      done(),
+    );
+    await collect(first.subscribe());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+
+    // Another non-admin message reuses the gated process, now on their behalf.
+    const second = await h.executor.submit({ scopeId: 'chat-1', policy: policy(), sessionId: 'sess-1', gate: gate('ou_b'), actor: { id: 'ou_b' } });
+    expect(h.agent.runs).toHaveLength(1);
+    expect(h.gates.updated.map((g) => g.actor.id)).toEqual(['ou_b']);
+    live.emit(done());
+    await collect(second.subscribe());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+
+    // An admin's message never runs in the gated process.
+    await h.executor.submit({ scopeId: 'chat-1', policy: policy(), sessionId: 'sess-1', actor: { id: 'ou_admin' } });
+    expect(h.agent.runs).toHaveLength(2);
+    expect(h.agent.runs[1]!.opts.approvals).toBeUndefined();
+    await until(() => h.gates.closed.length === 1);
+    expect(h.gates.closed).toEqual(['tok-1']);
+
+    // Only side-effecting steps go to the audit trail, against the person behind them.
+    expect(h.audited).toHaveLength(1);
+    expect(h.audited[0]).toMatchObject({ kind: 'tool', actorId: 'ou_a', tool: 'Bash', summary: 'npm test', gated: true });
+  });
+
+  it('runs a gated turn read-only when there is no approval channel', async () => {
+    const h = harness({ noApprovals: true });
+    await h.executor.submit({ scopeId: 'chat-1', policy: policy(), gate: gate('ou_a') });
+    expect(h.agent.runs[0]!.opts).toMatchObject({ permissionMode: 'plan', sandbox: 'read-only' });
+    expect(h.agent.runs[0]!.opts.approvals).toBeUndefined();
   });
 });

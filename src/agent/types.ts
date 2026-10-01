@@ -40,6 +40,19 @@ export type AgentEvent =
 
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
+/**
+ * Present on runs driven by someone who is not an admin: every
+ * side-effecting step must be approved first. Each adapter wires it the way
+ * its CLI allows — a PreToolUse hook command (Claude) or answering the CLI's
+ * own approval requests (Codex app-server).
+ */
+export interface RunApprovals {
+  hookCommand?: string;
+  /** How long a hook may block waiting for a decision. */
+  hookTimeoutSec?: number;
+  decide(request: { tool: string; summary: string; readOnly?: boolean }): Promise<{ decision: 'allow' | 'deny'; reason: string }>;
+}
+
 export interface AgentRunOptions {
   runId: string;
   prompt: string;
@@ -64,6 +77,7 @@ export interface AgentRunOptions {
    * are adapter-specific.
   */
   stopGraceMs?: number;
+  approvals?: RunApprovals;
 }
 
 export interface AgentRun {

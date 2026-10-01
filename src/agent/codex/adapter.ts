@@ -183,6 +183,7 @@ export class CodexAdapter implements AgentAdapter {
         sandbox: opts.sandbox ?? this.sandbox,
         stopGraceMs: opts.stopGraceMs ?? this.defaultStopGraceMs,
         clientVersion: pkg.version,
+        ...(opts.approvals ? { approvals: opts.approvals } : {}),
         onStartupFailure: (reason) => {
           // This Codex can't serve the app-server protocol (too old, or it
           // hangs): stop trying, so the next message goes through exec.
@@ -195,7 +196,8 @@ export class CodexAdapter implements AgentAdapter {
     }
     const args = buildCodexArgs({
       cwd: opts.cwd,
-      sandbox: opts.sandbox ?? this.sandbox,
+      // exec can't ask anyone: a gated run there stays read-only.
+      sandbox: opts.approvals ? 'read-only' : (opts.sandbox ?? this.sandbox),
       threadId: opts.threadId,
       images: opts.images,
       ignoreUserConfig: this.ignoreUserConfig,

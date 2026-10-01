@@ -3,7 +3,8 @@ import type { Readable, Writable } from 'node:stream';
 import type { CodexSandboxMode } from '../../config/permissions';
 import { log } from '../../core/logger';
 import { spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
-import type { AgentEvent, AgentRun } from '../types';
+import type { AgentEvent, AgentRun, RunApprovals } from '../types';
+import { isReadOnlyCommand } from '../../runtime/approvals';
 import { CodexAppServerTranslator } from './app-server-translator';
 
 type AppServerChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -24,6 +25,11 @@ export interface CodexAppServerRunOptions {
   sandbox: CodexSandboxMode;
   stopGraceMs: number;
   clientVersion: string;
+  /**
+   * Gated run: Codex asks before running anything outside its read-only
+   * sandbox (approvalPolicy "untrusted"), and each ask goes to `decide`.
+   */
+  approvals?: RunApprovals;
   /** Called when the app-server never got a conversation open (unsupported, hung, crashed). */
   onStartupFailure?: (reason: string) => void;
   /** How long handshake + opening the thread may take. */
@@ -72,6 +78,8 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
   let inputOpen = true;
   let exited = false;
   let stopRequested = false;
+  /** Paths each pending file-change item touches, for its approval prompt. */
+  const fileChanges = new Map<string, string[]>();
 
   const write = (message: Record<string, unknown>): boolean => {
     if (!inputOpen || exited) return false;
@@ -139,15 +147,29 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
       return;
     }
     if (method && msg.id !== undefined) {
-      // A server-initiated request (approval, elicitation…). Runs use
-      // approvalPolicy "never", so these are unexpected; refuse rather than
-      // leave Codex waiting forever.
+      const params = record(msg.params) ?? {};
+      const requestId = msg.id;
+      const approval = approvalRequest(method, params, fileChanges);
+      if (approval && opts.approvals) {
+        // Answer only after a person decided; Codex waits meanwhile.
+        void opts.approvals
+          .decide(approval)
+          .catch(() => ({ decision: 'deny' as const, reason: 'approval failed' }))
+          .then((answer) => write({ id: requestId, result: { decision: answer.decision === 'allow' ? 'accept' : 'decline' } }));
+        return;
+      }
+      // Anything else (or an approval on an ungated run, which uses
+      // approvalPolicy "never"): refuse rather than leave Codex waiting.
       log.warn('codex-app-server', 'server-request-refused', { method });
-      write({ id: msg.id, error: { code: -32601, message: 'not supported by lark-channel-bridge' } });
+      write({ id: requestId, error: { code: -32601, message: 'not supported by lark-channel-bridge' } });
       return;
     }
     if (!method) return;
     const params = record(msg.params) ?? {};
+    if (method === 'item/started') {
+      const item = record(params.item);
+      if (item?.type === 'fileChange' && typeof item.id === 'string') fileChanges.set(item.id, changedPaths(item));
+    }
     if (method === 'turn/started') turnId = str(record(params.turn)?.id) ?? turnId;
     if (turn) emit(turn.notification(method, params));
   };
@@ -195,8 +217,9 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
       write({ method: 'initialized' });
       const threadParams = {
         cwd: opts.cwd,
-        sandbox: opts.sandbox,
-        approvalPolicy: 'never',
+        // Gated: read-only sandbox, and Codex asks before stepping outside it.
+        sandbox: opts.approvals ? 'read-only' : opts.sandbox,
+        approvalPolicy: opts.approvals ? 'untrusted' : 'never',
         ...(opts.model ? { model: opts.model } : {}),
       };
       const opened = opts.threadId
@@ -253,6 +276,32 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
       return waitForExit(child, timeoutMs);
     },
   };
+}
+
+/** The approval a Codex server request asks for, or undefined when it is not one. */
+function approvalRequest(
+  method: string,
+  params: Record<string, unknown>,
+  fileChanges: Map<string, string[]>,
+): { tool: string; summary: string; readOnly?: boolean } | undefined {
+  if (method === 'item/commandExecution/requestApproval') {
+    const command = str(params.command);
+    return { tool: 'command_execution', summary: command ?? '(command)', readOnly: command !== undefined && isReadOnlyCommand(command) };
+  }
+  if (method === 'item/fileChange/requestApproval') {
+    const paths = fileChanges.get(str(params.itemId) ?? '') ?? [];
+    const root = str(params.grantRoot);
+    return {
+      tool: 'file_change',
+      summary: paths.length > 0 ? `修改文件：${paths.join(', ')}` : root ? `写入目录：${root}` : '修改文件',
+    };
+  }
+  return undefined;
+}
+
+function changedPaths(item: Record<string, unknown>): string[] {
+  const changes = Array.isArray(item.changes) ? item.changes : [];
+  return changes.map((c) => str(record(c)?.path)).filter((p): p is string => Boolean(p));
 }
 
 function waitForExit(child: AppServerChild, timeoutMs: number): Promise<boolean> {

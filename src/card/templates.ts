@@ -289,6 +289,7 @@ export function helpCard(agentName = 'Agent'): object {
           '`/reconnect` — 强制重连（网络抖动后没反应时用）',
           `\`/doctor [描述]\` — 把日志交给 ${escapedAgentName} 自助诊断`,
           '`/usage [today|week|month]` — 用量统计；管理员私聊可看所有人',
+          '`/audit [N]` — 最近谁让 bot 执行了什么、审批结果（管理员私聊）',
         ]),
         { tag: 'hr' },
         helpButtonRow([

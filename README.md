@@ -288,6 +288,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/reconnect` | Force a WebSocket reconnect |
 | `/doctor [description]` | Run low-sensitive diagnostics |
 | `/usage [today\|week\|month]` | Token and estimated-cost usage; everyone sees their own, admins see everyone in a private chat |
+| `/audit [N]` | Who had the bot run which commands / change which files, and approval outcomes (admins, private chat) |
 | `/help` | Help card |
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
@@ -494,6 +495,15 @@ To let other people or groups in, add them to one of three lists:
 - **In groups you must `@` the bot first** (DMs don't need it). That's a separate toggle (`/config` → "require @ in groups"), independent of the lists above.
 - Strangers get pure silence — no reply at all. The one exception: if someone `@`-mentions the bot in a group that hasn't been opened up, the bot posts a friendly one-liner telling them an admin can run `/invite group` to enable it.
 - Cloud-doc comments are document-scoped: anyone who can comment in a supported document and mention the bot can trigger a reply.
+
+### Approvals for non-admins
+
+Runs driven by anyone other than the bot owner and the admins (DMs, @bot in groups, doc comments — a merged batch counts if any message in it is from a non-admin):
+
+- The agent may read, search and browse freely; before it **runs a command, writes a file or calls an external (MCP) tool**, an approval card with Allow / Allow this turn / Deny goes to the owner's and every admin's private chat. The requester sees a "waiting for an admin" card and can cancel.
+- Only an admin can allow; anything unanswered for **5 minutes** is denied, and the agent is told so.
+- Every approval and every command / file change is recorded per person in an audit log (`audit.jsonl` in the profile dir, kept 90 days); admins see the latest with `/audit [N]` in a private chat.
+- Claude Code is gated with a PreToolUse hook; Codex through the app-server's own approval requests (read-only sandbox, `approvalPolicy: untrusted`). Codex profiles that fall back to `codex exec` have no approval channel, so non-admin runs there are read-only.
 
 ### Advanced: editing the config file directly
 

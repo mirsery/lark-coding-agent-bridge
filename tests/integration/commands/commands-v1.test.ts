@@ -9,6 +9,8 @@ import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/c
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { UsageLedger } from '../../../src/runtime/usage-ledger.js';
+import { ApprovalBroker } from '../../../src/runtime/approvals.js';
+import { AuditLog } from '../../../src/runtime/audit-log.js';
 import { createFakeAgent } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
@@ -302,6 +304,48 @@ describe('Bridge command contracts', () => {
 
     await h.run('/usage yesterday');
     expect(lastMarkdown(h.channel)).toContain('用法');
+  });
+
+  it('approval buttons: only an admin can allow; the requester can cancel', async () => {
+    const h = await createHarness();
+    const pending: string[] = [];
+    const broker = new ApprovalBroker({
+      notifier: { announce: async (p) => void pending.push(p.id), settled: async () => {} },
+    });
+    (h.controls as Controls).approvals = broker;
+    const gate = broker.openGate({ actor: { id: 'ou-other' }, source: 'im', scopeId: 'chat-2', agent: 'claude' });
+    const answer = gate.decide({ tool: 'Bash', summary: 'make deploy' });
+    for (let i = 0; i < 50 && pending.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+
+    await h.run(`/approval allow ${pending[0]}`, { senderId: 'ou-other' });
+    expect(lastMarkdown(h.channel)).toContain('只有管理员可以允许');
+    await h.run(`/approval allow ${pending[0]}`);
+    await expect(answer).resolves.toMatchObject({ decision: 'allow' });
+    await h.run(`/approval deny ${pending[0]}`);
+    expect(lastMarkdown(h.channel)).toContain('已经处理过或已过期');
+  });
+
+  it('/audit lists who had the bot do what, for admins in private only', async () => {
+    const h = await createHarness();
+    const audit = new AuditLog(join(h.tmp.profile, 'audit.jsonl'));
+    audit.append({ kind: 'tool', actorId: 'ou-other', actorName: 'Colleague', source: 'im', scopeId: 'chat-2', tool: 'Bash', summary: 'npm test', gated: true });
+    audit.append({ kind: 'approval', event: 'requested', actorId: 'ou-other', source: 'im', scopeId: 'chat-2', tool: 'Bash', summary: 'rm -rf dist' });
+    audit.append({ kind: 'approval', event: 'denied', actorId: 'ou-other', actorName: 'Colleague', source: 'im', scopeId: 'chat-2', tool: 'Bash', summary: 'rm -rf dist', decidedBy: 'ou-admin' });
+    await audit.flush();
+    (h.controls as Controls).audit = audit;
+
+    await h.run('/audit');
+    const listing = lastMarkdown(h.channel);
+    expect(listing).toContain('最近 2 条操作记录');
+    expect(listing).toContain('Colleague');
+    expect(listing).toContain('rm -rf dist');
+    expect(listing).toContain('已拒绝');
+    expect(listing).not.toContain('requested');
+
+    await h.run('/audit', { chatMode: 'group' });
+    expect(lastMarkdown(h.channel)).toContain('私聊');
+    await h.run('/audit', { senderId: 'ou-other' });
+    expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
   });
 
   it('rejects admin-only commands for non owner/admin users', async () => {

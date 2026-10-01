@@ -69,10 +69,18 @@ export class CodexAppServerTranslator {
   }
 
   private itemStarted(item: Record<string, unknown> | undefined): AgentEvent[] {
-    if (!item || item.type !== 'commandExecution') return [];
-    const id = str(item.id);
-    if (!id) return [];
-    return [{ type: 'tool_use', id, name: 'command_execution', input: { command: str(item.command) ?? '' } }];
+    const id = str(item?.id);
+    if (!item || !id) return [];
+    if (item.type === 'commandExecution') {
+      return [{ type: 'tool_use', id, name: 'command_execution', input: { command: str(item.command) ?? '' } }];
+    }
+    if (item.type === 'fileChange') {
+      const paths = (Array.isArray(item.changes) ? item.changes : [])
+        .map((c) => str(record(c)?.path))
+        .filter((p): p is string => Boolean(p));
+      return [{ type: 'tool_use', id, name: 'file_change', input: { paths } }];
+    }
+    return [];
   }
 
   private itemCompleted(item: Record<string, unknown> | undefined): AgentEvent[] {
@@ -80,6 +88,13 @@ export class CodexAppServerTranslator {
     if (item.type === 'agentMessage') {
       const text = str(item.text);
       return text ? this.queueAgentMessage(text) : [];
+    }
+    if (item.type === 'fileChange') {
+      const id = str(item.id);
+      if (!id) return [];
+      return this.prependPending([
+        { type: 'tool_result', id, output: str(item.status) ?? '', isError: item.status !== 'completed' },
+      ]);
     }
     if (item.type !== 'commandExecution') return [];
     const id = str(item.id);

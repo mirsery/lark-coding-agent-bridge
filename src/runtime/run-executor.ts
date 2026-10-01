@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentAdapter, AgentEvent, AgentRun } from '../agent/types';
+import type { AgentAdapter, AgentEvent, AgentRun, RunApprovals } from '../agent/types';
 import { ActiveRuns, type RunHandle } from '../bot/active-runs';
 import { ProcessPool } from '../bot/process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
@@ -8,6 +8,14 @@ import { agentDescriptor, isAgentKind } from '../agent/registry';
 import { RunRejected, SpawnFailed } from './errors';
 import { isTerminalEvent, ProcessSession } from './process-session';
 import type { UsageEntry } from './usage-ledger';
+import { needsApproval, summarizeToolCall, type AuditSink, type GateContext } from './approvals';
+
+/** Per-process approval channels for gated runs (see ApprovalBroker). */
+export interface RunApprovalGates {
+  open(ctx: GateContext): { token: string; approvals: RunApprovals };
+  update(token: string, ctx: GateContext): void;
+  close(token: string): void;
+}
 
 export interface RunExecutorDeps {
   agent: AgentAdapter;
@@ -25,6 +33,10 @@ export interface RunExecutorDeps {
   idleKeepAliveMs?: number;
   /** Where each turn's token / cost report is booked against the person behind it. */
   usage?: { record(entry: UsageEntry): void };
+  /** Approval channels for runs a non-admin drives; without them such runs are read-only. */
+  approvals?: RunApprovalGates;
+  /** Who had the bot run which command / write which file. */
+  audit?: AuditSink;
 }
 
 /**
@@ -51,6 +63,13 @@ export interface SubmitRunInput {
   nowait?: boolean;
   /** Who this run is for — the person its usage is booked against. */
   actor?: { id: string; name?: string };
+  /** The chat the run answers in, for the audit trail. */
+  chatId?: string;
+  /**
+   * Set when a non-admin drives the run: side-effecting steps need an
+   * admin's approval. Gated and ungated turns never share a process.
+   */
+  gate?: GateContext;
   /**
    * Receives background turns once this run's user turn is over. A later
    * submission for the same scope replaces it, so follow-ups go to whoever
@@ -86,6 +105,9 @@ interface LiveProcess {
   onBackgroundTurn: BackgroundTurnHandler | undefined;
   /** Latest submitter: background turns are booked against them. */
   actor: { id: string; name?: string } | undefined;
+  /** The process's approval channel, when it runs gated. */
+  gateToken: string | undefined;
+  chatId: string | undefined;
   source: string;
   lingerTimer: NodeJS.Timeout | undefined;
   finishing: boolean;
@@ -103,6 +125,8 @@ export class RunExecutor {
   private readonly maxBackgroundLingerMs: number;
   private readonly idleKeepAliveMs: number;
   private readonly usage: RunExecutorDeps['usage'];
+  private readonly approvals: RunExecutorDeps['approvals'];
+  private readonly audit: RunExecutorDeps['audit'];
   private readonly live = new Map<string, LiveProcess>();
 
   constructor(deps: RunExecutorDeps) {
@@ -115,6 +139,8 @@ export class RunExecutor {
       deps.postDoneExitGraceMs ?? agentDescriptor(isAgentKind(deps.agent.id) ? deps.agent.id : undefined).exitGraceMs;
     this.maxBackgroundLingerMs = deps.maxBackgroundLingerMs ?? DEFAULT_MAX_BACKGROUND_LINGER_MS;
     this.usage = deps.usage;
+    this.approvals = deps.approvals;
+    this.audit = deps.audit;
     this.idleKeepAliveMs =
       deps.idleKeepAliveMs ?? agentDescriptor(isAgentKind(deps.agent.id) ? deps.agent.id : undefined).idleKeepAliveMs;
   }
@@ -165,7 +191,7 @@ export class RunExecutor {
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
     };
-    const compatKey = runCompatKey(runOptions);
+    const compatKey = runCompatKey({ ...runOptions, gated: Boolean(input.gate) });
     const dimensions = {
       runId,
       profile: input.observability?.profile ?? 'unknown',
@@ -198,6 +224,7 @@ export class RunExecutor {
           turnEvents = events;
           this.endLinger(live);
           live.dimensions = dimensions;
+          if (live.gateToken && input.gate) this.approvals?.update(live.gateToken, input.gate);
           log.info('run', 'reuse-process', { ...dimensions, background: live.session.background });
         } else {
           previous.session.detachTurn();
@@ -207,14 +234,26 @@ export class RunExecutor {
     }
 
     let run: AgentRun;
+    let gateToken: string | undefined;
     if (live && turnEvents) {
       run = live.session.run;
     } else {
+      if (input.gate) {
+        if (this.approvals) {
+          const opened = this.approvals.open(input.gate);
+          gateToken = opened.token;
+          Object.assign(runOptions, { approvals: opened.approvals });
+        } else {
+          // Nobody to ask: a gated run without an approval channel stays read-only.
+          Object.assign(runOptions, { permissionMode: 'plan', sandbox: 'read-only' });
+        }
+      }
       try {
         await this.agent.prepareRun?.(runOptions);
       } catch (err) {
         release();
         releaseScope();
+        if (gateToken) this.approvals?.close(gateToken);
         if (err instanceof SpawnFailed) throw err;
         throw new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed');
       }
@@ -231,6 +270,7 @@ export class RunExecutor {
       } catch (err) {
         release();
         releaseScope();
+        if (gateToken) this.approvals?.close(gateToken);
         throw new SpawnFailed('agent spawn failed', err);
       }
       let created!: LiveProcess;
@@ -245,6 +285,8 @@ export class RunExecutor {
         dimensions,
         onBackgroundTurn: undefined,
         actor: undefined,
+        gateToken,
+        chatId: undefined,
         source: 'unknown',
         lingerTimer: undefined,
         finishing: false,
@@ -256,6 +298,7 @@ export class RunExecutor {
     }
     live.onBackgroundTurn = input.onBackgroundTurn;
     live.actor = input.actor;
+    live.chatId = input.chatId;
     live.source = dimensions.source;
     log.info('run', 'started', {
       ...dimensions,
@@ -301,6 +344,7 @@ export class RunExecutor {
     const fanout = new EventFanout(
       observeRunEvents(turnEvents, { dimensions, startedAt, now: this.now }, (event) => {
         if (event.type === 'usage') this.bookUsage(owner, event);
+        else if (event.type === 'tool_use') this.auditTool(owner, event);
         else terminal = event;
       }),
       async () => {
@@ -406,8 +450,33 @@ export class RunExecutor {
     }
   }
 
+  /** Record a side-effecting step (command, file write, MCP call) against the person behind it. */
+  private auditTool(live: LiveProcess, event: Extract<AgentEvent, { type: 'tool_use' }>): void {
+    if (!this.audit || !live.actor || !needsApproval(event.name)) return;
+    const input = event.input && typeof event.input === 'object' ? (event.input as Record<string, unknown>) : {};
+    const summary =
+      event.name === 'file_change' && Array.isArray(input.paths)
+        ? `修改文件：${(input.paths as unknown[]).join(', ')}`
+        : summarizeToolCall(event.name, input);
+    this.audit.append({
+      kind: 'tool',
+      actorId: live.actor.id,
+      ...(live.actor.name ? { actorName: live.actor.name } : {}),
+      source: live.source,
+      scopeId: live.scopeId,
+      ...(live.chatId ? { chatId: live.chatId } : {}),
+      agent: String(live.dimensions.agent ?? ''),
+      tool: event.name,
+      summary,
+      gated: Boolean(live.gateToken),
+    });
+  }
+
   private deliverBackgroundTurn(live: LiveProcess, events: AgentEvent[]): void {
-    for (const event of events) if (event.type === 'usage') this.bookUsage(live, event);
+    for (const event of events) {
+      if (event.type === 'usage') this.bookUsage(live, event);
+      if (event.type === 'tool_use') this.auditTool(live, event);
+    }
     log.info('run', 'background-turn', {
       ...live.dimensions,
       events: events.length,
@@ -488,12 +557,17 @@ export class RunExecutor {
 
   private forget(live: LiveProcess): void {
     this.endLinger(live);
+    if (live.gateToken) {
+      this.approvals?.close(live.gateToken);
+      live.gateToken = undefined;
+    }
     if (this.live.get(live.scopeId) === live) this.live.delete(live.scopeId);
   }
 }
 
 /** Everything a running process was started with that a later turn must share. */
 function runCompatKey(opts: {
+  gated?: boolean;
   cwd?: string;
   model?: string;
   effort?: string;
@@ -502,6 +576,7 @@ function runCompatKey(opts: {
   images?: readonly string[];
 }): string {
   return JSON.stringify([
+    opts.gated ?? false,
     opts.cwd ?? null,
     opts.model ?? null,
     opts.effort ?? null,
@@ -524,7 +599,7 @@ function observeRunEvents(
   return {
     async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
       for await (const event of events) {
-        if (isTerminalEvent(event) || event.type === 'usage') onEvent(event);
+        if (isTerminalEvent(event) || event.type === 'usage' || event.type === 'tool_use') onEvent(event);
         if (event.type === 'done') {
           log.info('run', 'completed', {
             ...opts.dimensions,
