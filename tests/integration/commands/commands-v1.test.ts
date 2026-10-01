@@ -126,19 +126,15 @@ describe('Bridge command contracts', () => {
     expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
   });
 
-  it('keeps /new and /reset admin-only without touching the session', async () => {
+  it('lets anyone start a new session with /new or /reset', async () => {
     const h = await createHarness();
-    h.sessions.set('chat-1', 'shared-session', h.tmp.workspace);
 
-    for (const cmd of ['/new', '/reset', '/new chat side']) {
+    for (const cmd of ['/new', '/reset']) {
+      h.sessions.set('chat-1', 'shared-session', h.tmp.workspace);
       await expect(h.run(cmd, { senderId: 'ou-not-admin' })).resolves.toBe(true);
-      expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
+      expect(lastMarkdown(h.channel)).toBe('已开始新会话。');
+      expect(h.sessions.getRaw('chat-1')).toBeUndefined();
     }
-    expect(h.sessions.getRaw('chat-1')).toMatchObject({ sessionId: 'shared-session' });
-
-    await expect(h.run('/new')).resolves.toBe(true);
-    expect(lastMarkdown(h.channel)).toBe('已开始新会话。');
-    expect(h.sessions.getRaw('chat-1')).toBeUndefined();
   });
 
   it('does not expose authorization root management commands', async () => {

@@ -302,11 +302,6 @@ const ADMIN_COMMANDS = new Set([
   // Joining a meeting makes the bot visible to every participant and exposes
   // meeting content to the agent — owner/admin only.
   '/meeting',
-  // Dropping the session interrupts the active run and wipes the context the
-  // whole chat shares; `/new chat` also creates a group. /reset is the same
-  // handler, so it has to be gated too or it becomes a bypass.
-  '/new',
-  '/reset',
   // Shows who had the bot do what across every chat of the profile.
   '/audit',
 ]);
