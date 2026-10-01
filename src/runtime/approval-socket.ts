@@ -50,6 +50,7 @@ export class ApprovalSocketServer {
           tool: msg.tool,
           summary: summarizeToolCall(msg.tool, input),
           readOnly: !callNeedsApproval(msg.tool, input),
+          ...(msg.tool === 'Bash' && typeof input.command === 'string' ? { command: input.command } : {}),
         });
       } catch (err) {
         log.warn('approvals', 'socket-request-failed', { err: err instanceof Error ? err.message : String(err) });

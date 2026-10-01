@@ -1553,6 +1553,7 @@ async function handleApproval(args: string, ctx: CommandContext): Promise<void> 
 const AUDIT_EVENT_LABELS: Record<string, string> = {
   allowed: '已允许',
   'auto-allowed': '本轮已允许',
+  'config-allowed': '免审批清单',
   denied: '已拒绝',
   timeout: '超时拒绝',
   cancelled: '已取消',

@@ -54,7 +54,7 @@ import {
   toPolicyAttachment,
   toPromptAttachment,
 } from '../media/attachment';
-import { canRunAdminCommand, canUseDm, canUseGroup, requireMentionForChat } from '../policy/access';
+import { canUseDm, canUseGroup, requireMentionForChat, runNeedsApproval } from '../policy/access';
 import { MeetingManager } from '../meeting/manager';
 import type { VcRequestClient } from '../meeting/api';
 import { attachMeetingAgent, summarizeEndedMeeting } from '../meeting/orchestrator';
@@ -300,6 +300,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       timeoutMinutes: () => approvalBroker.timeoutMinutes,
     }),
     ...(auditLog ? { audit: auditLog } : {}),
+    allowlist: () => controls.profileConfig.approvals,
   });
   controls.approvals = approvalBroker;
   // Claude's approval hook calls back over this socket. Without it, gated
@@ -1203,9 +1204,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   let deliverBackgroundTurn: BackgroundTurnHandler | undefined;
   // A batch carrying anyone's words but an admin's is gated: the agent may
   // read freely, but each side-effecting step waits for an admin.
-  const requester = batch.find(
-    (m) => !canRunAdminCommand(controls.profileConfig, controls, m.senderId).ok,
-  );
+  const requester = batch.find((m) => runNeedsApproval(controls.profileConfig, controls, m.senderId));
   const gate: GateContext | undefined = requester
     ? {
         actor: { id: requester.senderId, ...(requester.senderName ? { name: requester.senderName } : {}) },

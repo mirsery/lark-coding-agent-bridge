@@ -136,6 +136,30 @@ export interface MeetingConfig {
   summaryTarget: MeetingSummaryTarget;
 }
 
+/**
+ * Approvals for runs a non-admin drives (#6). Admins' own runs never ask.
+ */
+export interface ApprovalsConfig {
+  /**
+   * Off: non-admins' runs get the same permissions as an admin's again — no
+   * approval cards. Default on.
+   */
+  enabled: boolean;
+  /**
+   * Shell commands that run without asking, by their leading words — e.g.
+   * `python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py`
+   * covers every subcommand of that script. Each stage of a `&&` / `|` line
+   * must be covered (or plainly read-only); `;`, redirection and
+   * substitution still ask. See `isAllowedCommand`.
+   */
+  allowCommands: string[];
+  /**
+   * Tools that run without asking, by name; `*` matches anything
+   * (`mcp__tdengine-*__query`). `Bash` here would waive every command.
+   */
+  allowTools: string[];
+}
+
 export type LarkCliIdentityPreset = 'bot-only' | 'user-default';
 
 /**
@@ -192,6 +216,8 @@ export interface ProfileConfig {
   /** In-meeting agent settings. See {@link MeetingConfig}. */
   meeting: MeetingConfig;
   larkCli: LarkCliConfig;
+  /** Approvals for non-admins' runs. See {@link ApprovalsConfig}. */
+  approvals: ApprovalsConfig;
 }
 
 /**
@@ -270,6 +296,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     comments?: unknown;
     meeting?: unknown;
     larkCli?: unknown;
+    approvals?: unknown;
   };
 
   if (raw.schemaVersion !== 2) {
@@ -322,6 +349,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     comments,
     meeting,
     larkCli,
+    approvals: normalizeApprovals(raw.approvals),
   };
 }
 
@@ -503,6 +531,23 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+function normalizeApprovals(input: unknown): ApprovalsConfig {
+  const raw = (input && typeof input === 'object' && !Array.isArray(input) ? input : {}) as {
+    enabled?: unknown;
+    allowCommands?: unknown;
+    allowTools?: unknown;
+  };
+  const trimmed = (value: unknown): string[] =>
+    stringArray(value)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  return {
+    enabled: raw.enabled !== false,
+    allowCommands: trimmed(raw.allowCommands),
+    allowTools: trimmed(raw.allowTools),
+  };
 }
 
 function normalizeLarkCli(input: unknown): LarkCliConfig {

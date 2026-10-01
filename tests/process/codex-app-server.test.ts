@@ -69,7 +69,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (text.includes('SLOW')) { slow = { threadId, turnId }; return; }
     if (text.includes('TOUCH')) {
       gated = { threadId, turnId, step: 'command' };
-      return send({ id: 501, method: 'item/commandExecution/requestApproval', params: { threadId, turnId, itemId: 'cmd-1', command: 'touch x.txt', startedAtMs: 1 } });
+      return send({ id: 501, method: 'item/commandExecution/requestApproval', params: { threadId, turnId, itemId: 'cmd-1', command: "/bin/zsh -lc 'touch x.txt'", proposedExecpolicyAmendment: ['/bin/zsh', '-lc', 'touch x.txt'], startedAtMs: 1 } });
     }
     return finish(threadId, turnId, 'completed', 'reply ' + turns);
   }
@@ -241,7 +241,8 @@ process.stdin.resume(); process.stdin.on('end', () => { console.log(JSON.stringi
     const turn = await nextTurn(run.events[Symbol.asyncIterator]());
 
     expect(asked).toEqual([
-      { tool: 'command_execution', summary: 'touch x.txt', readOnly: false },
+      // Codex wraps every command in its shell; the bridge judges and shows the script inside.
+      { tool: 'command_execution', summary: 'touch x.txt', readOnly: false, command: 'touch x.txt' },
       { tool: 'file_change', summary: '修改文件：/repo/notes.md' },
     ]);
     expect(turn).toContainEqual({ type: 'final_text', content: 'decisions: accept,decline' });

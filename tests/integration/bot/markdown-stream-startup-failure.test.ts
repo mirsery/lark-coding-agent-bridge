@@ -309,6 +309,19 @@ describe('markdown stream startup failures', () => {
     expect(h.agent.runOptions[1]?.approvals).toBeUndefined();
   });
 
+  it('runs non-admins ungated once the profile turns approvals off', async () => {
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [[{ type: 'done', terminationReason: 'normal' }]],
+    });
+    h.profileConfig.approvals.enabled = false;
+    await startTestBridge(h, testAppPaths(h.tmp));
+
+    await h.channel.handlers.message?.(message('om_user', 'please deploy'));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    expect(h.agent.runOptions[0]?.approvals).toBeUndefined();
+  });
+
   it('opens no progress stream for a final-only round', async () => {
     // The regression this guards: Codex answering without any commentary. The
     // SDK sends its streaming card as soon as `stream()` is called and finishes

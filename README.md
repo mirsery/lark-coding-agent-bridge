@@ -505,6 +505,21 @@ Runs driven by anyone other than the bot owner and the admins (DMs, @bot in grou
 - Every approval and every command / file change is recorded per person in an audit log (`audit.jsonl` in the profile dir, kept 90 days); admins see the latest with `/audit [N]` in a private chat.
 - Claude Code is gated with a PreToolUse hook; Codex through the app-server's own approval requests (read-only sandbox, `approvalPolicy: untrusted`). Codex profiles that fall back to `codex exec` have no approval channel, so non-admin runs there are read-only.
 
+Tune it with `approvals` in the profile config (restart the profile to apply):
+
+```json
+"approvals": {
+  "enabled": true,
+  "allowCommands": ["python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py"],
+  "allowTools": ["mcp__tdengine-*__query"]
+}
+```
+
+- `enabled: false` turns approvals off: non-admins' runs get the same permissions as an admin's again. On by default.
+- `allowCommands`: commands that run without asking, matched by their leading words (`~` and `$HOME` expanded, whole words only) — the example covers every subcommand of that script. Each stage of a `&&` / `|` line must be listed or plainly read-only; `;`, redirection and substitution still ask; a script reached through a variable (`$C`) doesn't match.
+- `allowTools`: tool names that run without asking; `*` matches anything. Listing `Bash` waives every command.
+- Steps waived this way are still audited (shown as "allowlisted" in `/audit`).
+
 ### Advanced: editing the config file directly
 
 If you'd rather not do it inside Feishu, `/invite` and `/config` write the matching profile's `access` field in `~/.lark-channel/config.json`. Empty lists mean nobody from that list, not open access. This is a profile-field snippet; do not replace the whole `config.json` with it:

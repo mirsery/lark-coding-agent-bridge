@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { homedir } from 'node:os';
+import type { ApprovalsConfig } from '../config/profile-schema';
 import { log } from '../core/logger';
 
 /** Who a gated run acts for and where its answers go — refreshed per turn. */
@@ -22,6 +24,8 @@ export interface ApprovalRequest {
   summary: string;
   /** Classified by the caller as harmless (e.g. a read-only shell command). */
   readOnly?: boolean;
+  /** The shell command itself, when the step runs one — matched against `approvals.allowCommands`. */
+  command?: string;
 }
 
 export interface ApprovalAnswer {
@@ -107,19 +111,70 @@ const READ_ONLY_GIT = new Set(['status', 'log', 'diff', 'show', 'rev-parse', 'ls
 /** `sed -n '1,50p'`-style printing scripts — anything else (`w`, `e`…) can write or run. */
 const SED_PRINT_SCRIPT = /^['"]?(\d+|\$)?(,(\d+|\$))?p['"]?$/;
 
+/** Redirections that only silence or merge output: `2>&1`, `2>/dev/null`, `&>/dev/null`… */
+const HARMLESS_REDIRECT = /(^|\s)(?:[12]?>&[12]|(?:[12]|&)?>>?\s*\/dev\/null)(?=\s|$)/g;
+
 /**
- * Whether a shell command can be run without approval: every stage (split on
- * `&&` and `|`) is a known read-only command with no writing flags, and the
- * line has no redirection, `;`, background `&`, `||` or substitution.
- * Conservative — anything unrecognised asks.
+ * A shell line's stages (split on `&&` and `|`, each as words), or undefined
+ * when the line has something that can write or hide a command: redirection
+ * (beyond the harmless ones), `;`, background `&`, `||`, a newline or
+ * substitution.
  */
-export function isReadOnlyCommand(command: string): boolean {
-  const line = command.trim();
-  if (!line || /[;><`\n\r]|\$\(|\|\||(^|[^&])&([^&]|$)/.test(line)) return false;
+function commandStages(command: string): string[][] | undefined {
+  const line = command.replace(HARMLESS_REDIRECT, '$1').trim();
+  if (!line || /[;><`\n\r]|\$\(|\|\||(^|[^&])&([^&]|$)/.test(line)) return undefined;
   return line
     .split('&&')
     .flatMap((part) => part.split('|'))
-    .every((stage) => isReadOnlyStage(stage.trim().split(/\s+/)));
+    .map((stage) => stage.trim().split(/\s+/));
+}
+
+/**
+ * Whether a shell command can be run without approval: every stage is a
+ * known read-only command with no writing flags, and the line passes
+ * {@link commandStages}. Conservative — anything unrecognised asks.
+ */
+export function isReadOnlyCommand(command: string): boolean {
+  return commandStages(command)?.every(isReadOnlyStage) ?? false;
+}
+
+/**
+ * Whether the profile's `approvals.allowCommands` covers a shell command:
+ * the line passes {@link commandStages}, and every stage is read-only or
+ * starts with the words of an allowed prefix. Words compare whole (so
+ * `python3 a.py` doesn't cover `python3 a.py.bak` or `python3 x/../a.py`),
+ * with quotes around a word dropped and a leading `~` / `$HOME` expanded on
+ * both sides. A command that reaches the script through a variable doesn't
+ * match.
+ */
+export function isAllowedCommand(command: string, prefixes: readonly string[]): boolean {
+  const allowed = prefixes.map((p) => p.trim().split(/\s+/).filter(Boolean).map(normalizeWord)).filter((p) => p.length > 0);
+  if (allowed.length === 0) return false;
+  const stages = commandStages(command);
+  if (!stages) return false;
+  return stages.every((stage) => {
+    if (isReadOnlyStage(stage)) return true;
+    const words = stage.map(normalizeWord);
+    return allowed.some((prefix) => prefix.every((word, i) => words[i] === word));
+  });
+}
+
+/** Whether a tool name is in `approvals.allowTools`; `*` matches any run of characters. */
+export function isAllowedTool(tool: string, patterns: readonly string[]): boolean {
+  return patterns.some((pattern) => {
+    const p = pattern.trim();
+    if (!p) return false;
+    const source = p.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+    return new RegExp(`^${source}$`).test(tool);
+  });
+}
+
+function normalizeWord(word: string): string {
+  const unquoted = /^(['"])(.*)\1$/.exec(word)?.[2] ?? word;
+  const home = homedir();
+  if (unquoted === '~' || unquoted === '$HOME' || unquoted === '${HOME}') return home;
+  const m = /^(~|\$HOME|\$\{HOME\})\//.exec(unquoted);
+  return m ? `${home}/${unquoted.slice(m[0].length)}` : unquoted;
 }
 
 function isReadOnlyStage([cmd, ...args]: string[]): boolean {
@@ -173,6 +228,9 @@ export function summarizeToolCall(tool: string, input: Record<string, unknown>):
 
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
 
+/** The part of the profile's `approvals` config the broker reads on every request. */
+export type ApprovalAllowlist = Pick<ApprovalsConfig, 'allowCommands' | 'allowTools'>;
+
 /**
  * Holds every approval a profile is waiting on. Runs driven by non-admins
  * get a gate; each side-effecting step they want to take is announced to the
@@ -190,12 +248,21 @@ export class ApprovalBroker {
   private readonly audit: AuditSink | undefined;
   private readonly timeoutMs: number;
   private readonly now: () => number;
+  private readonly allowlist: (() => ApprovalAllowlist) | undefined;
 
-  constructor(opts: { notifier: ApprovalNotifier; audit?: AuditSink; timeoutMs?: number; now?: () => number }) {
+  constructor(opts: {
+    notifier: ApprovalNotifier;
+    audit?: AuditSink;
+    timeoutMs?: number;
+    now?: () => number;
+    /** What the profile lets through without asking; read on every request so config edits apply. */
+    allowlist?: () => ApprovalAllowlist;
+  }) {
     this.notifier = opts.notifier;
     this.audit = opts.audit;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.now = opts.now ?? Date.now;
+    this.allowlist = opts.allowlist;
   }
 
   get timeoutMinutes(): number {
@@ -225,6 +292,10 @@ export class ApprovalBroker {
     const gate = this.gates.get(token);
     if (!gate) return { decision: 'deny', reason: '这个运行没有有效的审批通道，操作已拒绝。' };
     if (request.readOnly || !needsApproval(request.tool)) return { decision: 'allow', reason: 'read-only' };
+    if (this.allowedByConfig(request)) {
+      this.record('config-allowed', gate.ctx, request);
+      return { decision: 'allow', reason: '这个操作在 profile 的免审批清单里。' };
+    }
     if (gate.allowTurn) {
       this.record('auto-allowed', gate.ctx, request);
       return { decision: 'allow', reason: '管理员已允许本轮后续操作。' };
@@ -281,6 +352,15 @@ export class ApprovalBroker {
   /** Deny everything still waiting (shutdown). */
   cancelAll(reason: string): void {
     for (const id of [...this.pending.keys()]) this.settle(id, { kind: 'cancelled', reason });
+  }
+
+  private allowedByConfig(request: ApprovalRequest): boolean {
+    const list = this.allowlist?.();
+    if (!list) return false;
+    return (
+      isAllowedTool(request.tool, list.allowTools) ||
+      (request.command !== undefined && isAllowedCommand(request.command, list.allowCommands))
+    );
   }
 
   private settle(id: string, outcome: ApprovalOutcome): void {

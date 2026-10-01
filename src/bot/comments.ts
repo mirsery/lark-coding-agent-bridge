@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { CommentEvent, LarkChannel } from '@larksuite/channel';
 import { agentCapability } from '../agent/capability';
-import { canRunAdminCommand } from '../policy/access';
+import { runNeedsApproval } from '../policy/access';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { getAgentStopGraceMs } from '../config/schema';
 import type { Controls } from '../commands';
@@ -267,7 +267,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
         stopGraceMs: getAgentStopGraceMs(controls.cfg),
         actor: { id: evt.operator.openId },
         // A doc comment from a non-admin runs gated, like an IM message would.
-        ...(canRunAdminCommand(controls.profileConfig, controls, evt.operator.openId).ok
+        ...(!runNeedsApproval(controls.profileConfig, controls, evt.operator.openId)
           ? {}
           : {
               gate: {

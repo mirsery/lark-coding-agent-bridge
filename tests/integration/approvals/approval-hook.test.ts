@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ApprovalSocketServer } from '../../../src/runtime/approval-socket';
-import { ApprovalBroker, type PendingApproval } from '../../../src/runtime/approvals';
+import { ApprovalBroker, type ApprovalAllowlist, type PendingApproval } from '../../../src/runtime/approvals';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -29,7 +29,7 @@ function runHook(command: string, event: Record<string, unknown>): Promise<Recor
   });
 }
 
-async function harness() {
+async function harness(allowlist?: ApprovalAllowlist) {
   const dir = await mkdtemp(join(tmpdir(), 'approval-sock-'));
   const announced: PendingApproval[] = [];
   const broker: ApprovalBroker = new ApprovalBroker({
@@ -41,6 +41,7 @@ async function harness() {
       },
       async settled() {},
     },
+    ...(allowlist ? { allowlist: () => allowlist } : {}),
   });
   const server = await ApprovalSocketServer.listen(broker, dir, 'test');
   cleanups.push(async () => {
@@ -72,6 +73,16 @@ describe.skipIf(process.platform === 'win32')('Claude approval hook over the bri
     expect(decisionOf(await runHook(command, { tool_name: 'Grep', tool_input: { pattern: 'x' } }))).toBe('allow');
     expect(decisionOf(await runHook(command, { tool_name: 'Bash', tool_input: { command: 'git log -3' } }))).toBe('allow');
     expect(h.announced).toEqual([]);
+  });
+
+  it("lets the profile's allowlisted commands through, and nothing riding along with them", async () => {
+    const h = await harness({ allowCommands: ['python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py'], allowTools: [] });
+    const command = h.server.hookCommand(h.gate.token);
+    const capture = 'python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py capture --cluster eur --sn ALB1 --seconds 60';
+    expect(decisionOf(await runHook(command, { tool_name: 'Bash', tool_input: { command: capture } }))).toBe('allow');
+    expect(h.announced).toEqual([]);
+    await runHook(command, { tool_name: 'Bash', tool_input: { command: `${capture}; touch x` } });
+    expect(h.announced.map((p) => p.request.summary)).toEqual([`${capture}; touch x`]);
   });
 
   it('fails closed: a forged token or an unreachable bridge means deny', async () => {

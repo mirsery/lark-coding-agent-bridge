@@ -505,6 +505,21 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 - 每次审批结果和执行过的命令 / 改动的文件都按人记入审计日志（profile 目录下 `audit.jsonl`，保留 90 天），管理员私聊发 `/audit [N]` 查看最近的记录。
 - Claude Code 通过工具调用前的 hook 拦截；Codex 通过 app-server 自带的审批请求（沙箱只读、`approvalPolicy: untrusted`）。退回 `codex exec` 的 Codex profile 没有审批通道，非管理员的任务只读运行。
 
+在 profile 配置里用 `approvals` 调整（改完重启该 profile 生效）：
+
+```json
+"approvals": {
+  "enabled": true,
+  "allowCommands": ["python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py"],
+  "allowTools": ["mcp__tdengine-*__query"]
+}
+```
+
+- `enabled: false`：整个关掉，非管理员的任务恢复成和管理员一样的权限，不再弹审批卡。默认开启。
+- `allowCommands`：免审批的命令，按开头的几个词匹配（`~`、`$HOME` 会展开，词要整个对上），上例覆盖这个抓包脚本的所有子命令。`&&` / `|` 连起来的每一段都要么在清单里、要么本身只读；带 `;`、重定向、命令替换的照样要审批；经变量（`$C`）调用的脚本匹配不上。
+- `allowTools`：免审批的工具名，`*` 匹配任意字符。写 `Bash` 等于放开所有命令，慎用。
+- 免审批放行的操作同样记审计，`/audit` 里显示为「免审批清单」。
+
 ### 高级：直接改配置文件
 
 不想在飞书里点的话，`/invite`、`/config` 背后写的是 `~/.lark-channel/config.json` 中对应 profile 的 `access` 字段。空白名单表示这个名单没人，不表示所有人都能用。下面只是 profile 里的字段片段，不要整段覆盖 `config.json`：

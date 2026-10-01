@@ -283,10 +283,12 @@ function approvalRequest(
   method: string,
   params: Record<string, unknown>,
   fileChanges: Map<string, string[]>,
-): { tool: string; summary: string; readOnly?: boolean } | undefined {
+): { tool: string; summary: string; readOnly?: boolean; command?: string } | undefined {
   if (method === 'item/commandExecution/requestApproval') {
-    const command = str(params.command);
-    return { tool: 'command_execution', summary: command ?? '(command)', readOnly: command !== undefined && isReadOnlyCommand(command) };
+    const raw = str(params.command);
+    if (raw === undefined) return { tool: 'command_execution', summary: '(command)', readOnly: false };
+    const command = unwrapShellCommand(raw, params.proposedExecpolicyAmendment);
+    return { tool: 'command_execution', summary: command, readOnly: isReadOnlyCommand(command), command };
   }
   if (method === 'item/fileChange/requestApproval') {
     const paths = fileChanges.get(str(params.itemId) ?? '') ?? [];
@@ -297,6 +299,34 @@ function approvalRequest(
     };
   }
   return undefined;
+}
+
+const SHELLS = new Set(['sh', 'bash', 'zsh']);
+
+/**
+ * The script inside Codex's shell wrapper. Approval requests carry the
+ * command as `/bin/zsh -lc "<script>"`, plus the same as argv in
+ * `proposedExecpolicyAmendment`; prefer the argv, else undo the quoting.
+ * Anything not in that shape comes back unchanged (and so is judged as is).
+ */
+export function unwrapShellCommand(command: string, argv?: unknown): string {
+  if (Array.isArray(argv) && argv.length === 3 && argv.every((a) => typeof a === 'string')) {
+    const [shell, flag, script] = argv as string[];
+    if (SHELLS.has(shell!.split('/').pop()!) && (flag === '-lc' || flag === '-c')) return script!;
+  }
+  const m = /^(?:\S*\/)?(sh|bash|zsh) -l?c (.+)$/s.exec(command.trim());
+  if (!m) return command;
+  const quoted = m[2]!;
+  if (quoted.length >= 2 && quoted.startsWith("'") && quoted.endsWith("'")) {
+    const inner = quoted.slice(1, -1).replace(/'\\''/g, '\u0000');
+    return inner.includes("'") ? command : inner.replace(/\u0000/g, "'");
+  }
+  if (quoted.length >= 2 && quoted.startsWith('"') && quoted.endsWith('"')) {
+    const inner = quoted.slice(1, -1);
+    if (/(^|[^\\])(\\\\)*"/.test(inner)) return command;
+    return inner.replace(/\\(["\\$`])/g, '$1');
+  }
+  return command;
 }
 
 function changedPaths(item: Record<string, unknown>): string[] {

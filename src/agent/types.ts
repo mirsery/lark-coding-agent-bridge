@@ -50,7 +50,13 @@ export interface RunApprovals {
   hookCommand?: string;
   /** How long a hook may block waiting for a decision. */
   hookTimeoutSec?: number;
-  decide(request: { tool: string; summary: string; readOnly?: boolean }): Promise<{ decision: 'allow' | 'deny'; reason: string }>;
+  decide(request: {
+    tool: string;
+    summary: string;
+    readOnly?: boolean;
+    /** The shell command, when the step runs one (checked against the profile's allowlist). */
+    command?: string;
+  }): Promise<{ decision: 'allow' | 'deny'; reason: string }>;
 }
 
 export interface AgentRunOptions {

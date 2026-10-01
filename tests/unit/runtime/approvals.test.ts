@@ -1,8 +1,12 @@
+import { homedir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import {
   ApprovalBroker,
   callNeedsApproval,
+  isAllowedCommand,
+  isAllowedTool,
   isReadOnlyCommand,
+  type ApprovalAllowlist,
   needsApproval,
   summarizeToolCall,
   type ApprovalNotifier,
@@ -21,7 +25,7 @@ const ctx = (actor = 'ou_colleague'): GateContext => ({
   agent: 'claude',
 });
 
-function harness(opts: { timeoutMs?: number; failAnnounce?: boolean } = {}) {
+function harness(opts: { timeoutMs?: number; failAnnounce?: boolean; allowlist?: ApprovalAllowlist } = {}) {
   const announced: PendingApproval[] = [];
   const settled: Array<{ id: string; outcome: ApprovalOutcome }> = [];
   const audit: Array<Record<string, unknown>> = [];
@@ -38,6 +42,7 @@ function harness(opts: { timeoutMs?: number; failAnnounce?: boolean } = {}) {
     notifier,
     audit: { append: (e) => audit.push(e) },
     ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+    ...(opts.allowlist ? { allowlist: () => opts.allowlist! } : {}),
   });
   return { broker, announced, settled, audit };
 }
@@ -114,6 +119,25 @@ describe('ApprovalBroker', () => {
     expect(await gate.decide({ tool: 'Bash', summary: 'x' })).toMatchObject({ decision: 'deny' });
   });
 
+  it('lets what the profile allowlists through without asking, and records it', async () => {
+    const h = harness({
+      allowlist: { allowCommands: ['python3 ~/tools/tcpdump_client.py'], allowTools: ['mcp__tdengine-*__query'] },
+    });
+    const gate = h.broker.openGate(ctx());
+    const capture = 'python3 ~/tools/tcpdump_client.py capture --cluster eur --sn ALB1 --seconds 120';
+    expect(await gate.decide({ tool: 'Bash', summary: capture, command: capture })).toMatchObject({ decision: 'allow' });
+    expect(await gate.decide({ tool: 'mcp__tdengine-prod-eur__query', summary: 'q' })).toMatchObject({ decision: 'allow' });
+    expect(h.announced).toEqual([]);
+    expect(h.audit.map((e) => e.event)).toEqual(['config-allowed', 'config-allowed']);
+    expect(h.audit[0]).toMatchObject({ actorId: 'ou_colleague', tool: 'Bash', summary: capture });
+
+    // Anything the list doesn't cover still waits for an admin.
+    void gate.decide({ tool: 'Bash', summary: 'rm -rf build', command: 'rm -rf build' });
+    await waitFor(() => h.announced.length === 1);
+    void gate.decide({ tool: 'mcp__tdengine-prod-eur__drop', summary: 'd' });
+    await waitFor(() => h.announced.length === 2);
+  });
+
   it('denies what a finished run was still waiting on, and anything on an unknown gate', async () => {
     const h = harness();
     const gate = h.broker.openGate(ctx());
@@ -185,10 +209,67 @@ describe('tool classification', () => {
     }
   });
 
+  it('ignores redirections that only silence or merge output', () => {
+    expect(isReadOnlyCommand('ls -la 2>&1 | head -5')).toBe(true);
+    expect(isReadOnlyCommand('grep -rn foo src 2>/dev/null')).toBe(true);
+    expect(isReadOnlyCommand('cat a >/dev/null')).toBe(true);
+    expect(isReadOnlyCommand('cat a 2> /dev/null')).toBe(true);
+    for (const command of ['cat a 2>err.log', 'cat a >/dev/null/../x', 'cat a 2>&1 > out', 'cat a 3>&1']) {
+      expect(isReadOnlyCommand(command), command).toBe(false);
+    }
+  });
+
   it('only waives approval for read-only shell, never for writes', () => {
     expect(callNeedsApproval('Bash', { command: 'git log -3' })).toBe(false);
     expect(callNeedsApproval('Bash', { command: 'git push' })).toBe(true);
     expect(callNeedsApproval('Write', { file_path: '/a', content: '' })).toBe(true);
     expect(callNeedsApproval('Read', { file_path: '/a' })).toBe(false);
+  });
+});
+
+describe('profile allowlist', () => {
+  const home = homedir();
+  const tcpdump = ['python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py'];
+
+  it('covers a command by its leading words, ~ and $HOME alike', () => {
+    for (const command of [
+      'python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py resolve --cluster eur --sn ALB1',
+      `python3 ${home}/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py capture --seconds 120 -o ~/Downloads/pcap`,
+      'python3 $HOME/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py stop --task t1',
+      'python3 "~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py" export --task t1 2>&1',
+      'python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py resolve --sn ALB1 | jq .clientIp',
+      'cd ~/Downloads && python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py stop --task t1',
+    ]) {
+      expect(isAllowedCommand(command, tcpdump), command).toBe(true);
+    }
+  });
+
+  it('never stretches a prefix past its words or around the shape rules', () => {
+    for (const command of [
+      'python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py.bak',
+      'python3 ~/.claude/skills/remote-tcpdump/scripts/../../evil.py',
+      'python3 -c "import os" ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py',
+      'FOO=1 python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py stop',
+      'python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py stop; rm -rf ~',
+      'python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py stop && rm -rf ~',
+      'python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py stop > ~/.zshrc',
+      'python3 ~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py $(rm a)',
+      'C=~/.claude/skills/remote-tcpdump/scripts/tcpdump_client.py && python3 $C stop',
+      'python3',
+    ]) {
+      expect(isAllowedCommand(command, tcpdump), command).toBe(false);
+    }
+    expect(isAllowedCommand('python3 a.py', [])).toBe(false);
+    expect(isAllowedCommand('python3 a.py', ['  '])).toBe(false);
+  });
+
+  it('matches tool names exactly or by * pattern', () => {
+    expect(isAllowedTool('mcp__tdengine-prod-eur__query', ['mcp__tdengine-*__query'])).toBe(true);
+    expect(isAllowedTool('mcp__tdengine-prod-eur__query', ['mcp__tdengine-prod-eur__query'])).toBe(true);
+    expect(isAllowedTool('mcp__tdengine-prod-eur__queryX', ['mcp__tdengine-*__query'])).toBe(false);
+    expect(isAllowedTool('mcp__jira__create', ['mcp__tdengine-*'])).toBe(false);
+    // Pattern characters other than * are literal.
+    expect(isAllowedTool('mcpXtool', ['mcp.tool'])).toBe(false);
+    expect(isAllowedTool('Bash', [])).toBe(false);
   });
 });
