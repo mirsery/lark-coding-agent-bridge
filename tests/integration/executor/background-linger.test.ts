@@ -442,7 +442,8 @@ describe('RunExecutor background tasks', () => {
     });
     const claude = new RunExecutor({ agent: new LiveAgent(), pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
     expect((codex as unknown as { postDoneExitGraceMs: number }).postDoneExitGraceMs).toBe(30_000);
-    expect((claude as unknown as { postDoneExitGraceMs: number }).postDoneExitGraceMs).toBe(2_000);
+    // Claude needs 1–3s to exit once its input closes; the grace must clear that.
+    expect((claude as unknown as { postDoneExitGraceMs: number }).postDoneExitGraceMs).toBe(10_000);
   });
 
   it('keeps an idle process for the next message where the agent supports it, then closes it quietly', async () => {

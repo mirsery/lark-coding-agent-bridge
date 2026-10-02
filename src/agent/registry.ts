@@ -94,7 +94,9 @@ export const AGENT_DESCRIPTORS: Readonly<Record<AgentKind, AgentDescriptor>> = {
     promptInjection: 'append-system-prompt',
     legacyCallbackMarkers: ['__claude_cb'],
     effortDefaultHint: '「跟随默认」= 不传 --effort',
-    exitGraceMs: 2_000,
+    // Claude Code 2.1 takes 1–3s to exit after its stdin closes even with no
+    // background task left; a 2s grace killed ~28% of finished turns.
+    exitGraceMs: 10_000,
     idleKeepAliveMs: 0,
   },
   codex: {
