@@ -1,4 +1,4 @@
-import type { NormalizedMessage } from '@larksuite/channel';
+import { LarkChannelError, type NormalizedMessage } from '@larksuite/channel';
 import { realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -64,6 +64,8 @@ interface FakeLarkChannel {
   getChatMode(chatId: string): Promise<'group' | 'topic'>;
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
   send(chatId: string, content: unknown, options?: unknown): Promise<{ messageId: string }>;
+  updated: Array<{ messageId: string; card: unknown }>;
+  updateCard(messageId: string, card: object): Promise<void>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
   addReaction(messageId: string, emojiType: string): Promise<string>;
   removeReaction(messageId: string, reactionId: string): Promise<void>;
@@ -71,6 +73,7 @@ interface FakeLarkChannel {
 
 type StreamFn = FakeLarkChannel['stream'];
 type SendFn = FakeLarkChannel['send'];
+type UpdateCardFn = FakeLarkChannel['updateCard'];
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -553,12 +556,173 @@ describe('markdown stream startup failures', () => {
     await waitFor(() => reactionTypesAdded(h.channel).includes('DONE'));
     await waitFor(() => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0);
   });
+  describe('when a streamed card cannot take its final update', () => {
+    // Feishu rejected the finished card of long Claude runs (230099: too many
+    // tables / card content). The stream had already shown part of the run, so
+    // nothing re-sent the answer and the card stayed stuck mid-run.
+    const cardLimit = () => new Error('Failed to create card content, ext=ErrCode: 11310; ErrMsg: card table number over limit');
+    const runEvents = (): AgentEvent[] => [
+      { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'cat report.md' } },
+      { type: 'tool_result', id: 't1', output: 'TOOL_OUTPUT_SENTINEL', isError: false },
+      { type: 'text', delta: 'ANSWER_SENTINEL' },
+      { type: 'done', terminationReason: 'normal' },
+    ];
+    const failingFinalStream: StreamFn = async (_chatId, input) => {
+      const producer = (input as {
+        card?: { producer?: (ctrl: { update(next: unknown): Promise<void>; messageId: string }) => Promise<void> };
+      }).card?.producer;
+      await producer?.({ update: vi.fn(async () => {}), messageId: 'om_stream_card' });
+      throw cardLimit();
+    };
+
+    it('replaces the stuck card with the answer alone', async () => {
+      vi.spyOn(log, 'fail').mockImplementation(() => {});
+      const h = await createHarness({
+        agentKind: 'claude',
+        messageReply: 'card',
+        events: runEvents(),
+        stream: failingFinalStream,
+      });
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message('om_card_limit', 'run'));
+      await waitFor(() => h.channel.updated.length === 1);
+
+      expect(h.channel.updated[0]?.messageId).toBe('om_stream_card');
+      const card = JSON.stringify(h.channel.updated[0]?.card);
+      expect(card).toContain('ANSWER_SENTINEL');
+      expect(card).not.toContain('TOOL_OUTPUT_SENTINEL');
+      expect(card).toContain('"streaming_mode":false');
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(h.channel.sent).toHaveLength(0);
+    });
+
+    it('sends the answer as a new card when the stuck card cannot be updated', async () => {
+      vi.spyOn(log, 'fail').mockImplementation(() => {});
+      const h = await createHarness({
+        agentKind: 'claude',
+        messageReply: 'card',
+        events: runEvents(),
+        stream: failingFinalStream,
+        updateCard: async () => {
+          throw cardLimit();
+        },
+      });
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message('om_card_limit_new', 'run'));
+      await waitFor(() => h.channel.sent.length === 1);
+
+      const content = h.channel.sent[0]?.content as { card?: unknown };
+      expect(JSON.stringify(content.card)).toContain('ANSWER_SENTINEL');
+      expect(JSON.stringify(content.card)).not.toContain('TOOL_OUTPUT_SENTINEL');
+      expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_card_limit_new' });
+    });
+
+    it('falls back to a plain post when no card is accepted', async () => {
+      vi.spyOn(log, 'fail').mockImplementation(() => {});
+      const h = await createHarness({
+        agentKind: 'claude',
+        messageReply: 'card',
+        events: runEvents(),
+        stream: failingFinalStream,
+        updateCard: async () => {
+          throw cardLimit();
+        },
+        send: async (_chatId, content) => {
+          if ((content as { card?: unknown }).card) throw cardLimit();
+          return { messageId: 'om_post' };
+        },
+      });
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message('om_card_limit_post', 'run'));
+      await waitFor(() => h.channel.sent.length === 2);
+
+      expect(lastMarkdown(h.channel)).toContain('ANSWER_SENTINEL');
+      expect(lastMarkdown(h.channel)).not.toContain('TOOL_OUTPUT_SENTINEL');
+    });
+
+    it('re-sends the answer as a post when a markdown stream fails its final update', async () => {
+      vi.spyOn(log, 'fail').mockImplementation(() => {});
+      const h = await createHarness({
+        agentKind: 'claude',
+        events: runEvents(),
+        stream: async (_chatId, input) => {
+          const producer = (input as {
+            markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+          }).markdown;
+          await producer?.({ setContent: vi.fn(async () => {}) });
+          throw cardLimit();
+        },
+      });
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message('om_md_limit', 'run'));
+      await waitFor(() => h.channel.sent.length === 1);
+
+      expect(lastMarkdown(h.channel)).toContain('ANSWER_SENTINEL');
+      expect(lastMarkdown(h.channel)).not.toContain('TOOL_OUTPUT_SENTINEL');
+    });
+
+    it('does not re-send anything when the message it answers was recalled', async () => {
+      vi.spyOn(log, 'fail').mockImplementation(() => {});
+      const h = await createHarness({
+        agentKind: 'claude',
+        messageReply: 'card',
+        events: runEvents(),
+        stream: async (_chatId, input) => {
+          const producer = (input as {
+            card?: { producer?: (ctrl: { update(next: unknown): Promise<void>; messageId: string }) => Promise<void> };
+          }).card?.producer;
+          await producer?.({ update: vi.fn(async () => {}), messageId: 'om_recalled_card' });
+          throw new LarkChannelError('target_revoked', 'The message was withdrawn.');
+        },
+      });
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message('om_recalled', 'run'));
+      await waitFor(() => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      expect(h.channel.updated).toHaveLength(0);
+      expect(h.channel.sent).toHaveLength(0);
+    });
+
+    it('also rescues a final update that fails after the terminal grace window', async () => {
+      vi.spyOn(log, 'fail').mockImplementation(() => {});
+      vi.spyOn(log, 'warn').mockImplementation(() => {});
+      const streamFailure = deferred<void>();
+      const h = await createHarness({
+        agentKind: 'claude',
+        messageReply: 'card',
+        events: runEvents(),
+        stream: async (_chatId, input) => {
+          const producer = (input as {
+            card?: { producer?: (ctrl: { update(next: unknown): Promise<void>; messageId: string }) => Promise<void> };
+          }).card?.producer;
+          void producer?.({ update: vi.fn(async () => {}), messageId: 'om_slow_card' });
+          await streamFailure.promise;
+        },
+      });
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message('om_card_limit_late', 'run'));
+      await new Promise((resolve) => setTimeout(resolve, 3_300));
+      streamFailure.reject(cardLimit());
+      await waitFor(() => h.channel.updated.length === 1);
+
+      expect(h.channel.updated[0]?.messageId).toBe('om_slow_card');
+      expect(JSON.stringify(h.channel.updated[0]?.card)).toContain('ANSWER_SENTINEL');
+    }, 10_000);
+  });
 });
 
 async function createHarness(options: {
   reactionCreate?: () => Promise<{ data: { reaction_id: string } }>;
   stream?: StreamFn;
   send?: SendFn;
+  updateCard?: UpdateCardFn;
   /** One run's events, or one array per run. */
   events?: FakeAgentEvents;
   messageReply?: 'card' | 'markdown' | 'text';
@@ -658,12 +822,15 @@ function createFakeLarkChannel(harnessOptions: {
   reactionCreate?: () => Promise<{ data: { reaction_id: string } }>;
   stream?: StreamFn;
   send?: SendFn;
+  updateCard?: UpdateCardFn;
 } = {}): FakeLarkChannel {
   const handlers: MessageHandlerMap = {};
   const sent: FakeLarkChannel['sent'] = [];
+  const updated: FakeLarkChannel['updated'] = [];
   const channel: FakeLarkChannel = {
     handlers,
     sent,
+    updated,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -703,6 +870,10 @@ function createFakeLarkChannel(harnessOptions: {
       sent.push({ chatId, content, options });
       if (harnessOptions.send) return harnessOptions.send(chatId, content, options);
       return { messageId: `sent_${sent.length}` };
+    },
+    async updateCard(messageId, card) {
+      updated.push({ messageId, card });
+      if (harnessOptions.updateCard) await harnessOptions.updateCard(messageId, card);
     },
     stream: harnessOptions.stream ?? (async () => {
       await new Promise<void>(() => {});

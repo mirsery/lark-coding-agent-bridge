@@ -3,7 +3,7 @@ import type {
   LarkChannelOptions,
   NormalizedMessage,
 } from '@larksuite/channel';
-import { createLarkChannel } from '@larksuite/channel';
+import { createLarkChannel, LarkChannelError } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { agentAccountName } from '../agent/account';
 import { agentCapability } from '../agent/capability';
@@ -1464,7 +1464,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       let latestState: RunState = initialState;
       let producerStarted = false;
       let cardCtrl:
-        | { update(next: object | ((current: object) => object)): Promise<void> }
+        | { update(next: object | ((current: object) => object)): Promise<void>; readonly messageId?: string }
         | undefined;
       const progress = createLazyProgressStream(scope, replyMode, () =>
         channel.stream(
@@ -1513,6 +1513,18 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
               sendOpts,
             );
           },
+          rescue: separateFinalReply
+            ? undefined
+            : (state) =>
+                rescueCardReply({
+                  channel,
+                  chatId,
+                  scope,
+                  sendOpts,
+                  cardRenderOptions,
+                  streamedMessageId: cardCtrl?.messageId,
+                  state: filterForPrefs(state),
+                }),
         });
       } catch (err) {
         if (!separateFinalReply) throw err;
@@ -1577,6 +1589,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
               await channel.send(chatId, { markdown: body }, sendOpts);
             }
           },
+          rescue: separateFinalReply
+            ? undefined
+            : async (state) => {
+                const body = renderText(finalAnswerOnlyState(filterForPrefs(state)));
+                if (!body.trim()) return;
+                const result = await channel.send(chatId, { markdown: body }, sendOpts);
+                requireMessageReceipt(result, 'markdown');
+                log.info('outbound', 'rescue-sent', { scope, via: 'markdown', messageId: result.messageId });
+              },
         });
       } catch (err) {
         if (!separateFinalReply) throw err;
@@ -1889,6 +1910,12 @@ async function awaitRenderAwareStream(input: {
   renderDone: Promise<RunState>;
   producerStarted: () => boolean;
   fallback: (state: RunState) => Promise<void>;
+  /**
+   * Delivers the answer when a stream that already showed part of the run
+   * fails to take its final update. Without one, that failure is rethrown
+   * (Codex: its answer goes out separately anyway).
+   */
+  rescue?: (state: RunState) => Promise<void>;
 }): Promise<void> {
   const streamResult = input.progress.settled.then(
     () => ({ kind: 'stream' as const, ok: true as const }),
@@ -1940,9 +1967,11 @@ async function awaitRenderAwareStream(input: {
         mode: input.mode,
         graceMs: STREAM_TERMINAL_GRACE_MS,
       });
-      void streamResult.then((result) => {
+      const { rescue } = input;
+      void streamResult.then(async (result) => {
         if (!result.ok) {
           log.fail('stream', result.err, { mode: input.mode, step: 'stream-terminal-late' });
+          if (rescue && !isTargetRevoked(result.err)) await runFallbackReply(input.mode, first.state, rescue, 'rescue');
         }
       });
       return;
@@ -1958,24 +1987,87 @@ async function awaitRenderAwareStream(input: {
 
   if (!terminal.ok) {
     // A stream that failed before producing anything delivered nothing, so the
-    // reply still has to go out; one that failed later already showed its
-    // content and the error is the caller's to handle.
-    if (input.producerStarted()) throw terminal.err;
+    // reply still has to go out as a whole. One that failed later showed part
+    // of the run, but not necessarily its end: the failed update can be the
+    // last one, carrying the answer (Feishu rejects a long run's finished card
+    // over content limits), so the answer still has to reach the user.
+    if (input.producerStarted()) {
+      if (!input.rescue || isTargetRevoked(terminal.err)) throw terminal.err;
+      log.fail('stream', terminal.err, { mode: input.mode, step: 'stream-final' });
+      await runFallbackReply(input.mode, first.state, input.rescue, 'rescue');
+      return;
+    }
     log.fail('stream', terminal.err, { mode: input.mode, step: 'stream' });
     await runFallbackReply(input.mode, first.state, input.fallback);
   }
+}
+
+/** The message being answered (or the reply itself) was recalled: nothing to deliver to. */
+function isTargetRevoked(err: unknown): boolean {
+  return err instanceof LarkChannelError && err.code === 'target_revoked';
 }
 
 async function runFallbackReply(
   mode: 'card' | 'markdown',
   state: RunState,
   fallback: (state: RunState) => Promise<void>,
+  step: 'fallback' | 'rescue' = 'fallback',
 ): Promise<void> {
   try {
     await fallback(state);
   } catch (err) {
-    log.fail('stream', err, { mode, step: 'fallback' });
+    log.fail('stream', err, { mode, step });
   }
+}
+
+/**
+ * Put a run's answer on screen after its streamed card failed to take the
+ * final update. That card can't be trusted with the full run again (tool
+ * panels are what usually push it over Feishu's limits), so send the answer
+ * alone, trying what is least likely to be rejected last: in place of the
+ * stuck card, then as a new card, then as a plain post.
+ */
+async function rescueCardReply(input: {
+  channel: LarkChannel;
+  chatId: string;
+  scope: string;
+  sendOpts: { replyTo: string; replyInThread?: boolean };
+  cardRenderOptions: RunCardRenderOptions;
+  streamedMessageId: string | undefined;
+  state: RunState;
+}): Promise<void> {
+  const answer = finalAnswerOnlyState(input.state);
+  const body = renderText(answer);
+  if (!body.trim()) return;
+  const card = renderCard(answer, input.cardRenderOptions);
+  const stepFailed = (via: string, err: unknown): void => {
+    log.warn('outbound', 'rescue-step-failed', {
+      scope: input.scope,
+      via,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  };
+
+  if (input.streamedMessageId) {
+    try {
+      await input.channel.updateCard(input.streamedMessageId, card);
+      log.info('outbound', 'rescue-sent', { scope: input.scope, via: 'update-card', messageId: input.streamedMessageId });
+      return;
+    } catch (err) {
+      stepFailed('update-card', err);
+    }
+  }
+  try {
+    const result = await input.channel.send(input.chatId, { card }, input.sendOpts);
+    requireMessageReceipt(result, 'card');
+    log.info('outbound', 'rescue-sent', { scope: input.scope, via: 'card', messageId: result.messageId });
+    return;
+  } catch (err) {
+    stepFailed('card', err);
+  }
+  const result = await input.channel.send(input.chatId, { markdown: body }, input.sendOpts);
+  requireMessageReceipt(result, 'markdown');
+  log.info('outbound', 'rescue-sent', { scope: input.scope, via: 'markdown', messageId: result.messageId });
 }
 
 function scheduleWorkingReactionCleanup(
