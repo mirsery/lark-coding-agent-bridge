@@ -248,6 +248,30 @@ describe('profile store canonical serialization', () => {
     });
   });
 
+  it('persists the approvals settings across save→load round-trip', async () => {
+    // Every config write (/config, /invite, startup upgrades) goes through this
+    // serializer; dropping `approvals` here silently turned approvals off on
+    // the next restart.
+    const root = await tmpRoot();
+    const configPath = join(root, 'config.json');
+    const profile = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } });
+    profile.approvals = {
+      enabled: true,
+      allowCommands: ['lark-cli docs +fetch'],
+      allowTools: ['mcp__tdengine-*'],
+    };
+
+    await saveRootConfig({
+      schemaVersion: 2,
+      activeProfile: 'claude',
+      preferences: {},
+      profiles: { claude: profile },
+    }, configPath);
+
+    const loaded = await loadRootConfig(configPath);
+    expect(loaded?.profiles.claude?.approvals).toEqual(profile.approvals);
+  });
+
   it('marks newly created roots as already evaluated for permission default migration', () => {
     const profile = createDefaultProfileConfig({
       agentKind: 'claude',
