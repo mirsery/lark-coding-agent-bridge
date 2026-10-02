@@ -2873,6 +2873,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
     larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
+    approvalsEnabled: ctx.controls.profileConfig.approvals.enabled,
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
     admins: access.admins,
@@ -2989,6 +2990,10 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     rawMode === 'team' || rawMode === 'personal'
       ? rawMode
       : ctx.controls.profileConfig.mode;
+  // Non-admin approvals switch. Empty / unexpected keeps current.
+  const rawApprovals = String(fv.approvals_enabled ?? '').trim();
+  const approvalsEnabled =
+    rawApprovals === 'on' ? true : rawApprovals === 'off' ? false : ctx.controls.profileConfig.approvals.enabled;
   const rawLarkCliIdentity = String(fv.lark_cli_identity ?? '').trim();
   const larkCliIdentity =
     rawLarkCliIdentity === 'user-default' || rawLarkCliIdentity === 'bot-only'
@@ -3048,7 +3053,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         larkCliPolicyApplied = true;
         failureStep = 'config.save';
       }
-      await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity, mode);
+      await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity, mode, approvalsEnabled);
     } catch (err) {
       let rollbackFailed = false;
       if (larkCliIdentityChanged) {
@@ -3082,6 +3087,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       runIdleTimeoutMinutes,
       requireMentionInGroup,
       larkCliIdentity,
+      approvalsEnabled,
       allowedUsersCount: access.allowedUsers.length,
       allowedChatsCount: access.allowedChats.length,
       adminsCount: access.admins.length,
@@ -3102,6 +3108,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         runIdleTimeoutMinutes,
         requireMentionInGroup,
         larkCliIdentity,
+        approvalsEnabled,
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,
         admins: access.admins,
@@ -3211,6 +3218,7 @@ async function savePreferencesConfig(
   requireMentionInGroup: boolean,
   larkCliIdentity: ProfileConfig['larkCli']['identityPreset'],
   mode: ProfileMode,
+  approvalsEnabled: boolean,
 ): Promise<void> {
   return configOps.savePreferencesConfig(
     ctx.controls,
@@ -3218,6 +3226,7 @@ async function savePreferencesConfig(
     requireMentionInGroup,
     larkCliIdentity,
     mode,
+    { approvalsEnabled },
   );
 }
 

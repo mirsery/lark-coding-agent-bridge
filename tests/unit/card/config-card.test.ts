@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configFormCard, type ConfigFormOpts } from '../../../src/card/config-card';
+import { configFormCard, configSavedCard, type ConfigFormOpts } from '../../../src/card/config-card';
 
 const base: ConfigFormOpts = {
   agentKind: 'claude',
@@ -13,11 +13,23 @@ const base: ConfigFormOpts = {
   runIdleTimeoutMinutes: 0,
   requireMentionInGroup: false,
   larkCliIdentity: 'bot-only',
+  approvalsEnabled: false,
   allowedUsers: [],
   allowedChats: [],
   admins: [],
   knownChats: [],
 };
+
+describe('configFormCard approvals switch', () => {
+  it('offers the non-admin approvals switch, set to the current state', () => {
+    expect(findNamedSelect(configFormCard(base), 'approvals_enabled')?.initial_option).toBe('off');
+    expect(findNamedSelect(configFormCard({ ...base, approvalsEnabled: true }), 'approvals_enabled')?.initial_option).toBe('on');
+  });
+
+  it('reports the switch on the saved card', () => {
+    expect(JSON.stringify(configSavedCard({ ...base, approvalsEnabled: true }))).toContain('非管理员审批');
+  });
+});
 
 describe('configFormCard console URL', () => {
   it('shows the web console URL when one is running', () => {

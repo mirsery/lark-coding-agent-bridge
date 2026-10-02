@@ -21,6 +21,8 @@ export interface ConfigFormOpts {
   runIdleTimeoutMinutes: number;
   requireMentionInGroup: boolean;
   larkCliIdentity: LarkCliIdentityPreset;
+  /** Whether non-admins' side-effecting steps wait for an admin's approval (#6). */
+  approvalsEnabled: boolean;
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
@@ -304,6 +306,20 @@ export function configFormCard(opts: ConfigFormOpts): object {
               {
                 tag: 'markdown',
                 content:
+                  '**非管理员操作审批**\n<font color="grey">开=非管理员让 bot 跑命令、写文件、调外部工具前，先发卡片给管理员审批；免审批清单在配置文件 approvals 段</font>',
+              },
+              {
+                tag: 'select_static',
+                name: 'approvals_enabled',
+                initial_option: opts.approvalsEnabled ? 'on' : 'off',
+                options: [
+                  { text: { tag: 'plain_text', content: '开' }, value: 'on' },
+                  { text: { tag: 'plain_text', content: '关(默认)' }, value: 'off' },
+                ],
+              },
+              {
+                tag: 'markdown',
+                content:
                   '**lark-cli 身份策略**\n<font color="grey">只允许应用身份=不碰个人资源；允许用户身份=可用已授权的个人日历/邮箱/云盘</font>' +
                   (teamMode ? teamOverrideNote : ''),
               },
@@ -420,6 +436,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
           ['并发上限', String(opts.maxConcurrentRuns)],
           ['run 探活', opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'],
           ['群里需要 @ bot', opts.requireMentionInGroup ? '是' : '否'],
+          ['非管理员审批', opts.approvalsEnabled ? '开' : '关'],
           [
             'lark-cli 身份策略',
             opts.mode === 'team'

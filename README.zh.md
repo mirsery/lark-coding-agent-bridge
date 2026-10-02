@@ -505,7 +505,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 - 每次审批结果和执行过的命令 / 改动的文件都按人记入审计日志（不开审批时命令和文件改动也照记）（profile 目录下 `audit.jsonl`，保留 90 天），管理员私聊发 `/audit [N]` 查看最近的记录。
 - Claude Code 通过工具调用前的 hook 拦截；Codex 通过 app-server 自带的审批请求（沙箱只读、`approvalPolicy: untrusted`）。退回 `codex exec` 的 Codex profile 没有审批通道，非管理员的任务只读运行。
 
-配置在 profile 的 `approvals` 段（改完重启该 profile 生效）：
+开关也可以在飞书里发 `/config`，在「运行与权限」的「非管理员操作审批」里切换，提交后立即生效。免审批清单只能改配置文件，在 profile 的 `approvals` 段（改完重启该 profile 生效）：
 
 ```json
 "approvals": {

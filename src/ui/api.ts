@@ -327,7 +327,7 @@ export async function applyConfig(rt: UiRuntime, body: unknown): Promise<ConfigV
       p.requireMentionInGroup,
       p.larkCliIdentity,
       p.mode,
-      p.meeting,
+      { meeting: p.meeting },
     );
   } catch (err) {
     if (identityApplied) {
@@ -361,7 +361,7 @@ export async function applyConfigToDisk(
       p.requireMentionInGroup,
       p.larkCliIdentity,
       p.mode,
-      p.meeting,
+      { meeting: p.meeting },
     );
   } catch (err) {
     throw new ApiError(500, `保存失败：${err instanceof Error ? err.message : String(err)}`);

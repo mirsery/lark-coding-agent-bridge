@@ -165,9 +165,15 @@ export async function savePreferencesConfig(
   requireMentionInGroup: boolean,
   larkCliIdentity: ProfileConfig['larkCli']['identityPreset'],
   mode: ProfileMode,
-  /** In-meeting agent settings; omitted by callers that don't edit them. */
-  meeting?: ProfileConfig['meeting'],
+  /** Settings only some callers edit; omitted ones keep their stored value. */
+  extra: {
+    /** In-meeting agent settings. */
+    meeting?: ProfileConfig['meeting'];
+    /** Non-admin approvals on/off; the allowlists are never touched here. */
+    approvalsEnabled?: boolean;
+  } = {},
 ): Promise<void> {
+  const { meeting, approvalsEnabled } = extra;
   const larkCli = {
     identityPreset: larkCliIdentity,
     localUserImport: {
@@ -183,6 +189,7 @@ export async function savePreferencesConfig(
       state.profileConfig.larkCli = larkCli;
       state.profileConfig.mode = mode;
       if (meeting) state.profileConfig.meeting = meeting;
+      if (approvalsEnabled !== undefined) state.profileConfig.approvals.enabled = approvalsEnabled;
       await saveConfig(state.cfg, state.configPath);
       return;
     }
@@ -202,6 +209,7 @@ export async function savePreferencesConfig(
         requireMentionInGroup,
       },
       ...(meeting ? { meeting } : {}),
+      ...(approvalsEnabled !== undefined ? { approvals: { ...profile.approvals, enabled: approvalsEnabled } } : {}),
       larkCli,
     };
     await saveRootConfig(root, state.configPath);
