@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { statfs } from 'node:fs/promises';
 import { cpuPercent, createHostSampler } from '../../../src/terminal/host';
+vi.mock('../../../src/terminal/io', () => ({ createIoSampler: () => async () => ({ disk: null, network: null, sampledAt: 0 }) }));
 vi.mock('node:fs/promises', () => ({ statfs: vi.fn().mockResolvedValue({ blocks: 100, bfree: 30, bavail: 20, bsize: 1024 }) }));
 describe('host metrics', () => {
   it('uses counter deltas rather than lifetime CPU averages', () => {

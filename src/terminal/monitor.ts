@@ -135,8 +135,14 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     const up = Math.floor(m.uptimeSeconds / 86400) + 'd ' + Math.floor(m.uptimeSeconds % 86400 / 3600) + 'h';
     const metrics = [`CPU ${m.cpuPercent === null ? '—' : m.cpuPercent.toFixed(0) + '%'}`, `RAM ${gib(m.memoryNonFree)}/${gib(m.memoryTotal)}G*`,
       `DISK ${m.disk ? gib(m.disk.available) + 'G free' : '—'}`, `UP ${up}`];
+    const speed = (n: number) => n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + 'M/s' : (n / 1024).toFixed(1) + 'K/s';
+    const io = m.io;
+    const traffic = [io?.disk ? `IO R ${speed(io.disk.read)} W ${speed(io.disk.write)}` : 'IO —',
+      io?.network ? `NET ↓ ${speed(io.network.read)} ↑ ${speed(io.network.write)}` : 'NET —'];
     const perRow = w >= 72 ? 4 : w >= 40 ? 2 : 1;
     for (let i = 0; i < metrics.length; i += perRow) out.push(line(metrics.slice(i, i + perRow).join('    ')));
+    if (cells(traffic.join('    ')) <= w) out.push(line(traffic.join('    ')));
+    else out.push(...traffic.map(text => line(text)));
   }
   out.push(line(), rule());
   const footer = [line(), rule(), line('q 退出  ·  空格暂停  ·  r 刷新' + (m ? '    *RAM 含系统缓存' : ''), 90)];

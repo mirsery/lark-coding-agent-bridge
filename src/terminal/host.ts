@@ -1,9 +1,11 @@
+import { createIoSampler, type IoMetrics } from './io';
 import { statfs } from 'node:fs/promises';
 import { cpus, freemem, homedir, totalmem, uptime } from 'node:os';
 
 export interface CpuTicks { idle: number; total: number }
 export interface HostMetrics {
   cpuPercent: number | null;
+  io?: IoMetrics;
   memoryTotal: number;
   memoryNonFree: number;
   uptimeSeconds: number;
@@ -17,6 +19,7 @@ export function cpuPercent(previous: CpuTicks, current: CpuTicks): number | null
 }
 /** OS counters only; disk stats are cached for 30s. Never spawn top/ps per frame. */
 export function createHostSampler() {
+  const sampleIo = createIoSampler();
   let previous: CpuTicks | undefined;
   let disk: HostMetrics['disk'];
   let diskAttempt = -Infinity;
@@ -34,6 +37,6 @@ export function createHostSampler() {
       } catch { /* Disk metrics may be unavailable; retain the previous timestamped sample. */ }
     }
     const memoryTotal = totalmem();
-    return { cpuPercent: percent, memoryTotal, memoryNonFree: memoryTotal - freemem(), uptimeSeconds: uptime(), disk };
+    return { io: await sampleIo(now), cpuPercent: percent, memoryTotal, memoryNonFree: memoryTotal - freemem(), uptimeSeconds: uptime(), disk };
   };
 }
