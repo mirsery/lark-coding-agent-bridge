@@ -15,7 +15,7 @@ describe('terminal monitor', () => {
     await mkdir(join(root, 'profiles', 'offline'), { recursive: true });
     const registry = JSON.stringify({ entries: [{ id: 'abcd', pid: process.pid, appId: 'test', tenant: 'feishu', profileName: 'codex', agentKind: 'codex', configPath: 'unused', startedAt: new Date(now).toISOString(), version: 'test', botName: 'Poki' }] });
     await writeFile(join(root, 'registry', 'processes.json'), registry);
-    const run = { runId: 'run-one', scope: 'chat', chatId: 'chat', originMessageId: 'msg', promptPreview: 'Build dashboard', startedAt: now - 5000, ownerPid: process.pid };
+    const run = { runId: 'run-one', scope: 'chat', chatId: 'chat', originMessageId: 'msg', promptPreview: 'Build dashboard https://example.com/browse/TASK-123', startedAt: now - 5000, ownerPid: process.pid };
     const runs = JSON.stringify({ one: run, stale: { ...run, runId: 'old', scope: 'other', startedAt: now - 25 * 3600000 } });
     await writeFile(join(root, 'profiles', 'codex', 'runs.json'), runs);
     const event = (fields: object) => JSON.stringify({ ts: new Date(now).toISOString(), phase: 'agent', ...fields });
@@ -42,7 +42,13 @@ describe('terminal monitor', () => {
     const rendered = renderMonitor(snap, 110, 40, false);
     expect(rendered).toContain('Build dashboard');
     expect(rendered).toContain('RAM');
-    expect(rendered).toContain('DISK home');
+    expect(rendered).not.toContain('scope ');
+    expect(rendered).not.toContain('PID ');
+    expect(rendered).not.toContain('run-one');
+    expect(rendered).not.toContain('LAST ');
+    expect(rendered).toContain('[TASK-123]');
+    expect(rendered).not.toContain('https://');
+    expect(rendered).toContain('DISK');
     // The same reader must notice an append instead of returning stale cached events.
     await appendFile(join(root, 'profiles', 'codex', 'logs', 'bridge-20261010.jsonl'), '\n' + event({ event: 'tool-in-flight', traceId: 'trace-one', tool: 'new-tool' }));
     expect((await read(root, 'codex', now + 2000)).bots[0]!.runs[0]!.activity?.tool).toBe('new-tool');
