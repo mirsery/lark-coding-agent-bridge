@@ -65,3 +65,27 @@ describe('terminal monitor', () => {
     expect(rendered.split('\n').length).toBeLessThanOrEqual(24);
   });
 });
+
+describe('responsive monitor layout', () => {
+  const snapshot = {
+    now: 1000, host: 'host', cores: 8, load: 1,
+    metrics: { cpuPercent: 30, memoryTotal: 16 * 1024 ** 3, memoryNonFree: 12 * 1024 ** 3, uptimeSeconds: 50000, disk: { total: 100, used: 10, available: 90, sampledAt: 1000 } },
+    bots: ['CC', 'Poki'].map(name => ({ profile: name, name, agent: 'agent', online: true, runs: [{ runId: name, scope: 'chat', chatId: 'chat', originMessageId: 'msg', promptPreview: '检查终端响应式布局和任务进度 '.repeat(12), startedAt: 0, ownerPid: process.pid, orphan: false }] })),
+  };
+  const cells = (text: string) => [...clean(text)].reduce((sum, c) => sum + ((c.codePointAt(0) ?? 0) >= 0x2e80 ? 2 : 1), 0);
+  it('uses the wide viewport and places bots alongside each other', () => {
+    const lines = renderMonitor(snapshot, 238, 67, false).split('\n');
+    expect(lines.some(line => line.includes('CC /') && line.includes('Poki /'))).toBe(true);
+    expect(Math.max(...lines.map(cells))).toBeGreaterThan(220);
+  });
+  it('stacks bots in ordinary windows and stays within narrow viewport dimensions', () => {
+    expect(renderMonitor(snapshot, 110, 36, false).split('\n').some(line => line.includes('CC /') && line.includes('Poki /'))).toBe(false);
+    for (const columns of [20, 48, 80, 110, 150, 238]) {
+      for (const rows of [12, 24, 67]) {
+        const lines = renderMonitor(snapshot, columns, rows, true).split('\n');
+        expect(lines.length).toBeLessThan(rows);
+        expect(Math.max(...lines.map(cells))).toBeLessThan(columns);
+      }
+    }
+  });
+});

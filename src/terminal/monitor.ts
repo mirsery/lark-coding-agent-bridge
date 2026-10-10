@@ -109,14 +109,22 @@ function summary(text: string, cells: number): string[] {
   return lines;
 }
 export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, color = true): string {
-  const w = Math.max(24, Math.min(columns - 4, 106));
+  // Leave the last terminal cell and row unused to avoid automatic wrap/scroll.
+  const usable = Math.max(1, columns - 1);
+  const indent = columns >= 40 ? '  ' : '';
+  const w = Math.max(1, usable - indent.length);
+  const height = Math.max(1, rows - 1);
   const paint = (text: string, code: number) => color ? `\x1b[${code}m${text}\x1b[0m` : text;
-  const line = (text = '', code = 37) => '  ' + paint(fit(text, w), code);
-  const pair = (left: string, right: string, code = 37) => {
-    const rightCells = Math.min(Math.floor(w / 2), [...clean(right)].reduce((n, c) => n + width(c), 0));
-    return '  ' + paint(fit(left, w - rightCells - 2), code) + '  ' + paint(fit(right, rightCells), 90);
+  const cells = (text: string) => [...clean(text)].reduce((n, c) => n + width(c), 0);
+  const line = (text = '', code = 37, size = w) => paint(fit(text, size), code);
+  const pair = (left: string, right: string, code = 37, size = w) => {
+    if (size < 8) return line(left, code, size);
+    const rightCells = Math.min(Math.floor(size / 2), cells(right));
+    return line(left, code, size - rightCells - 2) + '  ' + line(right, 90, rightCells);
   };
   const rule = () => line('─'.repeat(w), 90);
+  const ordered = [...s.bots].filter(b => b.online || b.runs.length || b.agent !== 'unknown')
+    .sort((a, b) => Number(b.runs.some(r => !r.orphan)) - Number(a.runs.some(r => !r.orphan)) || Number(b.online) - Number(a.online));
   const online = s.bots.filter(b => b.online).length;
   const running = s.bots.flatMap(b => b.runs).filter(r => !r.orphan).length;
   const out = [line(), pair('LARK  /  CONTROL', new Date(s.now).toLocaleTimeString(), 36),
@@ -127,33 +135,52 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     const up = Math.floor(m.uptimeSeconds / 86400) + 'd ' + Math.floor(m.uptimeSeconds % 86400 / 3600) + 'h';
     const metrics = [`CPU ${m.cpuPercent === null ? '—' : m.cpuPercent.toFixed(0) + '%'}`, `RAM ${gib(m.memoryNonFree)}/${gib(m.memoryTotal)}G*`,
       `DISK ${m.disk ? gib(m.disk.available) + 'G free' : '—'}`, `UP ${up}`];
-    // Small terminals use two rows instead of clipping away host metrics.
-    if (w < 72) { out.push(line(metrics.slice(0, 2).join('    ')), line(metrics.slice(2).join('    '))); }
-    else out.push(line(metrics.join('    ')));
+    const perRow = w >= 72 ? 4 : w >= 40 ? 2 : 1;
+    for (let i = 0; i < metrics.length; i += perRow) out.push(line(metrics.slice(i, i + perRow).join('    ')));
   }
   out.push(line(), rule());
-  let hidden = 0;
-  const ordered = [...s.bots].filter(b => b.online || b.runs.length || b.agent !== 'unknown')
-    .sort((a, b) => Number(b.runs.some(r => !r.orphan)) - Number(a.runs.some(r => !r.orphan)) || Number(b.online) - Number(a.online));
-  const limit = Math.max(14, rows) - 4;
-  for (const bot of ordered) {
-    if (out.length + 5 > limit) { hidden++; continue; }
+  const footer = [line(), rule(), line('q 退出  ·  空格暂停  ·  r 刷新' + (m ? '    *RAM 含系统缓存' : ''), 90)];
+  const slots = w >= 146 && ordered.length > 1 ? 2 : 1;
+  const gap = 4;
+  const cardWidth = Math.floor((w - (slots - 1) * gap) / slots);
+  const bodyHeight = Math.max(0, height - out.length - footer.length);
+  const block = (bot: MonitorBot, budget: number): string[] => {
     const active = bot.runs.filter(r => !r.orphan).length;
     const state = !bot.online ? 'OFFLINE' : active ? 'WORKING' : 'IDLE';
-    out.push(line(), pair(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}`, state, bot.online ? 36 : 90));
+    const result = [line('', 37, cardWidth), pair(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}`, state, bot.online ? 36 : 90, cardWidth)];
     let shown = 0;
     for (const run of bot.runs) {
-      const lines = summary(run.promptPreview, w - 4);
-      if (out.length + 1 + lines.length > limit) break;
-      out.push(pair('    ' + (run.orphan ? '已中断 / 过期' : activityLabel(run.activity)), age(s.now - run.startedAt), run.orphan ? 33 : 90));
-      out.push(...lines.map(text => line('    ' + text)));
+      const previews = summary(run.promptPreview, Math.max(1, cardWidth - 4));
+      // Keep one row available for the hidden-task count.
+      if (result.length + 1 + previews.length + Number(shown + 1 < bot.runs.length) > budget) break;
+      result.push(pair('    ' + (run.orphan ? '已中断 / 过期' : activityLabel(run.activity)), age(s.now - run.startedAt), run.orphan ? 33 : 90, cardWidth));
+      result.push(...previews.map(text => line('    ' + text, 37, cardWidth)));
       shown++;
     }
-    if (!bot.runs.length) out.push(line('    等待新任务', 90));
-    if (shown < bot.runs.length && out.length < limit) out.push(line(`    +${bot.runs.length - shown} more tasks`, 90));
+    if (!bot.runs.length && result.length < budget) result.push(line('    等待新任务', 90, cardWidth));
+    if (shown < bot.runs.length && result.length < budget) result.push(line(`    +${bot.runs.length - shown} more tasks`, 90, cardWidth));
+    return result.slice(0, budget);
+  };
+  let hidden = 0; let used = 0;
+  for (let i = 0; i < ordered.length; i += slots) {
+    const remaining = bodyHeight - used;
+    if (remaining < 3) { hidden += ordered.length - i; break; }
+    const group = ordered.slice(i, i + slots);
+    const later = ordered.length > i + slots;
+    // Distribute height between bot rows, letting a sole row use all remaining space.
+    const budget = later ? Math.min(remaining - 1, Math.max(5, Math.floor((remaining - 1) / Math.ceil((ordered.length - i) / slots)))) : remaining;
+    const blocks = group.map(bot => block(bot, budget));
+    const groupHeight = Math.max(...blocks.map(b => b.length));
+    for (let r = 0; r < groupHeight; r++) {
+      out.push(blocks.map(b => {
+        const text = b[r] ?? '';
+        return text + ' '.repeat(Math.max(0, cardWidth - cells(text)));
+      }).join(' '.repeat(gap)));
+    }
+    used += groupHeight;
   }
-  if (!ordered.length && out.length < limit) out.push(line('等待 bot 上线', 90));
-  if (hidden) out.push(line(`+${hidden} bots · enlarge window or use --profile`, 90));
-  out.push(line(), rule(), line('q 退出  ·  空格暂停  ·  r 刷新' + (m ? '    *RAM 含系统缓存' : ''), 90));
-  return out.join('\n');
+  if (!ordered.length && bodyHeight) out.push(line('等待 bot 上线', 90));
+  if (hidden && out.length < height - footer.length) out.push(line(`+${hidden} bots · enlarge window or use --profile`, 90));
+  out.push(...footer);
+  return out.slice(0, height).map(text => indent + text).join('\n');
 }
