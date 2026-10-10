@@ -97,7 +97,9 @@ describe('profile-aware account and config commands', () => {
     });
 
     await h.command('/config submit', { message_reply: 'text', approvals_enabled: 'on' });
-    const on = await waitForRoot(h.rootDir, (candidate) => candidate.profiles.claude?.approvals?.enabled === true);
+    const on = await waitForRoot(h.rootDir, (candidate) =>
+      candidate.profiles.claude?.approvals?.enabled === true && h.controls.profileConfig.approvals.enabled === true,
+    );
     expect(on.profiles.claude?.approvals).toEqual({
       enabled: true,
       allowCommands: ['lark-cli docs +fetch'],
@@ -107,7 +109,9 @@ describe('profile-aware account and config commands', () => {
     expect(h.controls.profileConfig.approvals.enabled).toBe(true);
 
     await h.command('/config submit', { message_reply: 'text', approvals_enabled: 'off' });
-    const off = await waitForRoot(h.rootDir, (candidate) => candidate.profiles.claude?.approvals?.enabled === false);
+    const off = await waitForRoot(h.rootDir, (candidate) =>
+      candidate.profiles.claude?.approvals?.enabled === false && h.controls.profileConfig.approvals.enabled === false,
+    );
     expect(off.profiles.claude?.approvals?.allowTools).toEqual(['mcp__tdengine-*']);
     expect(h.controls.profileConfig.approvals.enabled).toBe(false);
   });
