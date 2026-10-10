@@ -151,18 +151,20 @@ Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
 ### Live terminal dashboard
 
-Run on the host machine:
+See bot availability, current tasks, execution stages and elapsed time alongside CPU, memory, free disk space and host uptime. Runs in a terminal, including macOS Terminal and iTerm2, without opening a browser.
+
+![Live terminal dashboard screenshot](docs/images/terminal-monitor.png)
 
 ```bash
-lark-channel-bridge monitor
-lark-channel-bridge monitor --profile codex
+lark-channel-bridge monitor --interval 5
+lark-channel-bridge monitor --profile codex --interval 5
 lark-channel-bridge monitor --once
 lark-channel-bridge monitor --json
 ```
 
-The dashboard refreshes every two seconds with online bots, active tasks, elapsed time, prompt previews and recent tool activity. Working bots appear first; hidden tasks are counted when the terminal is too small. Press `q` to quit, space to pause or `r` to refresh. Set `--interval <seconds>` between 0.5 and 60, or `--no-color` to disable colors. It reads local process/task registries and bounded log tails without changing state or requiring a service restart. Stages come from actual telemetry; completion percentages are not estimated. Exited or expired tasks appear as STALE. Non-interactive terminals print one snapshot automatically.
+The examples above refresh every five seconds; omitting `--interval` uses the two-second default. Working bots appear first, task summaries wrap and long URLs collapse to their final path segment. Press `q` to quit, space to pause or `r` to refresh. `--interval <seconds>` supports 0.5–60 seconds and `--no-color` disables colors. Non-interactive terminals print one snapshot; `--json` returns the full state.
 
-Host metrics include interval CPU utilization, non-free RAM (including OS cache), uptime, and used/available space on the home filesystem. Disk statistics are cached for 30 seconds, unchanged log tails reuse parsed events, and no top/ps subprocess runs per frame. CPU utilization becomes available after the second sample.
+The dashboard reads local state without requiring a bot restart. CPU utilization uses successive samples and is unavailable on the first frame. RAM shows non-free memory, including OS cache. Disk statistics are cached for 30 seconds; unchanged logs reuse parsed events, with each tail read capped at 256 KiB. Task stages come from real telemetry rather than estimated completion percentages, and exited or expired tasks are marked as interrupted.
 
 ### Web console (`--web-ui`)
 

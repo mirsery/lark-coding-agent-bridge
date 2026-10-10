@@ -151,18 +151,20 @@ daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
 
 ### 终端实时面板
 
-在宿主机终端运行：
+在宿主机终端查看 bot 工作状态、当前任务、执行阶段和耗时，以及 CPU、内存、磁盘可用空间与运行时间。无需打开浏览器，支持 macOS 默认终端和 iTerm2。
+
+![终端实时面板实际运行截图](docs/images/terminal-monitor.png)
 
 ```bash
-lark-channel-bridge monitor
-lark-channel-bridge monitor --profile codex
+lark-channel-bridge monitor --interval 5
+lark-channel-bridge monitor --profile codex --interval 5
 lark-channel-bridge monitor --once
 lark-channel-bridge monitor --json
 ```
 
-面板每两秒刷新，显示在线 bot、正在执行的任务、耗时、提示词摘要和最近工具活动。正在工作的 bot 优先显示；窗口空间不足时会提示隐藏的任务数。按 `q` 退出、空格暂停、`r` 刷新，`--interval <秒>` 可调整刷新间隔（0.5–60 秒）。它只读取本机进程登记、任务登记和日志尾部，不需要重启服务。阶段来自实际日志，不估算完成百分比；退出或过期的任务显示为 STALE。非交互终端自动输出一次快照，`--no-color` 禁用配色。
+上面的示例每 5 秒刷新一次；省略 `--interval` 时默认每 2 秒刷新。正在工作的 bot 优先显示，长任务摘要会折行，长链接缩为末段标识。按 `q` 退出、空格暂停、`r` 刷新。`--interval <秒>` 支持 0.5–60 秒，`--no-color` 禁用配色。非交互终端自动输出一次快照，`--json` 提供完整状态。
 
-宿主机指标包括 CPU 区间使用率、内存非空闲量（包含系统缓存）、运行时间和用户主目录所在磁盘的使用量/可用量。基础采样随刷新进行，磁盘统计缓存 30 秒；日志未变化时复用解析结果，不在每帧执行 top/ps。CPU 首次采样显示等待，下次刷新开始显示区间使用率。
+面板只读取本机状态，无需重启 bot。CPU 根据相邻采样计算，首次显示等待；RAM 为非空闲内存，包含系统缓存。磁盘统计缓存 30 秒，未变化的日志复用解析结果，每次最多读取 256 KiB 日志尾部。任务阶段来自实际日志，不估算完成百分比；退出或过期的任务会标记为已中断。
 
 ### Web 控制台（`--web-ui`）
 
