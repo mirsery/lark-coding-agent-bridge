@@ -137,7 +137,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
       `DISK ${m.disk ? gib(m.disk.available) + 'G free' : '—'}`, `UP ${up}`];
     const speed = (n: number) => n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + 'M/s' : (n / 1024).toFixed(1) + 'K/s';
     const io = m.io;
-    const traffic = [io?.disk ? `IO R ${speed(io.disk.read)} W ${speed(io.disk.write)}` : 'IO —',
+    const traffic = [`TEMP ${m.temperatureC == null ? '—' : m.temperatureC.toFixed(1) + '°C'}`, io?.disk ? `IO R ${speed(io.disk.read)} W ${speed(io.disk.write)}` : 'IO —',
       io?.network ? `NET ↓ ${speed(io.network.read)} ↑ ${speed(io.network.write)}` : 'NET —'];
     const perRow = w >= 72 ? 4 : w >= 40 ? 2 : 1;
     for (let i = 0; i < metrics.length; i += perRow) out.push(line(metrics.slice(i, i + perRow).join('    ')));

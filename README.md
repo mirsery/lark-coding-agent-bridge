@@ -166,6 +166,8 @@ The examples above refresh every five seconds; omitting `--interval` uses the tw
 
 On macOS, physical disk read/write rates and physical network download/upload rates use counter deltas, excluding loopback and tunnel duplicates. Initial or unavailable samples show `—`; I/O sampling runs at most once every five seconds.
 
+On macOS, install `osx-cpu-temp` (`brew install osx-cpu-temp`) to display CPU temperature as `TEMP`, sampled at most once every five seconds. Missing, unsupported or failed sensors show `—`. No sudo is required.
+
 The layout adapts to the viewport: wide windows show bots in two columns, ordinary windows stack them, and narrow windows split host metrics across rows. Resizing immediately reflows the dashboard.
 
 Each task shows its chat name (or DM) and requester on the right, moving to a separate row in narrow windows. Names are captured when the task starts; refreshing makes no Feishu API calls. Older tasks or unresolved names display a pending label. Restart the bridge after upgrading to record origins for new tasks.
