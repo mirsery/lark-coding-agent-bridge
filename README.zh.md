@@ -149,6 +149,19 @@ lark-channel-bridge unregister [--profile <name>]
 
 daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
 
+### 终端实时面板
+
+在宿主机终端运行：
+
+```bash
+lark-channel-bridge monitor
+lark-channel-bridge monitor --profile codex
+lark-channel-bridge monitor --once
+lark-channel-bridge monitor --json
+```
+
+面板每两秒刷新，显示在线 bot、正在执行的任务、耗时、提示词摘要和最近工具活动。正在工作的 bot 优先显示；窗口空间不足时会提示隐藏的任务数。按 `q` 退出、空格暂停、`r` 刷新，`--interval <秒>` 可调整刷新间隔（0.5–60 秒）。它只读取本机进程登记、任务登记和日志尾部，不需要重启服务。阶段来自实际日志，不估算完成百分比；退出或过期的任务显示为 STALE。非交互终端自动输出一次快照，`--no-color` 禁用配色。
+
 ### Web 控制台（`--web-ui`）
 
 `--web-ui` 是上面单 profile 后台服务的**替代方案**，不是可以叠加使用的附加项。给 `start` 加上它，会启动一个"全机唯一"的 supervisor 进程，统一托管所有 profile，并提供本地 web 控制台来启动/停止/配置它们：

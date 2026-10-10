@@ -149,6 +149,19 @@ Platform mapping:
 
 Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
+### Live terminal dashboard
+
+Run on the host machine:
+
+```bash
+lark-channel-bridge monitor
+lark-channel-bridge monitor --profile codex
+lark-channel-bridge monitor --once
+lark-channel-bridge monitor --json
+```
+
+The dashboard refreshes every two seconds with online bots, active tasks, elapsed time, prompt previews and recent tool activity. Working bots appear first; hidden tasks are counted when the terminal is too small. Press `q` to quit, space to pause or `r` to refresh. Set `--interval <seconds>` between 0.5 and 60, or `--no-color` to disable colors. It reads local process/task registries and bounded log tails without changing state or requiring a service restart. Stages come from actual telemetry; completion percentages are not estimated. Exited or expired tasks appear as STALE. Non-interactive terminals print one snapshot automatically.
+
 ### Web console (`--web-ui`)
 
 `--web-ui` is an alternative background service, not an add-on to the per-profile daemons above. Add it to `start` to run one machine-wide supervisor process that hosts every profile and serves a local web console to start/stop/configure them:
