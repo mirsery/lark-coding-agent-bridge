@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, appendFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { clean, fit, readMonitor, renderMonitor } from '../../../src/terminal/monitor';
+import { clean, fit, createMonitorReader, readMonitor, renderMonitor } from '../../../src/terminal/monitor';
 
 let root: string;
 afterEach(async () => { if (root) await rm(root, { recursive: true, force: true }); });
@@ -26,9 +26,11 @@ describe('terminal monitor', () => {
       event({ event: 'tool-in-flight', traceId: 'other-trace', runId: 'different', scope: 'chat', tool: 'wrong-tool' }),
       '{partial',
     ].join('\n'));
-    const snap = await readMonitor(root, undefined, now);
+    const read = createMonitorReader();
+    const snap = await read(root, undefined, now);
     const bot = snap.bots.find(b => b.profile === 'codex')!;
     expect(bot.online).toBe(true);
+    expect(bot.runs[0]!.runId).toBe('run-one');
     expect(bot.name).toBe('Poki');
     expect(bot.runs.find(r => r.runId === 'run-one')?.activity?.tool).toBe('exec_command');
     expect(bot.runs.find(r => r.runId === 'old')?.orphan).toBe(true);
@@ -37,7 +39,13 @@ describe('terminal monitor', () => {
     expect(await readFile(join(root, 'registry', 'processes.json'), 'utf8')).toBe(registry);
     expect(await readFile(join(root, 'profiles', 'codex', 'runs.json'), 'utf8')).toBe(runs);
     expect((await readMonitor(root, 'codex')).bots).toHaveLength(1);
-    expect(renderMonitor(snap, 110, 40, false)).toContain('Build dashboard');
+    const rendered = renderMonitor(snap, 110, 40, false);
+    expect(rendered).toContain('Build dashboard');
+    expect(rendered).toContain('RAM');
+    expect(rendered).toContain('DISK home');
+    // The same reader must notice an append instead of returning stale cached events.
+    await appendFile(join(root, 'profiles', 'codex', 'logs', 'bridge-20261010.jsonl'), '\n' + event({ event: 'tool-in-flight', traceId: 'trace-one', tool: 'new-tool' }));
+    expect((await read(root, 'codex', now + 2000)).bots[0]!.runs[0]!.activity?.tool).toBe('new-tool');
   });
   it('strips terminal escape sequences and fits Chinese labels', () => {
     expect(clean('\x1b]0;malicious\x07\x1b[31m任务\x1b[0m\ntext')).toBe('任务 text');

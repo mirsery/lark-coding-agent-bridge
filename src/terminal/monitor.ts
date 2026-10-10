@@ -1,3 +1,4 @@
+import { createHostSampler, type HostMetrics } from './host';
 import { open, readdir } from 'node:fs/promises';
 import { cpus, hostname, loadavg } from 'node:os';
 import { join } from 'node:path';
@@ -7,17 +8,21 @@ import { readRunRecords, RUN_STALE_AFTER_MS, type RunRecord } from '../runtime/r
 
 interface Activity { ts: number; event: string; phase: string; tool?: string; traceId?: string; runId?: string; scope?: string }
 export interface MonitorBot { profile: string; name: string; agent: string; pid?: number; online: boolean; activity?: Activity; runs: Array<RunRecord & { orphan: boolean; activity?: Activity }> }
-export interface MonitorSnapshot { now: number; host: string; cores: number; load: number; bots: MonitorBot[] }
+export interface MonitorSnapshot { now: number; host: string; cores: number; load: number; bots: MonitorBot[]; metrics?: HostMetrics }
 
 /** Bounded log read: never load a growing multi-gigabyte log into memory. */
-async function recentActivity(dir: string): Promise<Activity[]> {
+interface LogCache { name: string; size: number; mtime: number; events: Activity[] }
+async function recentActivity(dir: string, cache: Map<string, LogCache>): Promise<Activity[]> {
   try {
     const names = (await readdir(dir)).filter(n => /^bridge-\d{8}\.jsonl$/.test(n)).sort();
     const name = names.at(-1);
     if (!name) return [];
     const file = await open(join(dir, name), 'r');
     try {
-      const size = (await file.stat()).size;
+      const info = await file.stat();
+      const size = info.size;
+      const cached = cache.get(dir);
+      if (cached?.name === name && cached.size === size && cached.mtime === info.mtimeMs) return cached.events;
       const start = Math.max(0, size - 256 * 1024);
       const buffer = Buffer.alloc(size - start);
       const { bytesRead } = await file.read(buffer, 0, buffer.length, start);
@@ -36,12 +41,16 @@ async function recentActivity(dir: string): Promise<Activity[]> {
             scope: typeof r.scope === 'string' ? r.scope : undefined });
         } catch { /* partial writes and malformed lines are skipped */ }
       }
+      cache.set(dir, { name, size, mtime: info.mtimeMs, events: out });
       return out;
     } finally { await file.close(); }
   } catch { return []; }
 }
 
-export async function readMonitor(rootDir: string, profile?: string, now = Date.now()): Promise<MonitorSnapshot> {
+export function createMonitorReader() {
+  const cache = new Map<string, LogCache>();
+  const sampleHost = createHostSampler();
+  return async (rootDir: string, profile?: string, now = Date.now()): Promise<MonitorSnapshot> => {
   const entries = readAndPrune(join(rootDir, 'registry', 'processes.json'));
   let dirs: string[] = [];
   try { dirs = (await readdir(join(rootDir, 'profiles'), { withFileTypes: true })).filter(d => d.isDirectory()).map(d => d.name); } catch { /* no profiles yet */ }
@@ -49,7 +58,7 @@ export async function readMonitor(rootDir: string, profile?: string, now = Date.
   const bots = await Promise.all(names.map(async name => {
     const paths = resolveAppPaths({ rootDir, profile: name });
     const records = await readRunRecords(paths.runsFile);
-    const events = await recentActivity(paths.logsDir);
+    const events = await recentActivity(paths.logsDir, cache);
     const entry: ProcessEntry | undefined = entries.find(e => e.profileName === name && isAlive(e.pid));
     const activity = events.at(-1);
     return { profile: name, name: entry?.botName ?? name, agent: entry?.agentKind ?? 'unknown', pid: entry?.pid,
@@ -58,9 +67,13 @@ export async function readMonitor(rootDir: string, profile?: string, now = Date.
         const trace = events.find(e => e.runId === rec.runId)?.traceId;
         const activity = events.filter(e => e.ts >= rec.startedAt && (e.runId === rec.runId || (trace && e.traceId === trace) || (!e.traceId && !e.runId && e.scope === rec.scope))).at(-1);
         return { ...rec, orphan: !isAlive(rec.ownerPid) || now - rec.startedAt > RUN_STALE_AFTER_MS, activity };
-      }).sort((a, b) => a.startedAt - b.startedAt) };
+      }).sort((a, b) => Number(a.orphan) - Number(b.orphan) || a.startedAt - b.startedAt) };
   }));
-  return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots };
+  return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics: await sampleHost(now) };
+  };
+}
+export async function readMonitor(rootDir: string, profile?: string, now = Date.now()): Promise<MonitorSnapshot> {
+  return createMonitorReader()(rootDir, profile, now);
 }
 
 /** Remove terminal control sequences from all untrusted labels and prompts. */
@@ -80,6 +93,16 @@ function activityLabel(a?: Activity): string {
   if (a.event === 'tool-done') return 'ACTIVE / tool finished';
   return `${a.phase} / ${a.event}`;
 }
+function hostLines(m: HostMetrics | undefined, line: (text: string, color?: number) => string): string[] {
+  if (!m) return [];
+  const gib = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+  const meter = (percent: number) => '▓'.repeat(Math.round(percent / 10)) + '░'.repeat(10 - Math.round(percent / 10));
+  const cpu = m.cpuPercent === null ? 'sampling…' : `${meter(m.cpuPercent)} ${m.cpuPercent.toFixed(1)}%`;
+  const ram = m.memoryNonFree / m.memoryTotal * 100;
+  return [line(`  CPU ${cpu}   UP ${age(m.uptimeSeconds * 1000)}`, 36),
+    line(`  RAM ${meter(ram)} ${gib(m.memoryNonFree)}/${gib(m.memoryTotal)} GiB non-free (incl. OS cache)`, 35),
+    line(m.disk ? `  DISK home ${gib(m.disk.used)}/${gib(m.disk.total)} GiB used   ${gib(m.disk.available)} GiB available` : '  DISK home unavailable', 90)];
+}
 export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, color = true): string {
   const w = Math.max(24, Math.min(columns - 2, 138));
   const paint = (t: string, c: number) => color ? `\x1b[${c}m${t}\x1b[0m` : t;
@@ -89,6 +112,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   const out = [paint('╭' + '─'.repeat(w) + '╮', 36), line('  L A R K   //   M I S S I O N   C O N T R O L', 36),
     line(`  ${clean(s.host)}   ${new Date(s.now).toLocaleTimeString()}   LIVE`, 90),
     line(`  ONLINE ${online}   ACTIVE ${running}   LOAD ${s.load.toFixed(2)} / ${s.cores} cores`, 35),
+    ...hostLines(s.metrics, line),
     paint('├' + '─'.repeat(w) + '┤', 36)];
   let hidden = 0;
   const ordered = [...s.bots].sort((a, b) => Number(b.runs.some(r => !r.orphan)) - Number(a.runs.some(r => !r.orphan)) || Number(b.online) - Number(a.online));

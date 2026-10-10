@@ -1,9 +1,10 @@
 import { resolveAppPaths } from '../../config/app-paths';
-import { readMonitor, renderMonitor } from '../../terminal/monitor';
+import { createMonitorReader, renderMonitor } from '../../terminal/monitor';
 
 export async function runMonitor(opts: { profile?: string; interval?: string; once?: boolean; json?: boolean; color?: boolean }): Promise<void> {
   const seconds = Number(opts.interval ?? 2);
   if (!Number.isFinite(seconds) || seconds < 0.5 || seconds > 60) throw new Error('--interval must be between 0.5 and 60 seconds');
+  const readMonitor = createMonitorReader();
   const root = resolveAppPaths().rootDir;
   if (opts.once || opts.json || !process.stdout.isTTY || !process.stdin.isTTY) {
     const snap = await readMonitor(root, opts.profile);
