@@ -394,6 +394,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     // Attach raw Feishu event body to normalized events so we can read fields
     // the normalizer drops (e.g. action.form_value on CardKit 2.0 form submits).
     includeRawEvent: true,
+    // The SDK caches chat rosters; task observers only read persisted names.
+    resolveSenderNames: true,
     outbound: {
       streamThrottleMs: 400,
     },
@@ -1259,6 +1261,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const { execution, cwdRealpath: cwd } = flow;
   // Written before the first token so a hard kill at any point after this
   // leaves a trace the next process can act on.
+  const chatName = mode === 'p2p' ? undefined : controls.knownChats?.find(c => c.id === chatId)?.name;
   runs?.start({
     runId: execution.runId,
     scope,
@@ -1266,6 +1269,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     originMessageId: lastMsg.messageId,
     ...(threadId ? { threadId } : {}),
     promptPreview: lastMsg.content ?? '',
+    chatType: mode === 'p2p' ? 'p2p' : 'group',
+    ...(chatName ? { chatName } : {}),
+    actorId: firstMsg.senderId,
+    ...(firstMsg.senderName ? { actorName: firstMsg.senderName } : {}),
     startedAt: Date.now(),
   });
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);

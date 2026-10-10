@@ -144,17 +144,31 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   const gap = 4;
   const cardWidth = Math.floor((w - (slots - 1) * gap) / slots);
   const bodyHeight = Math.max(0, height - out.length - footer.length);
+  const origin = (run: RunRecord, size: number): string => {
+    if (!run.chatType && !run.actorName) return fit('来源待同步', size).trimEnd();
+    const place = run.chatType === 'p2p' ? '私聊' : run.chatName || '群名待同步';
+    const person = run.actorName ? '@' + run.actorName : '发起人待同步';
+    const personSize = Math.min(Math.floor((size - 3) / 2), cells(person));
+    return fit(place, Math.max(0, size - personSize - 3)).trimEnd() + ' · ' + fit(person, Math.max(0, personSize)).trimEnd();
+  };
   const block = (bot: MonitorBot, budget: number): string[] => {
     const active = bot.runs.filter(r => !r.orphan).length;
     const state = !bot.online ? 'OFFLINE' : active ? 'WORKING' : 'IDLE';
     const result = [line('', 37, cardWidth), pair(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}`, state, bot.online ? 36 : 90, cardWidth)];
     let shown = 0;
     for (const run of bot.runs) {
-      const previews = summary(run.promptPreview, Math.max(1, cardWidth - 4));
+      const side = cardWidth >= 70;
+      const sourceWidth = side ? Math.min(40, Math.floor(cardWidth / 2)) : Math.max(1, cardWidth - 4);
+      const source = origin(run, sourceWidth);
+      const previews = summary(run.promptPreview || '任务执行中', Math.max(1, cardWidth - 4 - (side ? cells(source) + 2 : 0)));
+      const sourceRows = side ? 0 : 1;
       // Keep one row available for the hidden-task count.
-      if (result.length + 1 + previews.length + Number(shown + 1 < bot.runs.length) > budget) break;
+      if (result.length + 1 + previews.length + sourceRows + Number(shown + 1 < bot.runs.length) > budget) break;
       result.push(pair('    ' + (run.orphan ? '已中断 / 过期' : activityLabel(run.activity)), age(s.now - run.startedAt), run.orphan ? 33 : 90, cardWidth));
-      result.push(...previews.map(text => line('    ' + text, 37, cardWidth)));
+      result.push(...previews.map((text, i) => side
+        ? pair('    ' + text, i === 0 ? source : '', 37, cardWidth)
+        : line('    ' + text, 37, cardWidth)));
+      if (!side) result.push(line('    ' + source, 90, cardWidth));
       shown++;
     }
     if (!bot.runs.length && result.length < budget) result.push(line('    等待新任务', 90, cardWidth));
