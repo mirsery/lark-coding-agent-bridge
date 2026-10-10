@@ -1,6 +1,12 @@
 import { resolveAppPaths } from '../../config/app-paths';
 import { createMonitorReader, renderMonitor } from '../../terminal/monitor';
 
+export function monitorFrame(text: string): string {
+  // Overwrite in place: ED2 may archive the cleared screen in iTerm scrollback.
+  // Explicit CRLF also works when raw mode disables output newline translation.
+  return '\x1b[H' + text.replace(/\r?\n/g, '\x1b[K\r\n') + '\x1b[K\x1b[J';
+}
+
 export async function runMonitor(opts: { profile?: string; interval?: string; once?: boolean; json?: boolean; color?: boolean }): Promise<void> {
   const seconds = Number(opts.interval ?? 2);
   if (!Number.isFinite(seconds) || seconds < 0.5 || seconds > 60) throw new Error('--interval must be between 0.5 and 60 seconds');
@@ -28,7 +34,7 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
     refreshing = true;
     try {
       const snap = await readMonitor(root, opts.profile);
-      if (!stopped) process.stdout.write('\x1b[H\x1b[2J' + renderMonitor(snap, process.stdout.columns, process.stdout.rows, opts.color !== false && !process.env.NO_COLOR) + (paused ? '\nPAUSED' : ''));
+      if (!stopped) process.stdout.write(monitorFrame(renderMonitor(snap, process.stdout.columns, process.stdout.rows, opts.color !== false && !process.env.NO_COLOR) + (paused ? '\nPAUSED' : '')));
     } finally { refreshing = false; }
   };
   const tick = async () => {
