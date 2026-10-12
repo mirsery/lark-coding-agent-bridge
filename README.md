@@ -549,11 +549,11 @@ It lives in the profile config's `approvals` section (restart the profile to app
 
 ### Smart session compaction (off by default)
 
-By default the bridge keeps resuming the same conversation. The longer it gets, the more every turn (and every tool call) re-reads; and once it has sat idle past the prompt cache's lifetime (1 hour), the next message first re-writes the whole context at cache-write price. Send `/config` in Feishu and switch on 「会话智能压缩」 under 运行与权限 (applies on submit) and the bridge will:
+By default the bridge keeps resuming the same conversation. The longer it gets, the more every turn (and every tool call) re-reads; and once it has sat idle past the prompt cache's lifetime (1 hour), the next message first re-writes the whole context at cache-write price. Send `/config` in Feishu and switch on 「会话智能压缩」 under 运行与权限 (applies on submit) or enable the same switch under Configuration → Replies & runs in the Web console and save. The bridge will:
 
 - **Start fresh after idling**: when a message arrives more than 1 hour after the last exchange with a context over 150k tokens, or more than 8 hours after it, the conversation is not resumed; a new one starts.
 - **Close when the agent says the task is done**: the agent may end its final answer with `[[NEW_SESSION: one-line summary]]`; the bridge strips the marker from the reply and the next message starts a new conversation.
-- **Compact long conversations earlier** (Claude Code): Claude Code auto-compacts against a 300k-token window instead of waiting until the model's limit.
+- **Compact long conversations earlier** (Claude Code / Codex): defaults to 300k tokens, using Claude Code's compaction window or Codex's native auto-compaction threshold on both app-server and exec. The model context limit still constrains when compaction occurs. Turning the switch off restores native CLI defaults.
 
 Nothing is lost: the old conversation is archived as usual and `/resume` brings it back. The first turn of the new conversation carries a short hand-off (the old conversation's summary or last request), and the reply card notes that a new conversation was started. No switch happens while the conversation still has background work running, or when the user quotes an earlier message.
 

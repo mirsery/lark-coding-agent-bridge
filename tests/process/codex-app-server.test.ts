@@ -104,6 +104,19 @@ async function preparedRun(adapter: CodexAdapter, opts: AgentRunOptions): Promis
 }
 
 describe('Codex app-server transport', () => {
+  it.each([undefined, 'thr-old'])('forwards smart-session compaction to app-server (%s)', async (threadId) => {
+    const fake = await createFakeAppServer();
+    const cwd = await realpath(fake.dir);
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir });
+    const run = await preparedRun(adapter, { runId: 'compact', cwd, prompt: 'hello', threadId, compactWindowTokens: 300000 });
+    try {
+      await nextTurn(run.events[Symbol.asyncIterator]());
+      expect((await fake.argv())[0]).toContain('model_auto_compact_token_limit=300000');
+    } finally {
+      run.endInput?.();
+      await run.waitForExit(2000);
+    }
+  });
   it('serves later turns of the conversation from the same process', async () => {
     const fake = await createFakeAppServer();
     const cwd = await realpath(fake.dir);

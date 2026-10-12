@@ -13,6 +13,16 @@ interface FakeBinary {
 }
 
 describe('CodexAdapter process contract', () => {
+  it.each([undefined, 'thread-old'])('forwards compaction to exec fallback (%s)', async (threadId) => {
+    const fake = await createFakeCodex({ lines: [{ type: 'turn.completed' }] });
+    cleanup.push(fake.dir);
+    const cwd = await realpath(fake.dir);
+    const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, transport: 'exec' }).run({
+      runId: 'compact-exec', prompt: 'hello', cwd, threadId, compactWindowTokens: 300000,
+    });
+    await collect(run.events);
+    expect((await readRecord(fake.recordPath)).argv).toContain('model_auto_compact_token_limit=300000');
+  });
   const cleanup: string[] = [];
   const oldCodexHome = process.env.CODEX_HOME;
   const oldAppSecret = process.env.APP_SECRET;

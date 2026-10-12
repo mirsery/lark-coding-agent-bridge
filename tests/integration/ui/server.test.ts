@@ -109,6 +109,24 @@ afterEach(async () => {
 });
 
 describe('ui server (supervisor-backed)', () => {
+  it.each(['claude', 'work', 'codex'])('persists smart-session toggle for online/offline profile %s', async (profile) => {
+    if (profile === 'codex') {
+      const root = (await loadRootConfig(configPath))!;
+      root.profiles.codex = createDefaultProfileConfig({ agentKind: 'codex', codex: { binaryPath: 'codex' }, accounts: { app } });
+      await saveRootConfig(root, configPath);
+    }
+    const url = `/api/config?profile=${profile}`;
+    expect((await json(await get(url, handle.token))).smartSession).toBe(false);
+    expect((await json(await post(url, handle.token, { smartSession: true }))).smartSession).toBe(true);
+    if (online.has(profile)) expect(online.get(profile).cfg.preferences.smartSession).toBe(true);
+    expect((await loadRootConfig(configPath))!.profiles[profile]!.preferences?.smartSession).toBe(true);
+    // Older clients/invalid submissions must preserve the existing preference.
+    await post(url, handle.token, { maxConcurrentRuns: 4 });
+    await post(url, handle.token, { smartSession: 'false' });
+    expect((await json(await get(url, handle.token))).smartSession).toBe(true);
+    expect((await json(await post(url, handle.token, { smartSession: false }))).smartSession).toBe(false);
+    expect((await loadRootConfig(configPath))!.profiles[profile]!.preferences?.smartSession).toBe(false);
+  });
   it('rejects API calls without the token', async () => {
     expect((await get('/api/status')).status).toBe(401);
     expect((await get('/api/config', 'wrong-token-value')).status).toBe(401);

@@ -90,8 +90,8 @@ describe('会话智能压缩 — run-flow rotation', () => {
     expect(run.ok && run.resumeFrom).toBe('sess-old');
   });
 
-  it('forwards the compaction window to the agent run', async () => {
-    const h = await harnessWithActiveSession('claude');
+  it.each(['claude', 'codex'] as const)('forwards the compaction window to %s', async (agentKind) => {
+    const h = await harnessWithActiveSession(agentKind);
     await start(h, { probe: async () => undefined }, { compactWindowTokens: 300_000 });
     expect(h.agent.runOptions[1]?.compactWindowTokens).toBe(300_000);
   });

@@ -19,7 +19,7 @@ import type {
   AgentRunOptions,
 } from '../types';
 import { clampCodexEffort } from '../models';
-import { buildCodexArgs } from './argv';
+import { buildCodexArgs, codexCompactionArgs } from './argv';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 import { readThreadUsageBaseline, subtractBaseline, type CodexUsageTotals } from './thread-usage';
 import { startCodexAppServerRun } from './app-server-run';
@@ -174,7 +174,11 @@ export class CodexAdapter implements AgentAdapter {
         binary: this.binary,
         cwd: opts.cwd,
         env: this.childEnv(),
-        config: ['-c', 'approval_policy="never"', '-c', 'shell_environment_policy.inherit="all"'],
+        config: [
+          '-c', 'approval_policy="never"',
+          '-c', 'shell_environment_policy.inherit="all"',
+          ...codexCompactionArgs(opts.compactWindowTokens),
+        ],
         prompt: prefixBridgeSystemPrompt(opts.prompt, this.botIdentity),
         ...(opts.images?.length ? { images: opts.images } : {}),
         ...(opts.threadId ? { threadId: opts.threadId } : {}),
@@ -204,6 +208,7 @@ export class CodexAdapter implements AgentAdapter {
       ignoreRules: this.ignoreRules,
       model: opts.model,
       effort,
+      compactWindowTokens: opts.compactWindowTokens,
     });
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
@@ -219,6 +224,7 @@ export class CodexAdapter implements AgentAdapter {
       images: opts.images?.length ?? 0,
       model: opts.model,
       effort,
+      compactWindowTokens: opts.compactWindowTokens,
     });
 
     const stderrChunks: Buffer[] = [];

@@ -53,6 +53,7 @@ export interface ConfigView {
   effortHint: string;
   messageReply: MessageReply;
   showToolCalls: boolean;
+  smartSession: boolean;
   cotMessages: CotMessages;
   maxConcurrentRuns: number;
   runIdleTimeoutMinutes: number;

@@ -82,6 +82,7 @@ export function ConfigView({ profile }: { profile: string }) {
         effort: cfg.effort,
         messageReply: cfg.messageReply,
         showToolCalls: cfg.showToolCalls,
+        smartSession: cfg.smartSession,
         cotMessages: cfg.cotMessages,
         maxConcurrentRuns: cfg.maxConcurrentRuns,
         runIdleTimeoutMinutes: cfg.runIdleTimeoutMinutes,
@@ -159,6 +160,8 @@ export function ConfigView({ profile }: { profile: string }) {
           </Field>
           <ToggleRow label="工具调用显示" hint="显示 bot 执行的命令与文件读写过程" checked={cfg.showToolCalls}
             onChange={(v) => set("showToolCalls", v)} />
+          <ToggleRow label="会话智能压缩" hint="空闲超 1 小时且上下文超 15 万 token，或空闲超 8 小时，下次消息自动开新会话；任务完成时可自动收尾，长会话提前压缩。旧会话可用 /resume 找回；后台任务运行中、进程保留期间或引用回复时不切换。阈值可在配置文件中调整。"
+            checked={cfg.smartSession} onChange={(v) => set("smartSession", v)} />
           <Field label="COT 过程消息">
             <SelectRow value={cfg.cotMessages} onChange={(v) => set("cotMessages", v as ConfigData["cotMessages"])}
               options={[["off", "关闭"], ["brief", "简略"], ["detailed", "详细"]]} />

@@ -32,6 +32,7 @@ import {
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
+  getSmartSession,
   type AppPreferences,
   type CotMessagesMode,
   type EffortLevel,
@@ -68,6 +69,7 @@ export interface ConfigView {
   effortHint: string;
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
+  smartSession: boolean;
   cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
   runIdleTimeoutMinutes: number;
@@ -103,6 +105,7 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
     effortHint: agentDescriptor(agentKind).effortDefaultHint,
     messageReply: getMessageReplyMode(state.cfg),
     showToolCalls: getShowToolCalls(state.cfg),
+    smartSession: Boolean(getSmartSession(state.cfg)),
     cotMessages: getCotMessages(state.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(state.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
@@ -255,6 +258,8 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       : getMessageReplyMode(state.cfg);
   const showToolCalls =
     typeof fv.showToolCalls === 'boolean' ? fv.showToolCalls : getShowToolCalls(state.cfg);
+  const smartSession =
+    typeof fv.smartSession === 'boolean' ? fv.smartSession : Boolean(getSmartSession(state.cfg));
   const cotMessages: CotMessagesMode =
     fv.cotMessages === 'brief' || fv.cotMessages === 'detailed' || fv.cotMessages === 'off'
       ? fv.cotMessages
@@ -300,6 +305,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       messageReply,
       messageReplyMigrated: true,
       showToolCalls,
+      smartSession,
       cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
