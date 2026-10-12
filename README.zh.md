@@ -417,6 +417,16 @@ Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两�
 
 开启 COT 后，bridge 会把过程消息和最终答案拆成两条消息。过程消息用于追踪 agent 做了什么；最终答案仍由 agent 原始文本生成，bridge 不做启发式过滤。若 agent 把最终答案也作为普通流式文本输出，COT 过程消息中可能会出现对应片段。
 
+### 长任务完成提醒
+
+回复卡片在任务开始时就发出、之后原地更新，而飞书对消息更新不推送通知——跑了二十分钟的任务结束时，手机不会响。所以任务从提交到结束超过阈值（默认 5 分钟）时，bot 会在原消息下再回一条短消息：
+
+- 群聊 / 话题：@ 发起任务的人（合并处理的一批里有几个人就 @ 几个，不 @ 机器人），写明完成还是异常结束、用了多久。
+- 私聊：只有答案落在那张原地更新的卡片里时才补发；答案本来就单独发出（COT、纯文本模式，或 Codex）时已经有推送，不再重复。
+- 用户自己 `/stop` 的任务不提醒。
+
+阈值在 profile 的 `preferences.longRunNoticeMinutes`（分钟，`0` 关闭），只能改配置文件。
+
 ## lark-cli 身份策略
 
 每个 profile 都使用当前 profile 的 lark-cli 目录：`~/.lark-channel/profiles/<profile>/lark-cli`。agent 子进程会收到指向这个目录的 `LARKSUITE_CLI_CONFIG_DIR`，所以一个 profile 里的个人授权不会共享给另一个 profile。

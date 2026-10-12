@@ -512,6 +512,74 @@ describe('topic message quote handling', () => {
   });
 });
 
+describe('long-run notice', () => {
+  it('@-mentions the requester when a group run finishes after the threshold', async () => {
+    // The reply card was created when the run started and is edited in place,
+    // which Feishu doesn't push. Opening that card is where the clock jumps
+    // past the threshold, so the run ends "long" and owes a pushing notice.
+    const realNow = Date.now.bind(Date);
+    let offsetMs = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offsetMs);
+    cleanups.push(async () => clock.mockRestore());
+    const h = await createHarness({
+      chatMode: 'group',
+      agentEvents: [
+        { type: 'text', delta: '查完了' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      onStream: () => {
+        offsetMs = 6 * 60_000;
+      },
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_long',
+        rootId: 'om_long',
+        parentId: 'om_long',
+        content: '@Bridge 查一下',
+        senderType: 'user',
+      }),
+    );
+    // Not waitFor: its deadline is read from the clock this test moves.
+    for (let i = 0; i < 100 && h.channel.sent.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    clock.mockRestore();
+
+    expect(h.channel.sent).toHaveLength(1);
+    const notice = h.channel.sent[0];
+    expect((notice?.content as { text?: string }).text).toContain('任务完成');
+    expect((notice?.content as { text?: string }).text).toContain('6 分钟');
+    expect(notice?.options).toMatchObject({
+      replyTo: 'om_long',
+      mentions: [{ openId: 'ou_user', name: 'User' }],
+    });
+  });
+
+  it('stays quiet when the run is short', async () => {
+    const h = await createHarness({
+      chatMode: 'group',
+      agentEvents: [
+        { type: 'text', delta: '好' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({ messageId: 'om_short', rootId: 'om_short', parentId: 'om_short', content: '@Bridge ping', senderType: 'user' }),
+    );
+    await waitFor(() => h.channel.streams.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(h.channel.sent).toHaveLength(0);
+  });
+});
+
 describe('merge_forward fetch failure', () => {
   it('skips the run and hints the user when the SDK could not fetch a merge_forward', async () => {
     // @larksuite/channel >= 0.4.1 normalizes an un-fetchable merge_forward to
@@ -566,6 +634,7 @@ async function createHarness(options: {
   rawThreadIds?: Record<string, string>;
   threadMessages?: Array<Record<string, unknown>>;
   agentEvents?: AgentEvent[];
+  onStream?: () => void;
 } = {}):Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
@@ -643,6 +712,7 @@ function createFakeLarkChannel(options: {
   quotedMessages?: Record<string, string>;
   rawThreadIds?: Record<string, string>;
   threadMessages?: Array<Record<string, unknown>>;
+  onStream?: () => void;
 } = {}):FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
   const sent: Array<{ chatId: string; content: unknown; options: unknown }> = [];
@@ -653,6 +723,7 @@ function createFakeLarkChannel(options: {
   };
   const rawThreadIds = options.rawThreadIds ?? {};
   const threadMessages = options.threadMessages ?? [];
+  const onStream = options.onStream;
   return {
     handlers,
     sent,
@@ -705,6 +776,7 @@ function createFakeLarkChannel(options: {
     },
     async stream(chatId, input, options) {
       streams.push({ chatId, options });
+      onStream?.();
       if (isMarkdownStreamInput(input)) {
         await input.markdown({ setContent: async () => {} });
       }
@@ -738,6 +810,7 @@ function message(input: {
   mentionedBot?: boolean;
   mentions?: Array<{ key: string; openId: string; name: string; isBot: boolean }>;
   createTime?: number;
+  senderType?: 'user' | 'app';
 }): NormalizedMessage {
   const mentionedBot = input.mentionedBot ?? true;
   return {
@@ -761,6 +834,7 @@ function message(input: {
     ...(input.threadId ? { threadId: input.threadId } : {}),
     replyToMessageId: input.parentId,
     createTime: input.createTime ?? 1760000001000,
+    ...(input.senderType ? { raw: { sender: { sender_type: input.senderType } } } : {}),
   } as unknown as NormalizedMessage;
 }
 

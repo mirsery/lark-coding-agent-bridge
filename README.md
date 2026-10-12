@@ -417,6 +417,16 @@ Jobs are stored per profile in `jobs.json` (see Data directories).
 
 When COT is enabled, the bridge splits the process view and final answer into two messages. The COT message is for tracing what the agent did; the final answer is still generated from the agent's raw text, without heuristic bridge-side filtering. If an agent emits final-answer text as ordinary stream text, that text can also appear in the COT process message.
 
+### Long-run completion notice
+
+The reply card is posted when a run starts and then updated in place, and Feishu doesn't push edits — a run that finishes twenty minutes later does so silently. So when a run takes longer than a threshold (default 5 minutes) from submission to finish, the bot posts one short follow-up reply to the original message:
+
+- Groups / topics: it @-mentions the people who started the run (everyone in a merged batch; never bots) and says whether it finished or failed, and how long it took.
+- DMs: only when the answer landed in that in-place card; when the answer was already sent as its own message (COT, plain-text mode, or Codex) that message pushed, so nothing is added.
+- Runs the user stopped with `/stop` get no notice.
+
+The threshold is the profile's `preferences.longRunNoticeMinutes` (minutes, `0` turns it off), config-file only.
+
 ## lark-cli identity policy
 
 Each profile uses a profile-local lark-cli directory at `~/.lark-channel/profiles/<profile>/lark-cli`. The agent process receives `LARKSUITE_CLI_CONFIG_DIR` for that directory, so personal authorization in one profile is not shared with another profile.

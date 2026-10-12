@@ -46,6 +46,7 @@ import {
   getCotMessages,
   getMaxConcurrentRuns,
   getMessageReplyMode,
+  getLongRunNoticeMs,
   getRunIdleTimeoutMs,
   getShowToolCalls,
   getSmartSession,
@@ -106,6 +107,7 @@ import { fetchQuotedContext, type QuotedContext } from './quote';
 import { ChatContextCursorStore, fetchChatContext, planChatContext } from './chat-context';
 import { lookupMessageThreadId } from './thread-id';
 import { addDoneReaction, addWorkingReaction, removeReaction } from './reaction';
+import { planLongRunNotice, sendLongRunNotice, type LongRunRequester } from './long-run-notice';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
 import {
@@ -1291,6 +1293,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // the user quotes an earlier message, which points back into the old context.
   const pendingRotation = pendingRotations.take(scope);
   const rotationBlocked = executor.hasLiveProcess(scope) || quotes.length > 0;
+  // 长任务完成提醒 measures from here: queueing behind the concurrency cap is
+  // waiting the requester does too.
+  const runSubmittedAt = Date.now();
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -1516,6 +1521,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // block can decide whether to mark the triggering message "answered"
   // without needing to know which reply mode produced the run.
   let runTerminal: Terminal | undefined;
+  // Whether the answer went out as a message of its own (which pushes), as
+  // opposed to landing in the progress card that was created at the start.
+  let answerIsNewMessage = false;
 
   try {
     if (cotEnabled) {
@@ -1555,6 +1563,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             reason: cotPublisher.degradedReason,
           });
         }
+        answerIsNewMessage = true;
         await sendFinalReply({
           channel,
           chatId,
@@ -1641,6 +1650,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (separateFinalReply) {
+        answerIsNewMessage = true;
         await sendFinalReply({
           channel,
           chatId,
@@ -1714,6 +1724,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (separateFinalReply) {
+        answerIsNewMessage = true;
         await sendFinalReply({
           channel,
           chatId,
@@ -1737,6 +1748,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async () => {},
       );
+      answerIsNewMessage = true;
       await sendFinalReply({
         channel,
         chatId,
@@ -1758,6 +1770,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
     if (runTerminal === 'done') void addDoneReaction(channel, lastMsg.messageId);
+    const longRunNotice = planLongRunNotice({
+      thresholdMs: getLongRunNoticeMs(controls.cfg),
+      elapsedMs: Date.now() - runSubmittedAt,
+      terminal: runTerminal,
+      p2p: mode === 'p2p',
+      answerIsNewMessage,
+      requesters: humanRequesters(batch),
+    });
+    if (longRunNotice) void sendLongRunNotice(channel, chatId, longRunNotice, sendOpts, scope);
     if (smartSession && runTerminal === 'done') {
       const request = newSessionRequest(answerTextOf(lastRawState));
       if (request) {
@@ -2307,6 +2328,13 @@ function senderTypeOf(msg: NormalizedMessage): 'user' | 'bot' | undefined {
   if (senderType === 'user') return 'user';
   if (senderType === 'app' || senderType === 'bot') return 'bot';
   return undefined;
+}
+
+/** The people (never bots — an @ would wake them) whose messages make up a batch. */
+function humanRequesters(batch: NormalizedMessage[]): LongRunRequester[] {
+  return batch
+    .filter((m) => senderTypeOf(m) === 'user')
+    .map((m) => ({ openId: m.senderId, ...(m.senderName ? { name: m.senderName } : {}) }));
 }
 
 function senderAnnotation(msg: NormalizedMessage): string {

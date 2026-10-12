@@ -163,6 +163,15 @@ export interface AppPreferences {
    */
   runIdleTimeoutMinutes?: number;
   /**
+   * 长任务完成提醒. A streamed reply card is updated in place, so finishing a
+   * long run makes no sound on the requester's phone. When a group / topic run
+   * — or a DM run whose answer landed in that in-place card — ends after at
+   * least this many minutes, the bot posts a short reply that pushes (in
+   * groups it @-mentions the requesters). Default 5; 0 turns it off.
+   * Config-file only.
+   */
+  longRunNoticeMinutes?: number;
+  /**
    * Whether the bot only responds to messages that @-mention it in groups
    * (regular and topic groups). p2p is always unrestricted. Default true:
    * groups are quiet unless the user @bot. Set false to let any group
@@ -353,6 +362,16 @@ export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
   const clamped = Math.min(Math.max(Math.floor(raw), 1), 120);
   return clamped * 60_000;
+}
+
+const DEFAULT_LONG_RUN_NOTICE_MINUTES = 5;
+
+/** 长任务完成提醒 threshold in ms, or `undefined` when off. See `longRunNoticeMinutes`. */
+export function getLongRunNoticeMs(cfg: AppConfig): number | undefined {
+  const raw = cfg.preferences?.longRunNoticeMinutes;
+  if (raw === undefined) return DEFAULT_LONG_RUN_NOTICE_MINUTES * 60_000;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
+  return Math.min(Math.max(Math.floor(raw), 1), 24 * 60) * 60_000;
 }
 
 /**
