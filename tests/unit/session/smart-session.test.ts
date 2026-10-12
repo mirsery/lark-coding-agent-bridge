@@ -36,6 +36,18 @@ describe('decideRotation', () => {
     expect(decideRotation({ settings, now, probe: undefined })).toBeUndefined();
   });
 
+  it('applies an agent-requested close only to the conversation it was made in', () => {
+    const pending = { summary: '做完了', handle: 'sess-1' };
+    expect(decideRotation({ settings, now, probe: undefined, pending, resumeHandle: 'sess-1' })).toMatchObject({
+      reason: 'agent-done',
+      summary: '做完了',
+    });
+    expect(decideRotation({ settings, now, probe: undefined, pending, resumeHandle: 'sess-2' })).toBeUndefined();
+    expect(
+      decideRotation({ settings, now, probe: undefined, pending: { summary: '旧请求' }, resumeHandle: 'sess-2' }),
+    ).toMatchObject({ reason: 'agent-done' });
+  });
+
   it('honours an agent-requested close whatever the idle time', () => {
     expect(
       decideRotation({ settings, now, pending: { summary: '修完了' }, probe: { lastActivityAt: now - MIN } }),

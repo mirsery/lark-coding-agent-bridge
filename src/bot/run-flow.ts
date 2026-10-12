@@ -165,6 +165,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       settings: input.rotation.settings,
       probe,
       ...(input.rotation.pending ? { pending: input.rotation.pending } : {}),
+      resumeHandle: resumeFrom,
       now: input.now,
     });
     if (rotated) {

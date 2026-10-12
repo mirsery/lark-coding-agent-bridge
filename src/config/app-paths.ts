@@ -18,6 +18,8 @@ export interface AppPaths {
   runsFile: string;
   /** Durable copy of messages queued behind a run (PendingStore). */
   pendingFile: string;
+  /** Agent-requested session closes awaiting the next message (PendingRotationStore). */
+  rotationsFile: string;
   /** Per-person token / cost consumption (UsageLedger). */
   usageFile: string;
   /** Who had the bot run what, and approvals (AuditLog). */
@@ -71,6 +73,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     workspacesFile: join(profileDir, 'workspaces.json'),
     runsFile: join(profileDir, 'runs.json'),
     pendingFile: join(profileDir, 'pending.json'),
+    rotationsFile: join(profileDir, 'pending-rotations.json'),
     usageFile: join(profileDir, 'usage.json'),
     auditFile: join(profileDir, 'audit.jsonl'),
     knowledgeDir: join(profileDir, 'knowledge'),

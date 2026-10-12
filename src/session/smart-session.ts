@@ -33,17 +33,29 @@ export interface RotationVerdict {
 /** A rotation the agent asked for at the end of its last answer, applied on the next message. */
 export interface PendingRotation {
   summary?: string;
+  /**
+   * The conversation (session / thread id) the request closes. The next
+   * message honors it only while it would still resume that conversation —
+   * after `/new`, `/resume` or `/cd` the request no longer applies.
+   */
+  handle?: string;
 }
 
 export interface DecideRotationInput {
   settings: SmartSessionSettings;
   probe: AgentSessionProbe | undefined;
   pending?: PendingRotation;
+  /** The conversation the next message would resume; a pending request for another one is ignored. */
+  resumeHandle?: string;
   now: number;
 }
 
 export function decideRotation(input: DecideRotationInput): RotationVerdict | undefined {
-  const { settings, probe, pending, now } = input;
+  const { settings, probe, now } = input;
+  const pending =
+    input.pending?.handle && input.resumeHandle && input.pending.handle !== input.resumeHandle
+      ? undefined
+      : input.pending;
   const idleMinutes =
     probe?.lastActivityAt !== undefined ? Math.max(0, Math.floor((now - probe.lastActivityAt) / 60_000)) : undefined;
   const base = {

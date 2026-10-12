@@ -1,5 +1,6 @@
 import type { NormalizedMessage } from '@larksuite/channel';
-import { realpath } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
@@ -134,8 +135,72 @@ describe('会话智能压缩 in the IM flow', () => {
   });
 });
 
+describe('会话智能压缩 close requests across a restart', () => {
+  it('writes the request to disk with the conversation it closes', async () => {
+    shown.length = 0;
+    const h = await createHarness();
+    h.agent.setEvents([
+      [
+        { type: 'system', sessionId: 'sess-1' },
+        { type: 'text', delta: '做完了。\n\n[[NEW_SESSION: 查完了校准问题]]' },
+        { type: 'done', sessionId: 'sess-1', terminationReason: 'normal' },
+      ],
+    ]);
+    const appPaths = testAppPaths(h.tmp);
+    await startTestBridge(h, appPaths);
+
+    await h.channel.handlers.message?.(message({ messageId: 'om_1', content: '@Bridge 查一下' }));
+    await waitFor(() => shown.some((s) => s.includes('做完了')));
+    await waitFor(() => readJson(appPaths.rotationsFile)?.oc_chat !== undefined);
+    expect(readJson(appPaths.rotationsFile)?.oc_chat).toMatchObject({ summary: '查完了校准问题', handle: 'sess-1' });
+  });
+
+  it('starts fresh on the first message after a restart when the request was left on disk', async () => {
+    shown.length = 0;
+    const h = await createHarness();
+    h.sessions.set('oc_chat', 'sess-1', h.workspace);
+    h.agent.setEvents([[{ type: 'done', sessionId: 'sess-2', terminationReason: 'normal' }]]);
+    const appPaths = testAppPaths(h.tmp);
+    await writeFile(
+      appPaths.rotationsFile,
+      JSON.stringify({ oc_chat: { summary: '查完了校准问题', handle: 'sess-1', requestedAt: Date.now() - 60_000 } }),
+    );
+    await startTestBridge(h, appPaths);
+
+    await h.channel.handlers.message?.(message({ messageId: 'om_2', content: '@Bridge 新问题' }));
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    expect(h.agent.runOptions[0]?.sessionId).toBeUndefined();
+    expect(readSection(h.agent.runOptions[0]?.prompt ?? '', 'session_handoff')).toMatchObject({
+      reason: 'agent-done',
+      previousSummary: '查完了校准问题',
+    });
+    await waitFor(() => readJson(appPaths.rotationsFile)?.oc_chat === undefined);
+  });
+
+  it('ignores a request for a conversation the scope no longer resumes', async () => {
+    shown.length = 0;
+    const h = await createHarness();
+    h.sessions.set('oc_chat', 'sess-resumed', h.workspace);
+    h.agent.setEvents([[{ type: 'done', sessionId: 'sess-resumed', terminationReason: 'normal' }]]);
+    const appPaths = testAppPaths(h.tmp);
+    await writeFile(
+      appPaths.rotationsFile,
+      JSON.stringify({ oc_chat: { handle: 'sess-closed', requestedAt: Date.now() - 60_000 } }),
+    );
+    await startTestBridge(h, appPaths);
+
+    await h.channel.handlers.message?.(message({ messageId: 'om_3', content: '@Bridge 接着聊' }));
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    expect(h.agent.runOptions[0]?.sessionId).toBe('sess-resumed');
+    expect(h.agent.runOptions[0]?.prompt).not.toContain('<session_handoff>');
+  });
+});
+
 async function createHarness(): Promise<{
   tmp: TmpProfile;
+  workspace: string;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
   agent: FakeAgentAdapter;
   sessions: SessionStore;
@@ -181,6 +246,7 @@ async function createHarness(): Promise<{
   });
   return {
     tmp,
+    workspace,
     channel,
     agent,
     sessions,
@@ -196,13 +262,14 @@ async function startTestBridge(h: {
   sessions: SessionStore;
   workspaces: WorkspaceStore;
   controls: ReturnType<typeof createControls>;
-}): Promise<void> {
+}, appPaths?: ReturnType<typeof testAppPaths>): Promise<void> {
   const bridge = await startChannel({
     cfg: h.profileConfig,
     agent: h.agent,
     sessions: h.sessions,
     workspaces: h.workspaces,
     controls: h.controls,
+    ...(appPaths ? { appPaths } : {}),
   });
   cleanups.push(() => bridge.disconnect());
 }
@@ -338,3 +405,27 @@ function isMarkdownStreamInput(input: unknown): input is MarkdownStreamInput {
   return Boolean(input && typeof input === 'object' && 'markdown' in input);
 }
 
+
+function testAppPaths(tmp: TmpProfile) {
+  return {
+    secretsFile: join(tmp.profile, 'secrets.enc'),
+    keystoreSaltFile: join(tmp.profile, 'keystore.salt'),
+    mediaDir: join(tmp.profile, 'media'),
+    runsFile: join(tmp.profile, 'runs.json'),
+    knowledgeDir: join(tmp.profile, 'knowledge'),
+    jobsFile: join(tmp.profile, 'jobs.json'),
+    pendingFile: join(tmp.profile, 'pending.json'),
+    rotationsFile: join(tmp.profile, 'pending-rotations.json'),
+    usageFile: join(tmp.profile, 'usage.json'),
+    auditFile: join(tmp.profile, 'audit.jsonl'),
+    profileDir: tmp.profile,
+  };
+}
+
+function readJson(path: string): Record<string, unknown> | undefined {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}

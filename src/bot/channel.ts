@@ -75,7 +75,6 @@ import {
   newSessionRequest,
   rotationNotice,
   SMART_SESSION_INSTRUCTION,
-  type PendingRotation,
 } from '../session/smart-session';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -95,6 +94,7 @@ import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { PendingStore, type PendingRecord } from './pending-store';
+import { PendingRotationStore } from '../session/rotation-store';
 import { formatUsageLine, UsageLedger } from '../runtime/usage-ledger';
 import { ApprovalBroker, type GateContext } from '../runtime/approvals';
 import { ApprovalSocketServer } from '../runtime/approval-socket';
@@ -252,7 +252,8 @@ export interface StartChannelDeps {
     | 'usageFile'
     | 'auditFile'
     | 'profileDir'
-  >;
+  > &
+    Partial<Pick<AppPaths, 'rotationsFile'>>;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -363,9 +364,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     : undefined;
   const activePolicyFingerprints = new Map<string, string>();
   // 会话智能压缩: scopes whose last answer asked to close the conversation
-  // (`[[NEW_SESSION]]`); applied when the next message arrives. In-memory:
-  // a restart in between just keeps the conversation.
-  const pendingRotations = new Map<string, PendingRotation>();
+  // (`[[NEW_SESSION]]`); applied when the next message arrives. On disk, so a
+  // restart in between still closes it.
+  const pendingRotations = new PendingRotationStore(deps.appPaths?.rotationsFile);
+  await pendingRotations.load();
   // Per-scope record of the model used on the last run, so a `/config` model
   // switch can inject a one-time "model changed" note into the next (resumed)
   // prompt. In-memory only: on restart the first run re-seeds silently.
@@ -781,6 +783,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         workspaces.flush(),
         jobs?.flush(),
         pendingStore?.flush(),
+        pendingRotations.flush(),
         usageLedger?.flush(),
         auditLog?.flush(),
       ]);
@@ -1054,7 +1057,7 @@ interface RunBatchDeps {
   callbackAuth?: CallbackAuth;
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
-  pendingRotations: Map<string, PendingRotation>;
+  pendingRotations: PendingRotationStore;
   scope: string;
   mode: ChatMode;
   runs?: RunRegistry;
@@ -1261,8 +1264,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // way. Never rotate under a process this scope still keeps (its background
   // work would be cut off — and a fresh submit would reuse it anyway) or when
   // the user quotes an earlier message, which points back into the old context.
-  const pendingRotation = pendingRotations.get(scope);
-  pendingRotations.delete(scope);
+  const pendingRotation = pendingRotations.take(scope);
   const rotationBlocked = executor.hasLiveProcess(scope) || quotes.length > 0;
   const flow = await startRunFlow({
     scopeId: scope,
@@ -1346,7 +1348,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       ...(flow.rotated.contextTokens !== undefined ? { contextTokens: flow.rotated.contextTokens } : {}),
     });
   }
+  // The conversation this run lands in — what an `[[NEW_SESSION]]` at its end closes.
+  const sessionHandleKey = capability.descriptor.sessionHandle;
+  let conversationHandle = flow.resumeFrom;
   const recordSession = (evt: AgentEvent): void => {
+    if (evt.type === 'system' && evt[sessionHandleKey]) conversationHandle = evt[sessionHandleKey];
     recordRunSessionEvent({
       scopeId: scope,
       sessions,
@@ -1727,7 +1733,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (smartSession && runTerminal === 'done') {
       const request = newSessionRequest(answerTextOf(lastRawState));
       if (request) {
-        pendingRotations.set(scope, request);
+        pendingRotations.set(scope, { ...request, ...(conversationHandle ? { handle: conversationHandle } : {}) });
         log.info('session', 'rotation-requested', { scope, hasSummary: Boolean(request.summary) });
       }
     }
