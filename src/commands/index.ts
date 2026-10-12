@@ -55,6 +55,7 @@ import {
   resumeCard,
   skillsCard,
   statusCard,
+  type StatusInfo,
   worktreeCard,
   workspacesCard,
 } from '../card/templates';
@@ -138,6 +139,9 @@ import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
+import type { PendingRotationStore } from '../session/rotation-store';
+import { decideRotation } from '../session/smart-session';
+import { probeAgentSession } from '../agent/session-probe';
 import { describeMeetingError, type MeetingManager } from '../meeting/manager';
 import { isMeetingNo } from '../meeting/api';
 import { answerInMeeting, meetingScopeId } from '../meeting/orchestrator';
@@ -186,6 +190,8 @@ export interface Controls {
   approvals?: ApprovalBroker;
   /** Who had the bot do what, backing `/audit`. Late-bound by startChannel. */
   audit?: AuditLog;
+  /** 会话智能压缩 closes the agent asked for, read by `/status`. Late-bound by startChannel. */
+  pendingRotations?: Pick<PendingRotationStore, 'get'>;
 }
 
 export interface CommandContext {
@@ -934,12 +940,17 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     !descriptor.scopeSessionStore && ctx.sessionCatalog && ctx.sessionCatalogIdentity
       ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)
       : undefined;
+  const sessionId = descriptor.scopeSessionStore ? sess?.sessionId : catalogEntry?.[descriptor.sessionHandle];
+  const sessionStale = descriptor.scopeSessionStore && Boolean(cwd && sess && sess.cwd !== cwd);
   const card = statusCard({
     profileName: ctx.controls.profile,
     cwd,
-    sessionId: descriptor.scopeSessionStore ? sess?.sessionId : catalogEntry?.[descriptor.sessionHandle],
+    sessionId,
     emptySessionText: descriptor.scopeSessionStore ? undefined : '(未建立)',
-    sessionStale: descriptor.scopeSessionStore && Boolean(cwd && sess && sess.cwd !== cwd),
+    sessionStale,
+    ...(sessionId && !sessionStale
+      ? await sessionContextStatus(ctx, sessionId, (descriptor.scopeSessionStore ? sess?.cwd : undefined) ?? cwd)
+      : {}),
     agentName: ctx.agent.displayName,
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
     larkCliStatus: await larkCliStatus(ctx),
@@ -955,6 +966,37 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     chatMode: ctx.chatMode,
   });
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+}
+
+/**
+ * How big the conversation the next message would resume has grown, and —
+ * with 会话智能压缩 on — whether that message will start a fresh one instead.
+ * Read from the agent's own transcript; absent when it can't be read.
+ */
+async function sessionContextStatus(
+  ctx: CommandContext,
+  handle: string,
+  cwd: string | undefined,
+): Promise<Pick<StatusInfo, 'context'>> {
+  if (!cwd) return {};
+  const probe = await probeAgentSession(ctx.controls.profileConfig, handle, cwd);
+  if (!probe || (probe.contextTokens === undefined && probe.lastActivityAt === undefined)) return {};
+  const now = Date.now();
+  const smartSession = getSmartSession(ctx.controls.cfg);
+  const pending = ctx.controls.pendingRotations?.get(ctx.scope);
+  const verdict =
+    smartSession && !ctx.runExecutor?.hasLiveProcess(ctx.scope)
+      ? decideRotation({ settings: smartSession, probe, ...(pending ? { pending } : {}), resumeHandle: handle, now })
+      : undefined;
+  return {
+    context: {
+      ...(probe.contextTokens !== undefined ? { tokens: probe.contextTokens } : {}),
+      ...(probe.lastActivityAt !== undefined
+        ? { idleMinutes: Math.max(0, Math.floor((now - probe.lastActivityAt) / 60_000)) }
+        : {}),
+      ...(verdict ? { rotateReason: verdict.reason } : {}),
+    },
+  };
 }
 
 function formatOwnerState(ctx: CommandContext): string {

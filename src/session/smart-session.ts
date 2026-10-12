@@ -139,14 +139,14 @@ export function rotationNotice(verdict: RotationVerdict): string {
   return `已自动开启新会话${why}，旧会话可用 /resume 找回`;
 }
 
-function humanIdle(minutes: number): string {
+export function humanIdle(minutes: number): string {
   if (minutes < 60) return `${minutes} 分钟`;
   const hours = minutes / 60;
   if (hours < 48) return `${Math.round(hours)} 小时`;
   return `${Math.round(hours / 24)} 天`;
 }
 
-function humanTokens(tokens: number): string {
+export function humanTokens(tokens: number): string {
   if (tokens >= 10_000) return `${Math.round(tokens / 10_000)} 万`;
   return `${Math.round(tokens / 1000)}k`;
 }

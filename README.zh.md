@@ -291,7 +291,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/ws use <name>` | 切换到命名工作空间 |
 | `/ws remove <name>` | 删除命名工作空间 |
 | `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
-| `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
+| `/status` | 查看 profile、agent、工作目录、会话（含当前上下文大小、上次对话时间，开了会话智能压缩时还会提示下一条是否自动开新会话）、lark-cli 身份和运行状态 |
 | `/config` | 调整展示偏好、访问控制和 lark-cli 身份策略 |
 | `/invite user @某人` | 允许用户私聊使用 bot |
 | `/invite admin @某人` | 添加访问控制管理员 |

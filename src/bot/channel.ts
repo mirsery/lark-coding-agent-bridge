@@ -368,6 +368,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // restart in between still closes it.
   const pendingRotations = new PendingRotationStore(deps.appPaths?.rotationsFile);
   await pendingRotations.load();
+  controls.pendingRotations = pendingRotations;
   // Per-scope record of the model used on the last run, so a `/config` model
   // switch can inject a one-time "model changed" note into the next (resumed)
   // prompt. In-memory only: on restart the first run re-seeds silently.

@@ -1,3 +1,5 @@
+import { humanIdle, humanTokens, type RotationReason } from '../session/smart-session';
+
 interface ButtonSpec {
   text: string;
   value: Record<string, unknown>;
@@ -67,6 +69,13 @@ export interface StatusInfo {
   sessionId?: string;
   emptySessionText?: string;
   sessionStale: boolean;
+  /** Size and age of the conversation the next message would resume. */
+  context?: {
+    tokens?: number;
+    idleMinutes?: number;
+    /** Set when 会话智能压缩 will start the next message in a fresh conversation. */
+    rotateReason?: RotationReason;
+  };
   agentName: string;
   runtimeAccess: {
     label: string;
@@ -90,6 +99,20 @@ export interface StatusInfo {
   chatMode: 'p2p' | 'group' | 'topic';
 }
 
+const ROTATE_REASON_TEXT: Record<RotationReason, string> = {
+  'agent-done': '上一件事已完成',
+  'idle-long': '空闲太久',
+  'idle-large': '缓存已过期且上下文偏大',
+};
+
+function contextLine(context: NonNullable<StatusInfo['context']>): string {
+  const parts: string[] = [];
+  if (context.tokens !== undefined) parts.push(`约 ${humanTokens(context.tokens)} token`);
+  if (context.idleMinutes !== undefined) parts.push(`上次对话 ${humanIdle(context.idleMinutes)}前`);
+  if (context.rotateReason) parts.push(`下一条消息会自动开新会话（${ROTATE_REASON_TEXT[context.rotateReason]}）`);
+  return parts.join(' · ');
+}
+
 export function statusCard(info: StatusInfo): object {
   const sessionLine = info.sessionId
     ? `\`${info.sessionId.slice(0, 8)}…\`${info.sessionStale ? ' ⚠️ 旧 cwd，下一条会新建' : ''}`
@@ -111,6 +134,7 @@ export function statusCard(info: StatusInfo): object {
     ...(info.git ? [`🌿 **git**: ${info.git}`] : []),
     ...(info.knowledge ? [`📚 **knowledge**: ${info.knowledge}`] : []),
     `🔗 **session**: ${sessionLine}`,
+    ...(info.context ? [`🧠 **context**: ${contextLine(info.context)}`] : []),
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
     `🛡 **${escapeMd(info.runtimeAccess.label)}**: ${escapeMd(info.runtimeAccess.value)}`,
     ...(info.larkCliStatus ? [`🔐 **lark-cli**: ${info.larkCliStatus}`] : []),
