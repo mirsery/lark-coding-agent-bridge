@@ -220,13 +220,17 @@ describe('configFormCard group panel management hints', () => {
   it('points per-group settings at the web console when it is running', () => {
     const panel = groupPanelText(configFormCard({ ...withLeft, consoleUrl: 'http://127.0.0.1:1/' }));
     expect(panel).toContain('在 Web 控制台里设置');
-    expect(panel).toContain('可在 Web 控制台移除');
   });
 
   it('points per-group settings at the config file when no console is running', () => {
     const panel = groupPanelText(configFormCard(withLeft));
     expect(panel).toContain('access.chatRequireMention');
-    expect(panel).toContain('access.allowedChats');
+  });
+
+  it('tells how to drop a chat the bot has left from p2p', () => {
+    for (const opts of [withLeft, { ...withLeft, consoleUrl: 'http://127.0.0.1:1/' }]) {
+      expect(groupPanelText(configFormCard(opts))).toContain('/remove group <ID 末 6 位>');
+    }
   });
 });
 

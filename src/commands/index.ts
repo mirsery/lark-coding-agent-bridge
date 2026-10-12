@@ -2707,32 +2707,30 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
         '• `/remove user @某人` — 移出用户白名单\n' +
         '• `/remove admin @某人` — 移出管理员\n' +
         '• `/remove group` — 把当前群移出响应群名单\n' +
+        '• `/remove group <群 ID>` — 按 ID 移除指定的群，私聊里也能用（写 `/config` 群管理面板里显示的末 6 位即可）\n' +
         '• `/remove member @某人` — 把这个人移出当前群的专属名单',
     );
     return;
   }
 
   if (kind === 'group') {
+    const idArg = args.trim().split(/\s+/).find((token) => token.toLowerCase() !== 'group');
+    if (idArg) {
+      await removeGroupById(ctx, idArg);
+      return;
+    }
     if (ctx.chatMode === 'p2p') {
-      await reply(ctx, '`/remove group` 请在要移除的群里发，私聊里没有可移除的群。');
+      await reply(
+        ctx,
+        '私聊里请带上群 ID：`/remove group <群 ID>`。ID 写全或只写 `/config` 群管理面板里显示的末 6 位都可以。',
+      );
       return;
     }
     const chatId = ctx.msg.chatId;
     let missing = false;
     await saveAccessConfig(ctx, (current) => {
-      const list = new Set(current.allowedChats);
-      missing = !list.has(chatId);
-      list.delete(chatId);
-      // Drop the now-orphaned per-chat allowlist too, so removing then
-      // re-adding a group later doesn't silently resurrect an old member
-      // list the operator no longer remembers configuring.
-      const memberMap = { ...(current.chatAllowedUsers ?? {}) };
-      delete memberMap[chatId];
-      return {
-        ...current,
-        allowedChats: [...list],
-        chatAllowedUsers: memberMap,
-      };
+      missing = !current.allowedChats.includes(chatId);
+      return withoutChat(current, chatId);
     });
     if (missing) {
       await reply(ctx, '✅ 当前群本来就不在响应名单里，无需移除。');
@@ -2833,6 +2831,69 @@ async function saveAccessConfig(
   mutate: (access: ProfileAccess) => ProfileAccess,
 ): Promise<ProfileAccess> {
   return configOps.saveAccessConfig(ctx.controls, mutate);
+}
+
+/**
+ * Drop a chat from the allowlist together with its per-chat member list and
+ * @ override, so removing then re-adding a group later doesn't silently
+ * resurrect settings the operator no longer remembers configuring.
+ */
+function withoutChat(access: ProfileAccess, chatId: string): ProfileAccess {
+  const memberMap = { ...(access.chatAllowedUsers ?? {}) };
+  delete memberMap[chatId];
+  const mentionMap = { ...(access.chatRequireMention ?? {}) };
+  delete mentionMap[chatId];
+  return {
+    ...access,
+    allowedChats: access.allowedChats.filter((id) => id !== chatId),
+    chatAllowedUsers: memberMap,
+    chatRequireMention: mentionMap,
+  };
+}
+
+/** Shortest suffix accepted by `/remove group <id>`; the /config panel shows 6. */
+const MIN_CHAT_ID_SUFFIX = 4;
+
+/**
+ * `/remove group <id>` — removes an allowlisted chat named by its full
+ * chat_id or a suffix of it (the /config group panel shows the last 6
+ * characters). Works from p2p, which is the only way to drop a chat the bot
+ * has already left: plain `/remove group` has to be sent inside the chat.
+ */
+async function removeGroupById(ctx: CommandContext, rawId: string): Promise<void> {
+  const needle = rawId.replace(/^[.…（(]+|[)）]+$/g, '').toLowerCase();
+  const names = new Map((ctx.controls.knownChats ?? []).map((chat) => [chat.id, chat.name]));
+  const label = (id: string) => `${names.get(id) ? `**${names.get(id)}**` : '(未知群)'}（\`${id}\`）`;
+  const findMatches = (allowed: string[]) => {
+    const exact = allowed.filter((id) => id.toLowerCase() === needle);
+    if (exact.length > 0 || needle.length < MIN_CHAT_ID_SUFFIX) return exact;
+    return allowed.filter((id) => id.toLowerCase().endsWith(needle));
+  };
+
+  let matches: string[] = [];
+  await saveAccessConfig(ctx, (current) => {
+    matches = findMatches(current.allowedChats);
+    return matches.length === 1 ? withoutChat(current, matches[0]!) : current;
+  });
+
+  if (matches.length === 1) {
+    await reply(ctx, `✅ 已把 ${label(matches[0]!)} 移出响应群名单。`);
+    return;
+  }
+  if (matches.length > 1) {
+    await reply(
+      ctx,
+      `❌ 有 ${matches.length} 个群的 ID 以 \`${needle}\` 结尾，请多写几位或写全 ID：\n` +
+        matches.map((id) => `- ${label(id)}`).join('\n'),
+    );
+    return;
+  }
+  await reply(
+    ctx,
+    needle.length < MIN_CHAT_ID_SUFFIX
+      ? `❌ 群 ID 至少写末 ${MIN_CHAT_ID_SUFFIX} 位，或者写全 ID。`
+      : `❌ 响应群名单里没有 ID 为 \`${needle}\` 或以它结尾的群。发 \`/config\` 在群管理面板里核对。`,
+  );
 }
 
 // ────────────── /config — preferences form ──────────────

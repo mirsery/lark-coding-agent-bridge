@@ -299,7 +299,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/invite group restricted @name...` | Allow the current group, limited to the named people only |
 | `/invite member @name` | Add a person to the current group's member allowlist |
 | `/invite all group` | Allow all groups the bot has joined |
-| `/remove user @name`, `/remove admin @name`, `/remove group`, `/remove member @name` | Remove access entries |
+| `/remove user @name`, `/remove admin @name`, `/remove group [chat id]`, `/remove member @name` | Remove access entries; `/remove group <chat id>` drops the named group by full id or trailing characters, also from a DM |
 | `/stop` | Stop the current run, including the card stop button |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
 | `/memory [add\|forget\|clear]` | Cross-session memory; `--global` writes profile-wide |
@@ -485,7 +485,7 @@ To let other people or groups in, add them to one of three lists:
 | List | Controls | Add | Remove |
 |------|----------|-----|--------|
 | **Allowed users** | who can DM the bot | `/invite user @them` | `/remove user @them` |
-| **Allowed chats** | which groups the bot answers in (for **everyone** in them, unless restricted — see below) | `/invite group` (current group) / `/invite all group` (every group the bot is in) | `/remove group` (current group) |
+| **Allowed chats** | which groups the bot answers in (for **everyone** in them, unless restricted — see below) | `/invite group` (current group) / `/invite all group` (every group the bot is in) | `/remove group` (current group) / `/remove group <chat id>` (any group, works in a DM — handy once the bot has left it) |
 | **Admins** | who can change settings, and use the bot in any group | `/invite admin @them` | `/remove admin @them` |
 
 > `/invite` and `/remove` can only be run by **you (the creator) and admins**. The `@` in the command points at the *target person* (not the bot) — the bot resolves the mention to their identity, so you never deal with raw IDs.

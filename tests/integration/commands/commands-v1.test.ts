@@ -479,6 +479,58 @@ describe('Bridge command contracts', () => {
     expect(root?.profiles.claude?.access.chatAllowedUsers?.['oc-group-cleanup']).toBeUndefined();
   });
 
+  it('removes an allowlisted chat by id or id suffix from p2p', async () => {
+    const h = await createHarness();
+    await saveAccess(h, {
+      allowedChats: ['oc_aaaa1111bbbb', 'oc_cccc2222dddd'],
+      chatAllowedUsers: { oc_aaaa1111bbbb: ['ou-alice'] },
+      chatRequireMention: { oc_aaaa1111bbbb: false },
+    });
+
+    await expect(h.run('/remove group')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('/remove group <群 ID>');
+
+    await expect(h.run('/remove group 11bbbb')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已把');
+    let access = (await loadRootConfig(h.controls.configPath))?.profiles.claude?.access;
+    expect(access?.allowedChats).toEqual(['oc_cccc2222dddd']);
+    expect(access?.chatAllowedUsers?.['oc_aaaa1111bbbb']).toBeUndefined();
+    expect(access?.chatRequireMention?.['oc_aaaa1111bbbb']).toBeUndefined();
+
+    await expect(h.run('/remove group oc_cccc2222dddd')).resolves.toBe(true);
+    access = (await loadRootConfig(h.controls.configPath))?.profiles.claude?.access;
+    expect(access?.allowedChats).toEqual([]);
+  });
+
+  it('refuses ambiguous, too-short, or unknown chat id suffixes', async () => {
+    const h = await createHarness();
+    await saveAccess(h, { allowedChats: ['oc_one0000beef', 'oc_two1111beef'] });
+
+    await expect(h.run('/remove group beef')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('有 2 个群');
+
+    await expect(h.run('/remove group eef')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('至少写末 4 位');
+
+    await expect(h.run('/remove group 9999')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('没有');
+
+    const access = (await loadRootConfig(h.controls.configPath))?.profiles.claude?.access;
+    expect(access?.allowedChats).toEqual(['oc_one0000beef', 'oc_two1111beef']);
+  });
+
+  it('removes another chat by id from inside a group without touching the current one', async () => {
+    const h = await createHarness();
+    await saveAccess(h, { allowedChats: ['oc_here000000', 'oc_gone123456'] });
+
+    await expect(
+      h.run('/remove group 123456', { chatId: 'oc_here000000', scope: 'oc_here000000', chatMode: 'group' }),
+    ).resolves.toBe(true);
+
+    const access = (await loadRootConfig(h.controls.configPath))?.profiles.claude?.access;
+    expect(access?.allowedChats).toEqual(['oc_here000000']);
+  });
+
   it('adds every known bot group through /invite all group', async () => {
     const h = await createHarness();
     h.controls.knownChats = [
@@ -546,6 +598,13 @@ async function createHarness(): Promise<Harness> {
   });
 
   return { tmp, channel, sessions, workspaces, activeRuns, agent, controls, run };
+}
+
+async function saveAccess(h: Harness, patch: Partial<ProfileConfig['access']>): Promise<void> {
+  const root = await loadRootConfig(h.controls.configPath);
+  const profile = root!.profiles.claude!;
+  root!.profiles.claude = { ...profile, access: { ...profile.access, ...patch } };
+  await saveRootConfig(root!, h.controls.configPath);
 }
 
 function appConfig(defaultWorkspace: string): ProfileConfig {

@@ -155,9 +155,7 @@ function groupPanel(opts: ConfigFormOpts): object {
     sections.push(
       `**名单里但 bot 已不在群**（${left.length}）\n` +
         left.map((id) => `- ${chatLabel(id, undefined)}`).join('\n') +
-        (opts.consoleUrl
-          ? '\n_bot 被拉回群后自动恢复响应；不再需要的可在 Web 控制台移除。_'
-          : '\n_bot 被拉回群后自动恢复响应；不再需要的从配置文件 `access.allowedChats` 删除。_'),
+        '\n_bot 被拉回群后自动恢复响应；不再需要的私聊发 `/remove group <ID 末 6 位>` 移除。_',
     );
   }
 
@@ -166,7 +164,7 @@ function groupPanel(opts: ConfigFormOpts): object {
     '- `/invite group`：开启该群，群内所有人可用\n' +
     '- `/invite group restricted @某人…`：开启该群，只对指定成员生效\n' +
     '- `/invite member @某人` / `/remove member @某人`：增删该群的指定成员\n' +
-    '- `/remove group`：停止响应该群\n' +
+    '- `/remove group`：停止响应该群；私聊里发 `/remove group <ID 末 6 位>` 按 ID 移除\n' +
     '_管理员在任何已开启的群里都可用。' +
     (opts.consoleUrl
       ? '单个群的「是否需要 @」在 Web 控制台里设置。_'

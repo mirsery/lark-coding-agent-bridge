@@ -299,7 +299,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/invite group restricted @某人...` | 允许当前群使用 bot，但只对 @ 到的人生效 |
 | `/invite member @某人` | 把这个人加进当前群的专属名单 |
 | `/invite all group` | 允许 bot 所在的所有群使用 |
-| `/remove user @某人`, `/remove admin @某人`, `/remove group`, `/remove member @某人` | 移除访问控制条目 |
+| `/remove user @某人`, `/remove admin @某人`, `/remove group [群 ID]`, `/remove member @某人` | 移除访问控制条目；`/remove group <群 ID>` 按 ID（或末几位）移除指定的群，私聊里也能用 |
 | `/stop` | 停止当前 run，也可点卡片停止按钮 |
 | `/timeout [N\|off\|default]` | 设置或清除当前会话的 idle watchdog |
 | `/memory [add\|forget\|clear]` | 跨会话记忆，`--global` 写到全局 |
@@ -485,7 +485,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | 名单 | 控制谁 | 加入 | 移除 |
 |------|--------|------|------|
 | **允许私聊的用户** | 谁可以私聊 bot | `/invite user @某人` | `/remove user @某人` |
-| **响应的群** | bot 在哪些群里响应（默认**群内所有人**，除非设了专属名单——见下文） | `/invite group`（当前群）/ `/invite all group`（bot 所在的全部群） | `/remove group`（当前群） |
+| **响应的群** | bot 在哪些群里响应（默认**群内所有人**，除非设了专属名单——见下文） | `/invite group`（当前群）/ `/invite all group`（bot 所在的全部群） | `/remove group`（当前群）/ `/remove group <群 ID>`（指定群，私聊可用，适合 bot 已被移出的群） |
 | **管理员** | 谁能改设置、并能在任意群用 bot | `/invite admin @某人` | `/remove admin @某人` |
 
 > `/invite`、`/remove` 这些命令只有**你（创建者）和管理员**能发。命令里 @ 的是**对方**（不是 @ bot），bot 会自动把 @ 解析成对应的人，你不用手动去找 ID。
