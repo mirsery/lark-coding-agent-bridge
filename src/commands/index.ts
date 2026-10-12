@@ -2878,6 +2878,8 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     allowedChats: access.allowedChats,
     admins: access.admins,
     knownChats: ctx.controls.knownChats ?? [],
+    chatRequireMention: access.chatRequireMention ?? {},
+    chatAllowedUsers: access.chatAllowedUsers ?? {},
     ...(consoleUrl ? { consoleUrl } : {}),
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);

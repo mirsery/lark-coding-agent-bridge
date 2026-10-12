@@ -26,7 +26,12 @@ export interface ConfigFormOpts {
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
+  /** Groups the bot is in right now; empty when the lookup failed. */
   knownChats: KnownChat[];
+  /** Per-chat @ override (`access.chatRequireMention`); absent = follows the global switch. */
+  chatRequireMention?: Record<string, boolean>;
+  /** Per-chat member allowlist (`access.chatAllowedUsers`); absent = everyone in the chat. */
+  chatAllowedUsers?: Record<string, string[]>;
   /** URL of the running local web console (supervisor `--web-ui` mode). Shown
    * at the top of the card when present; omitted when no console is running. */
   consoleUrl?: string;
@@ -81,12 +86,97 @@ function atMentionLine(openIds: string[]): string {
   return openIds.map((id) => `<at id="${id}"></at>`).join('  ');
 }
 
-function chatList(chatIds: string[], knownChats: KnownChat[]): string {
-  if (chatIds.length === 0) return '_（暂无）_';
-  const nameMap = new Map(knownChats.map((chat) => [chat.id, chat.name]));
-  return chatIds
-    .map((id) => `- **${nameMap.get(id) ?? '(未知群)'}**（...${id.slice(-6)}）`)
-    .join('\n');
+function chatLabel(id: string, name: string | undefined): string {
+  return `**${name ?? '(未知群)'}**（...${id.slice(-6)}）`;
+}
+
+function mentionRuleLabel(override: boolean | undefined, globalRequire: boolean): string {
+  if (override === undefined) return `跟随全局（${globalRequire ? '需 @' : '无需 @'}）`;
+  return override ? '需 @' : '无需 @';
+}
+
+function memberRuleLabel(members: string[] | undefined): string {
+  if (members === undefined) return '群内所有人可用';
+  if (members.length === 0) return '仅管理员可用';
+  return `仅指定成员（${members.length}）：${atMentionLine(members)}`;
+}
+
+/**
+ * Every group the bot touches, split by how it is handled: answered (on the
+ * allowlist and the bot is in it), joined but not answered, and allowlisted
+ * after the bot has left. Membership comes from `knownChats`; when that lookup
+ * came back empty we can't tell joined from left, so only the allowlist shows.
+ */
+function groupPanel(opts: ConfigFormOpts): object {
+  const membershipKnown = opts.knownChats.length > 0;
+  const names = new Map(opts.knownChats.map((chat) => [chat.id, chat.name]));
+  const allowed = new Set(opts.allowedChats);
+  const answered = opts.allowedChats.filter((id) => !membershipKnown || names.has(id));
+  const idle = opts.knownChats.filter((chat) => !allowed.has(chat.id));
+  const left = membershipKnown ? opts.allowedChats.filter((id) => !names.has(id)) : [];
+  const mentionOverrides = opts.chatRequireMention ?? {};
+  const memberLists = opts.chatAllowedUsers ?? {};
+
+  const title = membershipKnown
+    ? `👥 **群管理**（bot 在 ${opts.knownChats.length} 个群，响应 ${answered.length} 个 · 点击展开）`
+    : `👥 **群管理**（响应 ${answered.length} 个 · 点击展开）`;
+
+  const notes: string[] = [];
+  if (opts.mode === 'team') {
+    notes.push('_⚠️ 团队版已开启：任何群里 @ bot 都会响应，下面的名单和成员限制暂不生效；切回个人版后恢复。_');
+  }
+  if (!membershipKnown) {
+    notes.push('_⚠️ bot 所在的群列表为空（bot 不在任何群，或飞书接口没取到），下面只列响应名单，看不出 bot 是否还在群里。_');
+  }
+
+  const sections: string[] = [
+    `**响应中**（${answered.length}）\n` +
+      (answered.length === 0
+        ? '_（暂无）_'
+        : answered
+            .map(
+              (id) =>
+                `- ${chatLabel(id, names.get(id))}\n` +
+                `  ${mentionRuleLabel(mentionOverrides[id], opts.requireMentionInGroup)} · ${memberRuleLabel(memberLists[id])}`,
+            )
+            .join('\n')),
+  ];
+  if (idle.length > 0) {
+    sections.push(
+      `**在群里但不响应**（${idle.length}）\n` +
+        idle.map((chat) => `- ${chatLabel(chat.id, chat.name)}`).join('\n') +
+        '\n_在该群发 `/invite group` 开启；私聊发 `/invite all group` 一键全部开启。_',
+    );
+  }
+  if (left.length > 0) {
+    sections.push(
+      `**名单里但 bot 已不在群**（${left.length}）\n` +
+        left.map((id) => `- ${chatLabel(id, undefined)}`).join('\n') +
+        (opts.consoleUrl
+          ? '\n_bot 被拉回群后自动恢复响应；不再需要的可在 Web 控制台移除。_'
+          : '\n_bot 被拉回群后自动恢复响应；不再需要的从配置文件 `access.allowedChats` 删除。_'),
+    );
+  }
+
+  const howTo =
+    '**管理方式**（在目标群里发）\n' +
+    '- `/invite group`：开启该群，群内所有人可用\n' +
+    '- `/invite group restricted @某人…`：开启该群，只对指定成员生效\n' +
+    '- `/invite member @某人` / `/remove member @某人`：增删该群的指定成员\n' +
+    '- `/remove group`：停止响应该群\n' +
+    '_管理员在任何已开启的群里都可用。' +
+    (opts.consoleUrl
+      ? '单个群的「是否需要 @」在 Web 控制台里设置。_'
+      : '单个群的「是否需要 @」暂无群内命令，改配置文件里的 `access.chatRequireMention`。_');
+
+  const elements: object[] = [];
+  for (const note of notes) elements.push({ tag: 'markdown', content: note });
+  for (const section of sections) {
+    if (elements.length > 0) elements.push({ tag: 'hr' });
+    elements.push({ tag: 'markdown', content: section });
+  }
+  elements.push({ tag: 'hr' }, { tag: 'markdown', content: howTo });
+  return collapsedAccessPanel(title, elements);
 }
 
 /** Form card for `/config`. */
@@ -122,9 +212,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
       tag: 'markdown',
       content:
         `**允许响应的群**（共 ${opts.allowedChats.length} 个）\n` +
-        `${chatList(opts.allowedChats, opts.knownChats)}\n\n` +
-        '_一键加全部 bot 所在的群：_ `/invite all group`\n' +
-        '_加 / 删（在目标群里发）：_ `/invite group`  `/remove group`',
+        '_每个群的 @ 规则、成员限制和管理方式见下方「👥 群管理」。_',
     },
     { tag: 'hr' },
     {
@@ -334,6 +422,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
               },
             ]),
             collapsedAccessPanel('🔒 **访问控制**（点击展开）', accessElements),
+            groupPanel(opts),
             {
               tag: 'column_set',
               flex_mode: 'flow',

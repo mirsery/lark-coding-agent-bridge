@@ -116,3 +116,116 @@ describe('configFormCard effort picker', () => {
     expect(picker?.initial_option).toBe('');
   });
 });
+
+describe('configFormCard group panel', () => {
+  const groups: ConfigFormOpts = {
+    ...base,
+    requireMentionInGroup: true,
+    allowedChats: ['oc_open000001', 'oc_quiet00002', 'oc_strict0003', 'oc_gone000004'],
+    knownChats: [
+      { id: 'oc_open000001', name: '研发群' },
+      { id: 'oc_quiet00002', name: '值班群' },
+      { id: 'oc_strict0003', name: '客户群' },
+      { id: 'oc_idle000005', name: '闲聊群' },
+    ],
+    chatRequireMention: { oc_quiet00002: false },
+    chatAllowedUsers: { oc_strict0003: ['ou_alice', 'ou_bob'] },
+  };
+
+  it('splits groups into answered, joined-but-idle and left, with counts in the title', () => {
+    const panel = groupPanelText(configFormCard(groups));
+    expect(panel).toContain('bot 在 4 个群，响应 3 个');
+    expect(panel).toContain('**响应中**（3）');
+    expect(panel).toContain('**在群里但不响应**（1）');
+    expect(panel).toContain('闲聊群');
+    expect(panel).toContain('**名单里但 bot 已不在群**（1）');
+    expect(panel).toContain('...000004');
+  });
+
+  it('shows each answered group its @ rule and member restriction', () => {
+    const panel = groupPanelText(configFormCard(groups));
+    expect(lineAfter(panel, '研发群')).toContain('跟随全局（需 @）');
+    expect(lineAfter(panel, '研发群')).toContain('群内所有人可用');
+    expect(lineAfter(panel, '值班群')).toContain('无需 @');
+    expect(lineAfter(panel, '客户群')).toContain('仅指定成员（2）');
+    expect(lineAfter(panel, '客户群')).toContain('<at id=\\"ou_alice\\"></at>');
+  });
+
+  it('says a restricted group with no members is admin-only', () => {
+    const panel = groupPanelText(configFormCard({ ...groups, chatAllowedUsers: { oc_strict0003: [] } }));
+    expect(lineAfter(panel, '客户群')).toContain('仅管理员可用');
+  });
+
+  it('falls back to the allowlist alone when the joined-group lookup is empty', () => {
+    const panel = groupPanelText(configFormCard({ ...groups, knownChats: [] }));
+    expect(panel).toContain('**响应中**（4）');
+    expect(panel).toContain('群列表为空');
+    expect(panel).not.toContain('在群里但不响应');
+    expect(panel).not.toContain('bot 已不在群');
+  });
+
+  it('warns that the lists are not enforced in team mode', () => {
+    expect(groupPanelText(configFormCard({ ...groups, mode: 'team' }))).toContain('团队版已开启');
+    expect(groupPanelText(configFormCard(groups))).not.toContain('团队版已开启');
+  });
+
+  it('points the access panel at the group panel instead of repeating the list', () => {
+    const card = JSON.stringify(configFormCard(groups));
+    expect(card).toContain('**允许响应的群**（共 4 个）');
+    expect(card.split('研发群').length - 1).toBe(1);
+  });
+});
+
+function groupPanelText(card: object): string {
+  const panel = findPanel(card, '群管理');
+  if (!panel) throw new Error('group panel not found');
+  return JSON.stringify(panel);
+}
+
+/** The panel row for a group: its name line plus the rule line under it. */
+function lineAfter(panelJson: string, name: string): string {
+  const start = panelJson.indexOf(name);
+  if (start === -1) throw new Error(`${name} not in panel`);
+  const firstBreak = panelJson.indexOf('\\n', start);
+  const secondBreak = panelJson.indexOf('\\n', firstBreak + 2);
+  return panelJson.slice(start, secondBreak === -1 ? undefined : secondBreak);
+}
+
+function findPanel(node: unknown, keyword: string): object | undefined {
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const hit = findPanel(item, keyword);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+  if (node && typeof node === 'object') {
+    const obj = node as Record<string, unknown>;
+    if (obj.tag === 'collapsible_panel' && JSON.stringify(obj.header).includes(keyword)) return obj;
+    for (const value of Object.values(obj)) {
+      const hit = findPanel(value, keyword);
+      if (hit) return hit;
+    }
+  }
+  return undefined;
+}
+
+describe('configFormCard group panel management hints', () => {
+  const withLeft: ConfigFormOpts = {
+    ...base,
+    allowedChats: ['oc_gone000004'],
+    knownChats: [{ id: 'oc_other00009', name: '别的群' }],
+  };
+
+  it('points per-group settings at the web console when it is running', () => {
+    const panel = groupPanelText(configFormCard({ ...withLeft, consoleUrl: 'http://127.0.0.1:1/' }));
+    expect(panel).toContain('在 Web 控制台里设置');
+    expect(panel).toContain('可在 Web 控制台移除');
+  });
+
+  it('points per-group settings at the config file when no console is running', () => {
+    const panel = groupPanelText(configFormCard(withLeft));
+    expect(panel).toContain('access.chatRequireMention');
+    expect(panel).toContain('access.allowedChats');
+  });
+});
