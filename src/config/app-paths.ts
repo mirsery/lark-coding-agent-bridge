@@ -20,6 +20,8 @@ export interface AppPaths {
   pendingFile: string;
   /** Agent-requested session closes awaiting the next message (PendingRotationStore). */
   rotationsFile: string;
+  /** Per-scope cursor for the group / topic catch-up context (ChatContextCursorStore). */
+  contextCursorsFile: string;
   /** Per-person token / cost consumption (UsageLedger). */
   usageFile: string;
   /** Who had the bot run what, and approvals (AuditLog). */
@@ -74,6 +76,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     runsFile: join(profileDir, 'runs.json'),
     pendingFile: join(profileDir, 'pending.json'),
     rotationsFile: join(profileDir, 'pending-rotations.json'),
+    contextCursorsFile: join(profileDir, 'chat-context-cursors.json'),
     usageFile: join(profileDir, 'usage.json'),
     auditFile: join(profileDir, 'audit.jsonl'),
     knowledgeDir: join(profileDir, 'knowledge'),

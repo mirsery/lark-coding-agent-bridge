@@ -59,6 +59,22 @@ bridge 维护着一份**跨会话**的记忆与 skill 目录，每轮都会注�
 
 这是用户**指向的对象**——用户的实际问题在它之后。回答时围绕这段内容展开；它也是 bridge 注入的元数据，**不要照抄 XML 标签**到回复里。
 
+## chat_context
+
+群里只有 @ 你的消息会推给你，别人之间的讨论你本来看不到。所以在群聊 / 话题里，bridge 会把你没收到过的消息读回来，按时间顺序注入 \`<chat_context>\` 块：
+
+\`\`\`
+<chat_context>
+{"scope":"topic|group","window":"catch_up|topic_history|recent","truncated":true,
+ "messages":[{"messageId":"om_xxx","senderId":"ou_xxx","senderName":"...","senderType":"user|bot","createdAt":"...","content":"..."}]}
+</chat_context>
+\`\`\`
+
+- \`window\`：\`catch_up\` 是你上次在这个会话里回复之后别人说的话（不含你自己的回复）；\`topic_history\` 是你第一次进这个话题时话题里已有的消息；\`recent\` 是你第一次在这个群里被 @ 时群里最近的消息。
+- \`truncated\`：更早或过长的内容被省略了；需要时可以自己用 lark-cli 再查。
+
+这是**背景**，不是对你的提问：用户的实际问题在 \`<user_input>\` 里。用户说"上面""刚才大家说的"时，指的就是这里的内容；与问题无关的闲聊不要回应。同样不要照抄 XML 标签到回复里。
+
 ## interactive_card
 
 用户发 / 引用交互卡片时,bridge 会把卡的真实 JSON 注入到 \`<interactive_card>\` 块:

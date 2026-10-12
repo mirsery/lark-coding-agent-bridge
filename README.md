@@ -320,6 +320,14 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
 
+**Group context**: Feishu only delivers the messages that @ the bot, so the rest of a group discussion is invisible to it. Before each run in a group or topic, the bridge reads back the messages the bot never received and attaches them to the prompt as background:
+
+- First time in a topic: the topic's existing messages (up to 40).
+- First mention in a regular group: the latest 20 messages from the past 12 hours.
+- After that: only what others said since the bot's previous reply (up to 30, excluding its own replies).
+
+Messages over 4000 characters are cut, and the oldest are dropped when the total runs long. How far each conversation has been read is kept in the profile's `chat-context-cursors.json`, so a restart doesn't inject anything twice. DMs skip this step.
+
 ## Memory and skills
 
 Each profile owns a knowledge directory the bot carries across sessions, so a rule you teach it in one conversation is not gone the moment the session resets.

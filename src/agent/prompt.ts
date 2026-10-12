@@ -37,12 +37,11 @@ export interface BridgePromptInteractiveCard {
 }
 
 /**
- * A prior message in the same Feishu topic, supplied as read-only context when
- * the bot is first pulled into a topic it hasn't been part of. Distinct from
- * `quotedMessages` (an explicit reply-quote): this is the topic's upstream
- * conversation the bot would otherwise be blind to.
+ * A group / topic message the bot never received (Feishu only pushes the ones
+ * that @-mention it), supplied as read-only background. Distinct from
+ * `quotedMessages` (an explicit reply-quote the user is pointing at).
  */
-export interface BridgePromptTopicMessage {
+export interface BridgePromptContextMessage {
   messageId: string;
   senderId: string;
   senderName?: string;
@@ -50,6 +49,22 @@ export interface BridgePromptTopicMessage {
   createdAt?: string;
   rawContentType: string;
   content: string;
+}
+
+/**
+ * - `catch_up`: said since the bot's previous run in this conversation (its
+ *   own replies left out — they're in the session).
+ * - `topic_history`: the topic so far, on the bot's first run in it.
+ * - `recent`: the group's latest messages, on the bot's first run there.
+ */
+export type BridgePromptChatContextWindow = 'catch_up' | 'topic_history' | 'recent';
+
+export interface BridgePromptChatContext {
+  scope: 'topic' | 'group';
+  window: BridgePromptChatContextWindow;
+  /** Older or longer content was left out to stay within limits. */
+  truncated?: boolean;
+  messages: BridgePromptContextMessage[];
 }
 
 export interface BridgePromptComment {
@@ -89,7 +104,7 @@ export interface BuildAgentPromptInput {
   instructions?: string[];
   userInput: string;
   knowledge?: BridgePromptKnowledge;
-  topicContext?: BridgePromptTopicMessage[];
+  chatContext?: BridgePromptChatContext;
   quotedMessages?: BridgePromptQuotedMessage[];
   interactiveCards?: BridgePromptInteractiveCard[];
   comment?: BridgePromptComment;
@@ -103,8 +118,8 @@ export function buildAgentPrompt(input: BuildAgentPromptInput): string {
       ? promptSection('bridge_instructions', input.instructions)
       : undefined,
     input.knowledge ? promptSection('bridge_knowledge', input.knowledge) : undefined,
-    input.topicContext && input.topicContext.length > 0
-      ? promptSection('topic_context', input.topicContext)
+    input.chatContext && input.chatContext.messages.length > 0
+      ? promptSection('chat_context', input.chatContext)
       : undefined,
     input.quotedMessages && input.quotedMessages.length > 0
       ? promptSection('quoted_messages', input.quotedMessages)

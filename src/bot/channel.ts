@@ -20,8 +20,9 @@ import {
   type BridgePromptInteractiveCard,
   type BridgePromptKnowledge,
   type BridgePromptMention,
+  type BridgePromptChatContext,
+  type BridgePromptContextMessage,
   type BridgePromptQuotedMessage,
-  type BridgePromptTopicMessage,
 } from '../agent/prompt';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
@@ -101,7 +102,8 @@ import { ApprovalSocketServer } from '../runtime/approval-socket';
 import { AuditLog } from '../runtime/audit-log';
 import { createApprovalNotifier } from './approval-notifier';
 import { ProcessPool } from './process-pool';
-import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
+import { fetchQuotedContext, type QuotedContext } from './quote';
+import { ChatContextCursorStore, fetchChatContext, planChatContext } from './chat-context';
 import { lookupMessageThreadId } from './thread-id';
 import { addDoneReaction, addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
@@ -253,7 +255,7 @@ export interface StartChannelDeps {
     | 'auditFile'
     | 'profileDir'
   > &
-    Partial<Pick<AppPaths, 'rotationsFile'>>;
+    Partial<Pick<AppPaths, 'rotationsFile' | 'contextCursorsFile'>>;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -369,6 +371,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   const pendingRotations = new PendingRotationStore(deps.appPaths?.rotationsFile);
   await pendingRotations.load();
   controls.pendingRotations = pendingRotations;
+  // 群聊 / 话题上下文: per scope, the newest message a run was given — where
+  // the next run's catch-up of what the group said in between starts.
+  const contextCursors = new ChatContextCursorStore(deps.appPaths?.contextCursorsFile);
+  await contextCursors.load();
   // Per-scope record of the model used on the last run, so a `/config` model
   // switch can inject a one-time "model changed" note into the next (resumed)
   // prompt. In-memory only: on restart the first run re-seeds silently.
@@ -482,6 +488,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           activePolicyFingerprints,
           lastRunModelByScope,
           pendingRotations,
+          contextCursors,
           scope,
           mode,
           runs,
@@ -785,6 +792,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         jobs?.flush(),
         pendingStore?.flush(),
         pendingRotations.flush(),
+        contextCursors.flush(),
         usageLedger?.flush(),
         auditLog?.flush(),
       ]);
@@ -1059,6 +1067,7 @@ interface RunBatchDeps {
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
   pendingRotations: PendingRotationStore;
+  contextCursors: ChatContextCursorStore;
   scope: string;
   mode: ChatMode;
   runs?: RunRegistry;
@@ -1080,6 +1089,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     activePolicyFingerprints,
     lastRunModelByScope,
     pendingRotations,
+    contextCursors,
     scope,
     mode,
     runs,
@@ -1135,26 +1145,40 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
-  // Topic upstream context. When the bot is pulled into a topic for the FIRST
-  // time (no session yet for this scope), the topic's earlier messages — the
-  // root question that may never have @-mentioned the bot, plus prior replies —
-  // live nowhere the agent can see them. Fetch them so it isn't blind to what
-  // the user is pointing at. An already-engaged topic keeps that history in its
-  // resumed session, so we skip the fetch there.
-  let topicContext: QuotedContext[] = [];
-  if (mode === 'topic' && threadId && !sessions.getRaw(scope)) {
-    const exclude = new Set([...batchIds, ...quoteTargets]);
-    topicContext = await fetchTopicContext(channel, threadId, {
-      maxMessages: 40,
-      excludeIds: exclude,
+  // 群聊 / 话题上下文: Feishu only delivers the group messages that @ the bot,
+  // so read back what was said around them — see chat-context.ts for which
+  // slice each situation gets.
+  const batchNewestMs = Math.max(...batch.map((m) => m.createTime || 0));
+  const contextUntilMs = batchNewestMs > 0 ? batchNewestMs : Date.now();
+  const contextPlan = planChatContext({
+    mode,
+    chatId,
+    ...(threadId ? { threadId } : {}),
+    cursorMs: contextCursors.get(scope),
+    hasSession: Boolean(sessions.getRaw(scope)?.sessionId),
+    untilMs: contextUntilMs,
+  });
+  let chatContext: BridgePromptChatContext | undefined;
+  if (contextPlan) {
+    const fetched = await fetchChatContext(channel, contextPlan, {
+      chatId,
+      ownAppId: controls.profileConfig.accounts.app.id,
+      excludeIds: new Set([...batchIds, ...quoteTargets]),
     });
-    if (topicContext.length > 0) {
-      log.info('topic', 'context-fetched', {
-        scope,
-        threadId,
-        count: topicContext.length,
-      });
+    if (fetched.messages.length > 0) {
+      chatContext = {
+        scope: contextPlan.container === 'thread' ? 'topic' : 'group',
+        window: contextPlan.window,
+        ...(fetched.truncated ? { truncated: true } : {}),
+        messages: fetched.messages.map(toPromptContextMessage),
+      };
     }
+    log.info('chat-context', 'fetched', {
+      scope,
+      window: contextPlan.window,
+      count: fetched.messages.length,
+      truncated: fetched.truncated,
+    });
   }
 
   // Detect a model switch since this scope's last run. When resuming an
@@ -1197,7 +1221,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     batch,
     attachments,
     quotes,
-    topicContext,
+    chatContext,
     channel.botIdentity,
     extraInstructions,
     knowledgeContext,
@@ -1205,7 +1229,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   log.info('prompt', 'built', {
     promptChars: prompt.length,
     quotes: quotes.length,
-    topicContext: topicContext.length,
+    chatContext: chatContext?.messages.length ?? 0,
     ...(modelSwitched ? { modelSwitchedTo: modelSelection } : {}),
   });
 
@@ -1334,6 +1358,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     startedAt: Date.now(),
   });
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
+  // The agent now holds everything up to this batch; the next run catches up
+  // from here. p2p scopes never read it back, so they don't keep one.
+  if (mode !== 'p2p') contextCursors.advance(scope, contextUntilMs);
   const handle = execution.handle;
   const eventStream = execution.subscribe();
   if (flow.resumeFrom) {
@@ -2212,7 +2239,7 @@ function buildPrompt(
   batch: NormalizedMessage[],
   attachments: LocalAttachment[],
   quotes: QuotedContext[] = [],
-  topicContext: QuotedContext[] = [],
+  chatContext?: BridgePromptChatContext,
   botIdentity?: { openId: string; name?: string },
   extraInstructions?: string[],
   knowledge?: BridgePromptKnowledge,
@@ -2261,7 +2288,7 @@ function buildPrompt(
         : BRIDGE_AGENT_INSTRUCTIONS,
     userInput: userPart,
     ...(knowledge ? { knowledge } : {}),
-    ...(topicContext.length > 0 ? { topicContext: topicContext.map(toPromptTopicMessage) } : {}),
+    ...(chatContext ? { chatContext } : {}),
     quotedMessages: quotes.map(toPromptQuote),
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
     attachments: attachments.map(toPromptAttachment),
@@ -2349,7 +2376,7 @@ function toPromptQuote(q: QuotedContext): BridgePromptQuotedMessage {
   };
 }
 
-function toPromptTopicMessage(q: QuotedContext): BridgePromptTopicMessage {
+function toPromptContextMessage(q: QuotedContext): BridgePromptContextMessage {
   return {
     messageId: q.messageId,
     senderId: q.senderId,
