@@ -20,6 +20,11 @@ import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { RunsMonitor } from '../bot/runs-monitor';
 import {
+  DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MINUTES,
+  getKnowledgeSyncIntervalMinutes,
+  type KnowledgeAutoSync,
+} from '../knowledge/auto-sync';
+import {
   getSkillSyncIntervalMinutes,
   libraryNameFromUrl,
   maskUrlCredentials,
@@ -58,6 +63,7 @@ import {
   diffCard,
   helpCard,
   knowledgeCard,
+  type KnowledgeStatusView,
   memoryCard,
   pullRequestCard,
   resumeCard,
@@ -196,6 +202,8 @@ export interface Controls {
   knowledge?: KnowledgeStore;
   /** Shared skill libraries backing `/skills lib`. Late-bound by startChannel. */
   skillLibraries?: SkillLibraries;
+  /** Periodic sync of the knowledge repo, shown by `/knowledge`. Late-bound by startChannel. */
+  knowledgeAutoSync?: KnowledgeAutoSync;
   /** Scheduled-job engine backing `/cron`; present only while the channel is
    * connected and a profile data dir exists. Late-bound by startChannel. */
   scheduler?: Scheduler;
@@ -2385,8 +2393,10 @@ async function handleKnowledge(args: string, ctx: CommandContext): Promise<void>
           '',
           '`/knowledge` — 当前状态（记忆条数、skill 数、同步状态）',
           '`/knowledge bind <git 仓库地址>` — 绑定远端并拉取已有内容',
-          '`/knowledge sync` — 提交本地改动、拉取远端、推上去',
+          '`/knowledge sync` — 立即同步：提交本地改动、拉取远端、推上去',
           '`/knowledge unbind` — 解除绑定（本地内容保留）',
+          '',
+          knowledgeAutoSyncHelp(getKnowledgeSyncIntervalMinutes(ctx.controls.profileConfig.knowledge)),
         ].join('\n'),
       );
   }
@@ -2412,10 +2422,39 @@ async function knowledgeStatus(ctx: CommandContext, store: KnowledgeStore): Prom
         ...(repo?.branch ? { branch: repo.branch } : {}),
         ...(repo?.upstream ? { ahead: repo.upstream.ahead, behind: repo.upstream.behind } : {}),
         ...(repo ? { dirty: isDirty(repo) } : {}),
+        ...knowledgeAutoSyncView(ctx),
       }),
     },
     commandReplyOptions(ctx),
   );
+}
+
+function knowledgeAutoSyncHelp(interval: number): string {
+  const now = interval > 0 ? `绑定远端后每 ${interval} 分钟自动同步一次` : '自动同步已关闭';
+  return `${now}（profile 配置 \`knowledge.syncIntervalMinutes\`，默认 ${DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MINUTES}，\`0\` 关闭）；连续两次失败会私聊提醒 bot 主人。`;
+}
+
+/** Auto-sync part of the `/knowledge` card; the interval is shown even before the loop exists. */
+function knowledgeAutoSyncView(
+  ctx: CommandContext,
+): Pick<KnowledgeStatusView, 'autoSyncMinutes' | 'autoSyncing' | 'lastSync'> {
+  const status = ctx.controls.knowledgeAutoSync?.status();
+  const view = {
+    autoSyncMinutes: status?.intervalMinutes ?? getKnowledgeSyncIntervalMinutes(ctx.controls.profileConfig.knowledge),
+    ...(status?.syncing ? { autoSyncing: true } : {}),
+  };
+  const last = status?.last;
+  if (!status || !last) return view;
+  return {
+    ...view,
+    lastSync: {
+      ago: formatAgo(Date.now() - last.at),
+      auto: last.trigger === 'auto',
+      ok: last.ok,
+      ...(last.error ? { error: last.error } : {}),
+      ...(status.failures > 1 ? { failures: status.failures } : {}),
+    },
+  };
 }
 
 async function knowledgeBind(url: string, ctx: CommandContext, store: KnowledgeStore): Promise<void> {
@@ -2429,11 +2468,16 @@ async function knowledgeBind(url: string, ctx: CommandContext, store: KnowledgeS
     return;
   }
   log.info('knowledge', 'remote-bound', { scope: ctx.scope });
-  await reply(ctx, `🔗 已绑定远端。${result.note ?? '远端已有的记忆和 skill 都拉下来了。'}\n\n之后用 \`/knowledge sync\` 同步。`);
+  const interval = getKnowledgeSyncIntervalMinutes(ctx.controls.profileConfig.knowledge);
+  const after = interval > 0 ? `之后每 ${interval} 分钟自动同步，也可以随时 \`/knowledge sync\`。` : '之后用 `/knowledge sync` 同步。';
+  await reply(ctx, `🔗 已绑定远端。${result.note ?? '远端已有的记忆和 skill 都拉下来了。'}\n\n${after}`);
 }
 
 async function knowledgeSync(ctx: CommandContext, store: KnowledgeStore): Promise<void> {
+  // Queued behind an automatic sync that is already running, then a full
+  // round of its own (`syncKnowledge` serializes per directory).
   const result = await syncKnowledge(store);
+  ctx.controls.knowledgeAutoSync?.noteManual(result);
   if (isGitError(result)) {
     await reply(ctx, `❌ ${result.error}`);
     return;

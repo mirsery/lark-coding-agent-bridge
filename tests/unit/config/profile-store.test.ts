@@ -6,6 +6,7 @@ import {
   createDefaultProfileConfig,
   type RootConfig,
 } from '../../../src/config/profile-schema';
+import { saveAccessConfig, savePreferencesConfig, saveSkillsConfig } from '../../../src/config/config-ops';
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 
 const roots: string[] = [];
@@ -293,6 +294,33 @@ describe('profile store canonical serialization', () => {
 
     const loaded = await loadRootConfig(configPath);
     expect(loaded?.profiles.claude?.skills).toEqual(profile.skills);
+  });
+
+  it('persists the knowledge section, including interval 0, through save→load and other config writers', async () => {
+    const root = await tmpRoot();
+    const configPath = join(root, 'config.json');
+    const profile = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } });
+    expect(profile.knowledge).toBeUndefined();
+    profile.knowledge = { syncIntervalMinutes: 0 };
+
+    await saveRootConfig({
+      schemaVersion: 2,
+      activeProfile: 'claude',
+      preferences: {},
+      profiles: { claude: profile },
+    }, configPath);
+    expect((await loadRootConfig(configPath))?.profiles.claude?.knowledge).toEqual({ syncIntervalMinutes: 0 });
+
+    // Writers that edit another section spread the stored profile and must
+    // carry this one along.
+    const state = { configPath, profile: 'claude', cfg: profile, profileConfig: profile };
+    await saveSkillsConfig(state, (skills) => ({ ...skills, syncIntervalMinutes: 5 }));
+    await saveAccessConfig(state, (access) => ({ ...access, admins: ['ou_admin'] }));
+    await savePreferencesConfig(state, {}, true, 'bot-only', 'personal', { approvalsEnabled: true });
+    const loaded = await loadRootConfig(configPath);
+    expect(loaded?.profiles.claude?.knowledge).toEqual({ syncIntervalMinutes: 0 });
+    expect(loaded?.profiles.claude?.access.admins).toEqual(['ou_admin']);
+    expect(state.profileConfig.knowledge).toEqual({ syncIntervalMinutes: 0 });
   });
 
   it('marks newly created roots as already evaluated for permission default migration', () => {

@@ -64,6 +64,7 @@ type StoredProfileConfig = Pick<
   | 'larkCli'
   | 'approvals'
   | 'skills'
+  | 'knowledge'
 >;
 
 type StoredRootConfig = Omit<RootConfig, 'preferences' | 'profiles'> & {
@@ -105,6 +106,7 @@ function serializeProfileConfig(profile: ProfileConfig): StoredProfileConfig {
     larkCli: profile.larkCli,
     approvals: profile.approvals,
     ...(profile.skills ? { skills: profile.skills } : {}),
+    ...(profile.knowledge ? { knowledge: profile.knowledge } : {}),
   };
 }
 

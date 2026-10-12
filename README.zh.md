@@ -362,15 +362,25 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 全是 `0600` 的纯 Markdown，随便哪个编辑器都能改——这正是设计目的：这个目录就是一个 git 仓库。
 
 ```text
-/knowledge                       # 条数、远端、同步状态
+/knowledge                       # 条数、远端、同步状态、自动同步情况
 /knowledge bind <git 地址>       # 绑定远端并拉取已有内容
-/knowledge sync                  # 提交本地改动、拉取、推送
+/knowledge sync                  # 立即同步：提交本地改动、拉取、推送
 /knowledge unbind                # 解绑但保留本地内容
 ```
 
-绑定是合并而不是覆盖，所以绑之前写的记忆不会丢。同一个仓库可以给多个 profile、多台机器共用——靠各自的 `/knowledge sync` 搬运内容，凭据用的还是那台机器上已有的 git 配置。`/status` 里有一行展示条数与同步状态。
+绑定是合并而不是覆盖，所以绑之前写的记忆不会丢。同一个仓库可以给多个 profile、多台机器共用，凭据用的还是那台机器上已有的 git 配置。`/status` 里有一行展示条数与同步状态。
 
-Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两种 agent。定时自动同步还没接上——先手动 `/knowledge sync`，等调度层落地后可以排成定时任务。
+- **自动同步**：绑定远端后，bridge 启动后不久同步一次，之后每 30 分钟一次（提交 → `pull --rebase --autostash` → 推送），所以共用一个仓库的几个 bot 不用手动 `sync` 也能看到彼此的记忆。间隔在 profile 配置的 `knowledge` 段改，`0` 表示关闭、只在手动 `/knowledge sync` 时同步；改完 `/reconnect` 或重启生效：
+
+  ```json
+  "knowledge": { "syncIntervalMinutes": 30 }
+  ```
+
+- **不会互相打架**：自动同步和手动 `/knowledge sync`、`bind`、`unbind` 在同一个目录里排队执行，不会同时动 git。两个 bot 恰好同时推送时，后推的一方会再拉一次重推。
+- **记忆文件按行合并**：知识仓库里会自动加一个 `.gitattributes`（`MEMORY.md merge=union`、`chats/*.md merge=union`，已有内容保留、只补缺的行，单独提交），两个 bot 同时往同一个记忆文件末尾追加时两边的行都保留，不会冲突。代价是：一边删掉的记忆如果另一边同时在它附近追加了内容，可能会被合并回来。`MEMORY.md` 不带目录前缀，`notes/` 下同名的记忆索引也按这个规则合并。
+- **失败提醒**：每次失败都写日志；连续两轮自动同步失败时私聊 bot 主人一次（附 git 的第一行报错、知识目录路径，地址里的凭据会遮掉），恢复前不再提醒，恢复后补一句「已恢复」。有人手动 `/knowledge sync` 成功也算恢复。目录里留着没处理完的 merge / rebase 时不会自动同步，先处理完再说。
+
+Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两种 agent。
 
 ### 共享 skill 库
 

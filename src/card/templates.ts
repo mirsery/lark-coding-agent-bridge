@@ -297,7 +297,7 @@ export function helpCard(agentName = 'Agent'): object {
           '`/memory [add|forget|clear]` — 跨会话记忆，`--global` 写到全局',
           '`/skills [show <名字>]` — skill 索引，agent 按需读取正文',
           '`/skills lib [add|sync|rm]` — 共享 skill 库（git 仓库，管理员）',
-          '`/knowledge [bind|sync]` — 记忆与 skill 的 git 同步',
+          '`/knowledge [bind|sync]` — 记忆与 skill 的 git 同步，绑定后定时自动同步',
         ]),
         helpSection('green-50', '🧪 联调', [
           '`/joint-debug <单号>` — 把 JIRA 单合入 devops、触发 Jenkins 部署到联调环境（8.221）并走 web 冒烟，如 `/joint-debug ANTELOPE-6747`',
@@ -711,6 +711,21 @@ export interface KnowledgeStatusView {
   ahead?: number;
   behind?: number;
   dirty?: boolean;
+  /** Configured auto-sync interval; `0` = off. */
+  autoSyncMinutes?: number;
+  /** An automatic round is running right now. */
+  autoSyncing?: boolean;
+  /** Most recent sync this process ran or saw, automatic or `/knowledge sync`. */
+  lastSync?: {
+    /** e.g. "3m 前" — preformatted by the caller. */
+    ago: string;
+    auto: boolean;
+    ok: boolean;
+    /** Display-safe: credentials already masked. */
+    error?: string;
+    /** Failed automatic rounds in a row, when more than one. */
+    failures?: number;
+  };
 }
 
 export function knowledgeCard(view: KnowledgeStatusView): object {
@@ -724,6 +739,22 @@ export function knowledgeCard(view: KnowledgeStatusView): object {
       view.ahead !== undefined && view.behind !== undefined ? ` ↑${view.ahead} ↓${view.behind}` : '';
     lines.push(`🔗 **远端**：\`${escapeCode(view.remote)}\``);
     lines.push(`🌿 **分支**：\`${escapeCode(view.branch ?? '?')}\`${divergence}${view.dirty ? ' · 有未同步改动' : ''}`);
+    if (view.autoSyncMinutes !== undefined) {
+      lines.push(
+        view.autoSyncMinutes > 0
+          ? `🔄 **自动同步**：每 ${view.autoSyncMinutes} 分钟${view.autoSyncing ? ' · 正在同步' : ''}`
+          : "🔄 **自动同步**：<font color='grey'>已关闭，只在 `/knowledge sync` 时同步</font>",
+      );
+    }
+    const last = view.lastSync;
+    if (last) {
+      const how = last.auto ? '自动' : '手动';
+      lines.push(
+        last.ok
+          ? `🕒 **上次同步**：${last.ago}（${how}）✓`
+          : `<font color='red'>❌ 上次同步失败（${last.ago}，${how}${last.failures ? `，自动同步已连续失败 ${last.failures} 次` : ''}）：${escapeMd(last.error ?? '未知错误')}</font>`,
+      );
+    }
   } else {
     lines.push("🔗 **远端**：<font color='grey'>未绑定，用 `/knowledge bind <仓库地址>` 开启同步</font>");
   }

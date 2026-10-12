@@ -141,6 +141,20 @@ describe('profile schema', () => {
     expect(normalizeProfileConfig({ schemaVersion: 2, agentKind: 'claude', accounts: { app } }).skills).toBeUndefined();
   });
 
+  it('keeps a usable knowledge sync interval and drops the section otherwise', () => {
+    const knowledge = (value: unknown) =>
+      normalizeProfileConfig({ schemaVersion: 2, agentKind: 'claude', accounts: { app }, knowledge: value }).knowledge;
+    expect(knowledge({ syncIntervalMinutes: 12.7 })).toEqual({ syncIntervalMinutes: 12 });
+    // 0 is meaningful (auto-sync off) and must survive; negative means 0.
+    expect(knowledge({ syncIntervalMinutes: 0 })).toEqual({ syncIntervalMinutes: 0 });
+    expect(knowledge({ syncIntervalMinutes: -5 })).toEqual({ syncIntervalMinutes: 0 });
+    expect(knowledge({ syncIntervalMinutes: '15' })).toBeUndefined();
+    expect(knowledge({ syncIntervalMinutes: Number.NaN })).toBeUndefined();
+    expect(knowledge({})).toBeUndefined();
+    expect(knowledge([30])).toBeUndefined();
+    expect(knowledge(undefined)).toBeUndefined();
+  });
+
   it('requires codex configuration when agentKind is codex', () => {
     expect(() =>
       normalizeProfileConfig({

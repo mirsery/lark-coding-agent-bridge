@@ -362,15 +362,25 @@ Anyone allowed to use the bot in a chat can write that chat's notes; profile-wid
 It is plain Markdown at `0600`, editable in any editor — and that is the point: the directory is meant to be a git repository.
 
 ```text
-/knowledge                       # counts, remote, sync state
+/knowledge                       # counts, remote, sync state, auto-sync state
 /knowledge bind <git-url>        # bind a remote and pull what is already there
-/knowledge sync                  # commit local edits, pull, push
+/knowledge sync                  # sync now: commit local edits, pull, push
 /knowledge unbind                # keep the content, drop the remote
 ```
 
-Binding merges instead of overwriting, so notes written before you had a remote survive. The same repository can back several profiles and several machines — `/knowledge sync` on each is what moves content between them, and `gh`/`git` credentials stay the ones already on that machine. `/status` shows the counts and the sync state in one line.
+Binding merges instead of overwriting, so notes written before you had a remote survive. The same repository can back several profiles and several machines, and `gh`/`git` credentials stay the ones already on that machine. `/status` shows the counts and the sync state in one line.
 
-Skills are read by both Claude and Codex through the same index, so one file serves whichever agent a profile runs. Automatic periodic syncing is not wired yet — run `/knowledge sync`, or schedule it once the scheduler lands.
+- **Auto-sync**: once a remote is bound, the bridge syncs shortly after start-up and then every 30 minutes (commit → `pull --rebase --autostash` → push), so bots sharing one repository see each other's memories without anyone running `sync`. Set the interval in the profile's `knowledge` section; `0` turns it off (manual `/knowledge sync` only). Changes apply on `/reconnect` or restart:
+
+  ```json
+  "knowledge": { "syncIntervalMinutes": 30 }
+  ```
+
+- **No overlapping git runs**: auto-sync and the manual `/knowledge sync` / `bind` / `unbind` queue up per directory. When two bots push at the same moment, the loser pulls once more and pushes again.
+- **Line-wise merge for memory files**: the knowledge repository gets a `.gitattributes` with `MEMORY.md merge=union` and `chats/*.md merge=union` (missing lines are appended, existing content is kept, committed on its own), so two bots appending to the same memory file at once keep both lines instead of conflicting. The trade-off: a memory deleted on one side can come back if the other side appended next to it at the same time. `MEMORY.md` has no directory prefix, so memory indexes of that name under `notes/` merge the same way.
+- **Failure alerts**: every failure is logged; after two failed auto-sync rounds in a row the bot owner gets one DM (git's first error line, the knowledge directory, credentials in URLs masked), nothing more until it recovers, then a one-line "recovered" note. A successful manual `/knowledge sync` also ends the streak. A directory left mid-merge / mid-rebase is not auto-synced until someone finishes that.
+
+Skills are read by both Claude and Codex through the same index, so one file serves whichever agent a profile runs.
 
 ### Shared skill libraries
 

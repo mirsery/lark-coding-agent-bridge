@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage } from '@larksuite/channel';
@@ -7,6 +7,7 @@ import { tryHandleCommand, type CommandContext, type Controls } from '../../../s
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { loadRootConfig, saveRootConfig } from '../../../src/config/profile-store.js';
 import { git } from '../../../src/git/exec.js';
+import { KnowledgeAutoSync } from '../../../src/knowledge/auto-sync.js';
 import { SkillLibraries } from '../../../src/knowledge/libraries.js';
 import { KnowledgeStore } from '../../../src/knowledge/store.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -223,6 +224,61 @@ describe('/knowledge', () => {
 
     await expect(h.run('/knowledge')).resolves.toBe(true);
     expect(lastCardJson(h.channel)).toContain(remote);
+  });
+
+  it('shows the auto-sync interval and the last failure, and a manual sync ends the streak', { timeout: 30_000 }, async () => {
+    const h = await createHarness();
+    const remote = join(h.tmp.root, 'remote.git');
+    await mkdir(remote, { recursive: true });
+    expect((await git(remote, ['init', '--bare', '--initial-branch=main'])).ok).toBe(true);
+    await h.run(`/knowledge bind ${remote}`);
+    expect(lastMarkdown(h.channel)).toContain('30 分钟自动同步');
+
+    const dms: string[] = [];
+    const auto = new KnowledgeAutoSync({
+      store: h.store,
+      intervalMinutes: () => 30,
+      owner: () => 'ou-owner',
+      send: async (_to, text) => {
+        dms.push(text);
+      },
+    });
+    h.controls.knowledgeAutoSync = auto;
+    await rename(remote, `${remote}.gone`);
+    await auto.tick();
+    await auto.tick();
+    expect(dms).toHaveLength(1);
+
+    await h.run('/knowledge');
+    const card = lastCardJson(h.channel);
+    expect(card).toContain('每 30 分钟');
+    expect(card).toContain('上次同步失败');
+    expect(card).toContain('连续失败 2 次');
+    expect(card).toContain('fatal:');
+
+    await rename(`${remote}.gone`, remote);
+    await h.run('/knowledge sync');
+    expect(lastMarkdown(h.channel)).toContain('已推送');
+    expect(auto.status()).toMatchObject({ failures: 0, last: { trigger: 'manual', ok: true } });
+    await h.run('/knowledge');
+    expect(lastCardJson(h.channel)).toContain('手动');
+    // The manual success is not followed by a "recovered" DM.
+    expect(dms).toHaveLength(1);
+  });
+
+  it('says auto-sync is off when the interval is 0', async () => {
+    const h = await createHarness();
+    h.controls.profileConfig.knowledge = { syncIntervalMinutes: 0 };
+    const remote = join(h.tmp.root, 'remote.git');
+    await mkdir(remote, { recursive: true });
+    expect((await git(remote, ['init', '--bare', '--initial-branch=main'])).ok).toBe(true);
+    await h.run(`/knowledge bind ${remote}`);
+    expect(lastMarkdown(h.channel)).not.toContain('自动同步');
+
+    await h.run('/knowledge');
+    expect(lastCardJson(h.channel)).toContain('已关闭');
+    await h.run('/knowledge help');
+    expect(lastMarkdown(h.channel)).toContain('自动同步已关闭');
   });
 
   it('rejects a bogus remote and is admin-only', async () => {

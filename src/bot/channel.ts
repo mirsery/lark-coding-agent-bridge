@@ -89,6 +89,7 @@ import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { reportInterruptedRuns } from './interrupted-notice';
 import { RunRegistry } from '../runtime/run-registry';
 import { buildKnowledgeContext } from '../knowledge/inject';
+import { getKnowledgeSyncIntervalMinutes, KnowledgeAutoSync } from '../knowledge/auto-sync';
 import { getSkillSyncIntervalMinutes, SkillLibraries } from '../knowledge/libraries';
 import { KnowledgeStore } from '../knowledge/store';
 import { Scheduler } from '../scheduler/scheduler';
@@ -754,13 +755,31 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     },
   }) : undefined;
 
+  // Knowledge repo auto-sync (`/knowledge bind`): a no-op until the directory
+  // is bound to a remote; first round shortly after start-up, then every
+  // `knowledge.syncIntervalMinutes`. Repeated failures reach the owner's DM.
+  const knowledgeAutoSync = knowledge
+    ? new KnowledgeAutoSync({
+        store: knowledge,
+        intervalMinutes: () => getKnowledgeSyncIntervalMinutes(controls.profileConfig.knowledge),
+        owner: () => controls.botOwnerId,
+        send: (to, markdown) => channel.send(to, { markdown }),
+      })
+    : undefined;
+  if (knowledgeAutoSync) {
+    controls.knowledgeAutoSync = knowledgeAutoSync;
+    knowledgeAutoSync.start();
+  }
+
   return {
     channel,
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
       await worktreeCleanup?.stop();
-      await skillLibraries?.stop();
+      // Side by side: each gives its in-flight git a few seconds at most.
+      await Promise.all([skillLibraries?.stop(), knowledgeAutoSync?.stop()]);
       controls.skillLibraries = undefined;
+      controls.knowledgeAutoSync = undefined;
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();

@@ -191,6 +191,18 @@ export interface SkillsConfig {
   syncIntervalMinutes?: number;
 }
 
+/**
+ * The knowledge directory's own git sync (`/knowledge bind`). See
+ * `src/knowledge/auto-sync.ts`.
+ */
+export interface KnowledgeConfig {
+  /**
+   * Minutes between automatic syncs (commit, pull --rebase, push) once the
+   * directory is bound to a remote. Absent: 30. `0`: only `/knowledge sync`.
+   */
+  syncIntervalMinutes?: number;
+}
+
 export type LarkCliIdentityPreset = 'bot-only' | 'user-default';
 
 /**
@@ -251,6 +263,8 @@ export interface ProfileConfig {
   approvals: ApprovalsConfig;
   /** Shared skill libraries. Absent: none configured. See {@link SkillsConfig}. */
   skills?: SkillsConfig;
+  /** Knowledge repo auto-sync. Absent: defaults. See {@link KnowledgeConfig}. */
+  knowledge?: KnowledgeConfig;
 }
 
 /**
@@ -331,6 +345,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     larkCli?: unknown;
     approvals?: unknown;
     skills?: unknown;
+    knowledge?: unknown;
   };
 
   if (raw.schemaVersion !== 2) {
@@ -359,6 +374,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   const meeting = normalizeMeeting(raw.meeting);
   const larkCli = normalizeLarkCli(raw.larkCli);
   const skills = normalizeSkills(raw.skills);
+  const knowledge = normalizeKnowledge(raw.knowledge);
 
   return {
     schemaVersion: 2,
@@ -386,6 +402,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     larkCli,
     approvals: normalizeApprovals(raw.approvals),
     ...(skills ? { skills } : {}),
+    ...(knowledge ? { knowledge } : {}),
   };
 }
 
@@ -642,6 +659,14 @@ function normalizeSkills(input: unknown): SkillsConfig | undefined {
       : undefined;
   if (libraries.length === 0 && interval === undefined) return undefined;
   return { libraries, ...(interval !== undefined ? { syncIntervalMinutes: interval } : {}) };
+}
+
+/** Same rules as the skills interval: a negative number means `0`, anything else invalid is dropped. */
+function normalizeKnowledge(input: unknown): KnowledgeConfig | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const raw = input as { syncIntervalMinutes?: unknown };
+  if (typeof raw.syncIntervalMinutes !== 'number' || !Number.isFinite(raw.syncIntervalMinutes)) return undefined;
+  return { syncIntervalMinutes: Math.max(0, Math.floor(raw.syncIntervalMinutes)) };
 }
 
 function normalizeLarkCli(input: unknown): LarkCliConfig {
