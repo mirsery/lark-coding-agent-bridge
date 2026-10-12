@@ -19,6 +19,6 @@ web/dist/
 .idea/
 .vscode/
 
-# Local maintenance scripts are not part of the package
-scripts/
+# Local maintenance scripts are not part of the package (root only: .github/scripts/ is tracked)
+/scripts/
 tests-smoke/
