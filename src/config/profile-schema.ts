@@ -162,6 +162,35 @@ export interface ApprovalsConfig {
   allowTools: string[];
 }
 
+/**
+ * One shared skill library: a git repository the bridge keeps a read-only
+ * mirror of and adds to the agent's skill index, next to the profile's own
+ * `knowledge/skills/`. See `src/knowledge/libraries.ts`.
+ */
+export interface SkillLibraryConfig {
+  /** Directory name of the mirror and the label shown as the skill's source. */
+  name: string;
+  /** Anything `git fetch` accepts that {@link isPlausibleGitUrl} lets through. */
+  url: string;
+  /** Branch, tag or commit to follow. Absent: the remote's default branch. */
+  ref?: string;
+  /** Directory inside the repository holding `<skill>/SKILL.md`. Absent: `skills/` if present, else the root. */
+  path?: string;
+  /** Only these skills (directory or skill name). Absent: all of them. */
+  include?: string[];
+  /** Never these skills (directory or skill name). */
+  exclude?: string[];
+}
+
+export interface SkillsConfig {
+  libraries: SkillLibraryConfig[];
+  /**
+   * Minutes between automatic pulls of every library. Absent: 60. `0`: only on
+   * start-up and `/skills lib sync`.
+   */
+  syncIntervalMinutes?: number;
+}
+
 export type LarkCliIdentityPreset = 'bot-only' | 'user-default';
 
 /**
@@ -220,6 +249,8 @@ export interface ProfileConfig {
   larkCli: LarkCliConfig;
   /** Approvals for non-admins' runs. See {@link ApprovalsConfig}. */
   approvals: ApprovalsConfig;
+  /** Shared skill libraries. Absent: none configured. See {@link SkillsConfig}. */
+  skills?: SkillsConfig;
 }
 
 /**
@@ -299,6 +330,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     meeting?: unknown;
     larkCli?: unknown;
     approvals?: unknown;
+    skills?: unknown;
   };
 
   if (raw.schemaVersion !== 2) {
@@ -326,6 +358,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   const comments = normalizeComments(raw.comments);
   const meeting = normalizeMeeting(raw.meeting);
   const larkCli = normalizeLarkCli(raw.larkCli);
+  const skills = normalizeSkills(raw.skills);
 
   return {
     schemaVersion: 2,
@@ -352,6 +385,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     meeting,
     larkCli,
     approvals: normalizeApprovals(raw.approvals),
+    ...(skills ? { skills } : {}),
   };
 }
 
@@ -550,6 +584,64 @@ function normalizeApprovals(input: unknown): ApprovalsConfig {
     allowCommands: trimmed(raw.allowCommands),
     allowTools: trimmed(raw.allowTools),
   };
+}
+
+const SKILL_LIBRARY_NAME_RE = /^[A-Za-z0-9][\w.-]{0,63}$/;
+
+export function isValidSkillLibraryName(name: string): boolean {
+  return SKILL_LIBRARY_NAME_RE.test(name) && name !== '.' && name !== '..';
+}
+
+/**
+ * A library's `path` is joined onto the mirror directory, so it has to stay
+ * inside it: relative, no `..` segments, nothing that starts like an option.
+ */
+export function isSafeSkillLibraryPath(path: string): boolean {
+  if (!path || path.startsWith('/') || path.startsWith('\\') || /^[A-Za-z]:/.test(path)) return false;
+  const segments = path.split(/[\\/]+/).filter(Boolean);
+  return segments.length > 0 && segments.every((segment) => segment !== '..' && !segment.startsWith('-'));
+}
+
+/**
+ * Libraries with a broken entry (no url, unusable name, duplicate name) are
+ * dropped one by one instead of failing the whole profile: a typo in one
+ * library must not keep the bot from starting.
+ */
+function normalizeSkills(input: unknown): SkillsConfig | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const raw = input as { libraries?: unknown; syncIntervalMinutes?: unknown };
+  const trimmed = (value: unknown): string[] =>
+    stringArray(value)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  const libraries: SkillLibraryConfig[] = [];
+  const seen = new Set<string>();
+  for (const entry of Array.isArray(raw.libraries) ? raw.libraries : []) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const item = entry as Record<string, unknown>;
+    const name = typeof item.name === 'string' ? item.name.trim() : '';
+    const url = typeof item.url === 'string' ? item.url.trim() : '';
+    if (!url || !isValidSkillLibraryName(name) || seen.has(name)) continue;
+    seen.add(name);
+    const ref = typeof item.ref === 'string' ? item.ref.trim() : '';
+    const path = typeof item.path === 'string' ? item.path.trim() : '';
+    const include = trimmed(item.include);
+    const exclude = trimmed(item.exclude);
+    libraries.push({
+      name,
+      url,
+      ...(ref ? { ref } : {}),
+      ...(path && isSafeSkillLibraryPath(path) ? { path } : {}),
+      ...(include.length > 0 ? { include } : {}),
+      ...(exclude.length > 0 ? { exclude } : {}),
+    });
+  }
+  const interval =
+    typeof raw.syncIntervalMinutes === 'number' && Number.isFinite(raw.syncIntervalMinutes)
+      ? Math.max(0, Math.floor(raw.syncIntervalMinutes))
+      : undefined;
+  if (libraries.length === 0 && interval === undefined) return undefined;
+  return { libraries, ...(interval !== undefined ? { syncIntervalMinutes: interval } : {}) };
 }
 
 function normalizeLarkCli(input: unknown): LarkCliConfig {

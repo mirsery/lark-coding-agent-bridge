@@ -114,6 +114,33 @@ describe('profile schema', () => {
     ).toBe(false);
   });
 
+  it('keeps usable skill libraries and drops broken entries one by one', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      skills: {
+        libraries: [
+          { name: 'team', url: ' git@github.com:acme/team.git ', ref: 'main', include: [' a ', ''], path: 'pack' },
+          { name: 'team', url: 'git@github.com:acme/dup.git' },
+          { name: '../escape', url: 'git@github.com:acme/x.git' },
+          { name: 'no-url' },
+          { name: 'bad-path', url: '/srv/skills', path: '../../etc' },
+          'junk',
+        ],
+        syncIntervalMinutes: -5,
+      },
+    });
+    expect(cfg.skills).toEqual({
+      libraries: [
+        { name: 'team', url: 'git@github.com:acme/team.git', ref: 'main', path: 'pack', include: ['a'] },
+        { name: 'bad-path', url: '/srv/skills' },
+      ],
+      syncIntervalMinutes: 0,
+    });
+    expect(normalizeProfileConfig({ schemaVersion: 2, agentKind: 'claude', accounts: { app } }).skills).toBeUndefined();
+  });
+
   it('requires codex configuration when agentKind is codex', () => {
     expect(() =>
       normalizeProfileConfig({

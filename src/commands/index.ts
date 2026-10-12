@@ -19,9 +19,17 @@ import { DEFAULT_MODEL, normalizeModelSelection, supportedEfforts, supportedMode
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { RunsMonitor } from '../bot/runs-monitor';
-import type { KnowledgeStore, MemoryScope } from '../knowledge/store';
+import {
+  getSkillSyncIntervalMinutes,
+  libraryNameFromUrl,
+  maskUrlCredentials,
+  type LibraryStatus,
+  type SkillLibraries,
+} from '../knowledge/libraries';
+import type { KnowledgeStore, MemoryScope, SkillSummary } from '../knowledge/store';
 import {
   bindKnowledgeRemote,
+  isPlausibleGitUrl,
   knowledgeRemoteUrl,
   knowledgeRepoStatus,
   syncKnowledge,
@@ -53,6 +61,7 @@ import {
   memoryCard,
   pullRequestCard,
   resumeCard,
+  skillLibrariesCard,
   skillsCard,
   statusCard,
   type StatusInfo,
@@ -66,7 +75,7 @@ import {
   readDiffPatch,
   readDiffStat,
 } from '../git/diff';
-import { isGitError } from '../git/exec';
+import { isGitError, isSafeRef } from '../git/exec';
 import { checksLabel, parsePrArg, readPullRequest, reviewLabel } from '../git/pr';
 import { describeRepoStatus, isDirty, readRepoStatus, type GitRepoStatus } from '../git/status';
 import { addWorktree, listWorktrees, matchWorktree, removeWorktree } from '../git/worktree';
@@ -99,8 +108,13 @@ import type {
   ProfileAccess,
   ProfileConfig,
   ProfileMode,
+  SkillLibraryConfig,
 } from '../config/profile-schema';
-import { effectiveLarkCliIdentity } from '../config/profile-schema';
+import {
+  effectiveLarkCliIdentity,
+  isSafeSkillLibraryPath,
+  isValidSkillLibraryName,
+} from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import {
@@ -180,6 +194,8 @@ export interface Controls {
   /** Cross-session memory + skills for this profile, backing `/memory`,
    * `/skills` and `/knowledge`. Late-bound by startChannel. */
   knowledge?: KnowledgeStore;
+  /** Shared skill libraries backing `/skills lib`. Late-bound by startChannel. */
+  skillLibraries?: SkillLibraries;
   /** Scheduled-job engine backing `/cron`; present only while the channel is
    * connected and a profile data dir exists. Late-bound by startChannel. */
   scheduler?: Scheduler;
@@ -2067,6 +2083,10 @@ async function handleSkills(args: string, ctx: CommandContext): Promise<void> {
   const trimmed = args.trim();
   const [sub = '', ...rest] = trimmed.split(/\s+/);
 
+  if (sub === 'lib' || sub === 'libs') {
+    return handleSkillLibraries(trimmed.slice(sub.length).trim(), ctx, store);
+  }
+
   if (sub === 'show' || sub === 'cat') {
     const name = rest.join(' ').trim();
     const skill = name ? await store.readSkill(name) : undefined;
@@ -2082,9 +2102,257 @@ async function handleSkills(args: string, ctx: CommandContext): Promise<void> {
   const skills = await store.listSkills();
   await ctx.channel.send(
     ctx.msg.chatId,
-    { card: skillsCard(skills.map(({ name, description }) => ({ name, description })), store.skillsDir) },
+    {
+      card: skillsCard(
+        skills.map(({ name, description, source }) => ({ name, description, ...(source ? { source } : {}) })),
+        store.skillsDir,
+      ),
+    },
     commandReplyOptions(ctx),
   );
+}
+
+// ─── /skills lib: shared skill libraries ──────────────────────────────────
+
+const SKILL_LIB_HELP = [
+  '**Skill 库**（管理员）',
+  '',
+  '`/skills lib` — 已配置的库、同步状态、各自载入的 skill',
+  '`/skills lib add <git 地址> [名字] [--ref 分支/标签/提交] [--path 子目录] [--only a,b] [--exclude a,b]` — 加一个库并立即拉取',
+  '`/skills lib sync [名字]` — 立即同步（不写名字就是全部）',
+  '`/skills lib rm <名字>` — 移除，本地镜像一起删掉',
+  '',
+  '库是 git 仓库的只读镜像：skill 放在 `skills/<名字>/SKILL.md`（没有 `skills/` 就在仓库根目录找），同名时本 profile 自己的 skill 优先、先加的库优先。私有仓库用本机已配好的 SSH key 访问，不要把 token 写进地址。',
+].join('\n');
+
+async function handleSkillLibraries(args: string, ctx: CommandContext, store: KnowledgeStore): Promise<void> {
+  // A library feeds instructions straight into every run of this profile and
+  // makes the host fetch from an arbitrary URL — same level as /knowledge.
+  if (!canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) {
+    await reply(ctx, '❌ skill 库仅管理员可管理；`/skills` 可以查看已载入的 skill。');
+    return;
+  }
+  const libraries = ctx.controls.skillLibraries;
+  if (!libraries) {
+    await reply(ctx, '当前 bridge 没有启用 skill 库（缺少 profile 数据目录）。');
+    return;
+  }
+  const [sub = '', ...rest] = args.split(/\s+/).filter(Boolean);
+  switch (sub) {
+    case '':
+    case 'list':
+    case 'status':
+      return skillLibraryList(ctx, store, libraries);
+    case 'add':
+      return skillLibraryAdd(rest, ctx, store, libraries);
+    case 'sync':
+    case 'pull':
+      return skillLibrarySync(rest[0], ctx, libraries);
+    case 'rm':
+    case 'remove':
+      return skillLibraryRemove(rest[0] ?? '', ctx, libraries);
+    default:
+      await reply(ctx, SKILL_LIB_HELP);
+  }
+}
+
+function configuredLibraries(ctx: CommandContext): SkillLibraryConfig[] {
+  return ctx.controls.profileConfig.skills?.libraries ?? [];
+}
+
+/** Library skills that lost to an earlier skill of the same name in the merged index. */
+function shadowedSkills(status: LibraryStatus, merged: SkillSummary[]): string[] {
+  const winner = new Map(merged.map((skill) => [skill.name, skill.source]));
+  return status.skills.filter((skill) => winner.get(skill.name) !== status.config.name).map((skill) => skill.name);
+}
+
+async function skillLibraryList(
+  ctx: CommandContext,
+  store: KnowledgeStore,
+  libraries: SkillLibraries,
+): Promise<void> {
+  const [statuses, merged] = await Promise.all([libraries.status(), store.listSkills()]);
+  const now = Date.now();
+  await ctx.channel.send(
+    ctx.msg.chatId,
+    {
+      card: skillLibrariesCard(
+        statuses.map((status) => ({
+          name: status.config.name,
+          url: maskUrlCredentials(status.config.url),
+          ...(status.config.ref ? { ref: status.config.ref } : {}),
+          ...(status.config.path ? { path: status.config.path } : {}),
+          ...(status.config.include ? { include: status.config.include } : {}),
+          ...(status.config.exclude ? { exclude: status.config.exclude } : {}),
+          present: status.present,
+          ...(status.commit ? { commit: status.commit } : {}),
+          ...(status.commitAt ? { commitAgo: formatAgo(now - status.commitAt) } : {}),
+          ...(status.lastSyncAt ? { lastSyncAgo: formatAgo(now - status.lastSyncAt) } : {}),
+          ...(status.lastError ? { lastError: status.lastError } : {}),
+          skills: status.skills.map((skill) => skill.name),
+          shadowed: shadowedSkills(status, merged),
+        })),
+        getSkillSyncIntervalMinutes(ctx.controls.profileConfig.skills),
+      ),
+    },
+    commandReplyOptions(ctx),
+  );
+}
+
+interface ParsedLibraryAdd {
+  library?: SkillLibraryConfig;
+  error?: string;
+}
+
+/** `<url> [name] [--ref x] [--path x] [--only a,b] [--exclude a,b] [--name x]`. */
+function parseLibraryAdd(tokens: string[], taken: Set<string>): ParsedLibraryAdd {
+  const positional: string[] = [];
+  const flags: Record<string, string> = {};
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    const flag = /^--(ref|path|only|include|exclude|name)(?:=(.*))?$/.exec(token);
+    if (flag) {
+      const value = flag[2] ?? tokens[i + 1];
+      if (flag[2] === undefined) i += 1;
+      if (!value) return { error: `\`--${flag[1]}\` 后面缺少值。` };
+      flags[flag[1] === 'include' ? 'only' : flag[1]!] = value;
+      continue;
+    }
+    if (token.startsWith('--')) return { error: `不认识的参数 \`${token}\`。` };
+    positional.push(token);
+  }
+  const url = positional[0] ?? '';
+  if (!url) return { error: '用法：`/skills lib add <git 地址> [名字]`' };
+  if (!isPlausibleGitUrl(url)) return { error: `看起来不像 git 仓库地址：\`${maskUrlCredentials(url)}\`` };
+  const name = flags.name ?? positional[1] ?? libraryNameFromUrl(url);
+  if (!isValidSkillLibraryName(name)) {
+    return { error: `库名 \`${name || '(空)'}\` 不可用：字母或数字开头，只含字母、数字、\`.\`、\`_\`、\`-\`，最长 64。` };
+  }
+  if (taken.has(name)) return { error: `已经有叫 \`${name}\` 的库了，换个名字或先 \`/skills lib rm ${name}\`。` };
+  const ref = flags.ref;
+  if (ref !== undefined && (!isSafeRef(ref) || ref.includes('..'))) return { error: `ref \`${ref}\` 不合法。` };
+  const path = flags.path?.replace(/^\.\/+/, '').replace(/\/+$/, '');
+  if (path !== undefined && !isSafeSkillLibraryPath(path)) {
+    return { error: `目录 \`${flags.path}\` 不合法：要写仓库内的相对路径。` };
+  }
+  const list = (value: string | undefined) =>
+    value
+      ?.split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  const include = list(flags.only);
+  const exclude = list(flags.exclude);
+  return {
+    library: {
+      name,
+      url,
+      ...(ref ? { ref } : {}),
+      ...(path ? { path } : {}),
+      ...(include?.length ? { include } : {}),
+      ...(exclude?.length ? { exclude } : {}),
+    },
+  };
+}
+
+async function skillLibraryAdd(
+  tokens: string[],
+  ctx: CommandContext,
+  store: KnowledgeStore,
+  libraries: SkillLibraries,
+): Promise<void> {
+  const parsed = parseLibraryAdd(tokens, new Set(configuredLibraries(ctx).map((library) => library.name)));
+  if (!parsed.library) {
+    await reply(ctx, `❌ ${parsed.error ?? '参数不对'}\n\n${SKILL_LIB_HELP}`);
+    return;
+  }
+  const library = parsed.library;
+
+  // Fetch first and only then save: a library that cannot be pulled never
+  // lands in the configuration.
+  const result = await libraries.syncLibrary(library);
+  if (!result.ok) {
+    await reply(ctx, `❌ 拉取 \`${library.name}\` 失败：${result.error ?? '未知错误'}`);
+    return;
+  }
+  try {
+    await configOps.saveSkillsConfig(ctx.controls, (skills) => ({
+      ...skills,
+      libraries: [...skills.libraries.filter((item) => item.name !== library.name), library],
+    }));
+  } catch (err) {
+    await libraries.remove(library.name).catch(() => undefined);
+    await reply(ctx, `❌ 保存配置失败：${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  log.info('skills', 'library-added', { library: library.name, by: ctx.msg.senderId });
+
+  const [statuses, merged] = await Promise.all([libraries.status(), store.listSkills()]);
+  const status = statuses.find((item) => item.config.name === library.name);
+  const found = status?.skills.length ?? 0;
+  const shadowed = status ? shadowedSkills(status, merged) : [];
+  const interval = getSkillSyncIntervalMinutes(ctx.controls.profileConfig.skills);
+  const lines = [
+    `📚 已添加 skill 库 \`${library.name}\`（\`${result.commit ?? '?'}\`），载入 ${found - shadowed.length} 个 skill。`,
+  ];
+  if (found === 0) {
+    lines.push('⚠️ 没找到 `SKILL.md`：skill 要放在 `<目录>/<名字>/SKILL.md`，不在 `skills/` 下就用 `--path` 指定目录。');
+  }
+  if (shadowed.length > 0) {
+    lines.push(`同名已存在、未载入：${shadowed.map((name) => `\`${name}\``).join('、')}`);
+  }
+  lines.push(
+    '',
+    `下一条消息起生效。${interval > 0 ? `每 ${interval} 分钟自动同步，` : ''}\`/skills lib sync ${library.name}\` 立即同步。`,
+  );
+  await reply(ctx, lines.join('\n'));
+}
+
+async function skillLibrarySync(name: string | undefined, ctx: CommandContext, libraries: SkillLibraries): Promise<void> {
+  const configured = configuredLibraries(ctx);
+  if (configured.length === 0) {
+    await reply(ctx, '还没有配置 skill 库，用 `/skills lib add <git 地址>` 添加。');
+    return;
+  }
+  if (name && !configured.some((library) => library.name === name)) {
+    await reply(ctx, `没有叫 \`${name}\` 的库。现有：${configured.map((library) => `\`${library.name}\``).join('、')}`);
+    return;
+  }
+  const results = await libraries.sync(name);
+  const lines = results.map((result) =>
+    result.ok
+      ? `✓ \`${result.name}\`：${result.changed ? '已更新到' : '已是最新'} \`${result.commit ?? '?'}\``
+      : `❌ \`${result.name}\`：${result.error ?? '同步失败'}`,
+  );
+  await reply(ctx, `🔄 skill 库同步完成\n${lines.join('\n')}`);
+}
+
+async function skillLibraryRemove(name: string, ctx: CommandContext, libraries: SkillLibraries): Promise<void> {
+  const configured = configuredLibraries(ctx);
+  if (!name) {
+    await reply(ctx, '用法：`/skills lib rm <名字>`');
+    return;
+  }
+  if (!configured.some((library) => library.name === name)) {
+    await reply(
+      ctx,
+      configured.length === 0
+        ? '还没有配置 skill 库。'
+        : `没有叫 \`${name}\` 的库。现有：${configured.map((library) => `\`${library.name}\``).join('、')}`,
+    );
+    return;
+  }
+  try {
+    await configOps.saveSkillsConfig(ctx.controls, (skills) => ({
+      ...skills,
+      libraries: skills.libraries.filter((library) => library.name !== name),
+    }));
+  } catch (err) {
+    await reply(ctx, `❌ 保存配置失败：${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  await libraries.remove(name);
+  log.info('skills', 'library-removed', { library: name, by: ctx.msg.senderId });
+  await reply(ctx, `🗑 已移除 skill 库 \`${name}\`，本地镜像一起删掉了。`);
 }
 
 async function handleKnowledge(args: string, ctx: CommandContext): Promise<void> {

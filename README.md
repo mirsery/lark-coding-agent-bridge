@@ -372,6 +372,37 @@ Binding merges instead of overwriting, so notes written before you had a remote 
 
 Skills are read by both Claude and Codex through the same index, so one file serves whichever agent a profile runs. Automatic periodic syncing is not wired yet — run `/knowledge sync`, or schedule it once the scheduler lands.
 
+### Shared skill libraries
+
+The knowledge directory belongs to one profile. To let several bots (say CC on Claude and Poki on Codex) use the same skills, keep them in a git repository and load it as a **skill library**. The bridge keeps a read-only mirror of each library and merges its skills into the same index; entries carry a `source` naming the library they came from.
+
+```text
+/skills lib                                   # configured libraries, sync state, skills each one loaded
+/skills lib add <git-url> [name]              # add a library and pull it now (not saved if the pull fails)
+    [--ref <branch/tag/commit>] [--path <dir>]
+    [--only a,b] [--exclude a,b]
+/skills lib sync [name]                       # pull now
+/skills lib rm <name>                         # remove it, mirror included
+```
+
+- **Layout**: skills live at `skills/<name>/SKILL.md`; without a `skills/` directory the repository root is scanned, and `--path` picks another directory. A repository whose root is a single `SKILL.md` counts as one skill. Frontmatter may use quoted values and `>` / `|` multi-line descriptions.
+- **Read-only mirror**: a sync is fetch + check out the remote commit + drop local changes, never a merge. Change a skill in the library's own repository.
+- **Name clashes**: the profile's own `knowledge/skills/` win, then libraries in the order they were added; the losers are listed in `/skills lib`.
+- **Syncing**: once at start-up, then every 60 minutes (`skills.syncIntervalMinutes`; `0` pulls only at start-up and on `sync`).
+- **Permissions**: `/skills lib` is admin-only — a library's content becomes instructions the bot follows; `/skills` stays readable for everyone. Reach private repositories through the SSH key already on the host rather than a token in the URL (cards and logs mask credentials, the config file does not).
+- **Config**: stored in the profile's `skills` section:
+
+```json
+"skills": {
+  "libraries": [
+    { "name": "team-skills", "url": "git@github.com:acme/team-skills.git", "ref": "main", "exclude": ["old-skill"] }
+  ],
+  "syncIntervalMinutes": 60
+}
+```
+
+Mirrors live in `~/.lark-channel/profiles/<profile>/skill-libraries/<name>/`. Each profile configures and pulls its own; to share a library between bots, `add` it in each of them.
+
 
 ## Git awareness
 
@@ -483,6 +514,7 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/profiles/<profile>/sessions.json` | Session state |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
 | `~/.lark-channel/profiles/<profile>/knowledge/` | Memory and skills (optionally a git repo) |
+| `~/.lark-channel/profiles/<profile>/skill-libraries/` | Read-only mirrors of shared skill libraries (`/skills lib`) |
 | `~/.lark-channel/profiles/<profile>/jobs.json` | Scheduled jobs (`/cron`) |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |

@@ -296,6 +296,7 @@ export function helpCard(agentName = 'Agent'): object {
         helpSection('violet-50', '🧠 记忆与 skills', [
           '`/memory [add|forget|clear]` — 跨会话记忆，`--global` 写到全局',
           '`/skills [show <名字>]` — skill 索引，agent 按需读取正文',
+          '`/skills lib [add|sync|rm]` — 共享 skill 库（git 仓库，管理员）',
           '`/knowledge [bind|sync]` — 记忆与 skill 的 git 同步',
         ]),
         helpSection('green-50', '🧪 联调', [
@@ -588,28 +589,116 @@ export function memoryCard(view: MemoryCardView): object {
 export interface SkillView {
   name: string;
   description: string;
+  /** Shared library the skill comes from; absent for the profile's own. */
+  source?: string;
 }
+
+/** Card descriptions are a glance, not the full trigger text the agent gets. */
+const SKILL_CARD_DESCRIPTION_CHARS = 120;
 
 export function skillsCard(skills: SkillView[], dir: string): object {
   const elements: object[] = [];
   if (skills.length === 0) {
     elements.push(divMd('还没有 skill。'));
     elements.push(
-      divMd(`在 \`${escapeCode(dir)}\` 下新建 \`<名字>/SKILL.md\` 就行，或者用 \`/knowledge bind <仓库地址>\` 从现成的仓库同步一份。`),
+      divMd(
+        `在 \`${escapeCode(dir)}\` 下新建 \`<名字>/SKILL.md\` 就行，或者用 \`/knowledge bind <仓库地址>\` 从现成的仓库同步一份；` +
+          '共享的 skill 库用 `/skills lib add <git 地址>` 加载。',
+      ),
     );
     return shell('\u{1f9f0} Skills', elements);
   }
 
   elements.push(divMd(`共 **${skills.length}** 个，agent 会按需读取正文。`));
-  elements.push(HR);
+  // The profile's own skills first, then one group per library in index order.
+  const groups = new Map<string, SkillView[]>();
   for (const skill of skills) {
+    const key = skill.source ?? '';
+    groups.set(key, [...(groups.get(key) ?? []), skill]);
+  }
+  for (const [source, members] of groups) {
+    elements.push(HR);
     elements.push(
-      divMd(
-        `**${escapeMd(skill.name)}**${skill.description ? `\n<font color='grey'>${escapeMd(skill.description)}</font>` : ''}`,
-      ),
+      divMd(source ? `📚 **skill 库 \`${escapeCode(source)}\`**（${members.length}）` : `📁 **本 profile**（${members.length}）`),
     );
+    for (const skill of members) {
+      const description =
+        skill.description.length > SKILL_CARD_DESCRIPTION_CHARS
+          ? `${skill.description.slice(0, SKILL_CARD_DESCRIPTION_CHARS - 1)}…`
+          : skill.description;
+      elements.push(
+        divMd(`**${escapeMd(skill.name)}**${description ? `\n<font color='grey'>${escapeMd(description)}</font>` : ''}`),
+      );
+    }
   }
   return shell('\u{1f9f0} Skills', elements);
+}
+
+export interface SkillLibraryView {
+  name: string;
+  /** Display-safe: credentials already masked. */
+  url: string;
+  ref?: string;
+  path?: string;
+  include?: string[];
+  exclude?: string[];
+  present: boolean;
+  commit?: string;
+  /** e.g. "3h 前" — preformatted by the caller. */
+  commitAgo?: string;
+  lastSyncAgo?: string;
+  lastError?: string;
+  skills: string[];
+  /** Skills of this library hidden by an earlier one with the same name. */
+  shadowed: string[];
+}
+
+export function skillLibrariesCard(libraries: SkillLibraryView[], syncIntervalMinutes: number): object {
+  const elements: object[] = [];
+  if (libraries.length === 0) {
+    elements.push(divMd('还没有配置 skill 库。'));
+  }
+  for (const library of libraries) {
+    if (elements.length > 0) elements.push(HR);
+    const lines = [`📚 **${escapeMd(library.name)}**`, `🔗 \`${escapeCode(library.url)}\``];
+    const scope = [
+      library.ref ? `ref \`${escapeCode(library.ref)}\`` : '默认分支',
+      ...(library.path ? [`目录 \`${escapeCode(library.path)}\``] : []),
+      ...(library.include ? [`只用 ${library.include.map((n) => `\`${escapeCode(n)}\``).join('、')}`] : []),
+      ...(library.exclude ? [`排除 ${library.exclude.map((n) => `\`${escapeCode(n)}\``).join('、')}`] : []),
+    ];
+    lines.push(`🌿 ${scope.join(' · ')}`);
+    if (library.present) {
+      lines.push(
+        `📌 \`${escapeCode(library.commit ?? '?')}\`${library.commitAgo ? `（提交于 ${library.commitAgo}）` : ''}` +
+          (library.lastSyncAgo ? ` · 上次同步 ${library.lastSyncAgo}` : ''),
+      );
+    } else {
+      lines.push("📌 <font color='grey'>还没有拉取成功</font>");
+    }
+    if (library.lastError) lines.push(`<font color='red'>❌ 上次同步失败：${escapeMd(library.lastError)}</font>`);
+    const listed = library.skills.slice(0, 20).map((n) => `\`${escapeCode(n)}\``).join('、');
+    lines.push(
+      `🧰 skill ${library.skills.length} 个${library.skills.length > 0 ? `：${listed}${library.skills.length > 20 ? ' …' : ''}` : ''}`,
+    );
+    if (library.shadowed.length > 0) {
+      lines.push(
+        `<font color='grey'>同名已存在、未载入：${library.shadowed.map((n) => `\`${escapeCode(n)}\``).join('、')}</font>`,
+      );
+    }
+    elements.push(divMd(lines.join('\n')));
+  }
+  elements.push(HR);
+  elements.push(
+    divMd(
+      [
+        `<font color='grey'>${syncIntervalMinutes > 0 ? `每 ${syncIntervalMinutes} 分钟自动同步` : '已关闭定时同步'}，启动时也会同步一次。</font>`,
+        '`/skills lib add <git 地址> [名字] [--ref 分支] [--path 子目录] [--only a,b] [--exclude a,b]`',
+        '`/skills lib sync [名字]` · `/skills lib rm <名字>`',
+      ].join('\n'),
+    ),
+  );
+  return shell('\u{1f4da} Skill 库', elements);
 }
 
 export interface KnowledgeStatusView {

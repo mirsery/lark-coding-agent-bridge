@@ -372,6 +372,37 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 
 Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两种 agent。定时自动同步还没接上——先手动 `/knowledge sync`，等调度层落地后可以排成定时任务。
 
+### 共享 skill 库
+
+知识目录是一个 profile 自己的；想让几个 bot（比如 Claude 的 CC 和 Codex 的 Poki）共用同一批 skill，就把它们放进一个 git 仓库，作为 **skill 库** 加载。bridge 为每个库维护一份只读镜像，把里面的 skill 并进同一份索引，索引里的条目带 `source` 标明出自哪个库。
+
+```text
+/skills lib                                   # 已配置的库、同步状态、各自载入的 skill
+/skills lib add <git 地址> [名字]              # 加一个库并立即拉取（拉不下来就不保存）
+    [--ref <分支/标签/提交>] [--path <子目录>]
+    [--only a,b] [--exclude a,b]
+/skills lib sync [名字]                        # 立即同步
+/skills lib rm <名字>                          # 移除，本地镜像一起删掉
+```
+
+- **布局**：skill 放在 `skills/<名字>/SKILL.md`；仓库里没有 `skills/` 就在根目录找，`--path` 可以指定别的目录；根目录直接就是一个 `SKILL.md` 的仓库算作一个 skill。frontmatter 支持带引号的值和 `>` / `|` 多行描述。
+- **只读镜像**：同步是 fetch + 切到远端提交 + 清掉本地改动，从不合并。要改 skill 就去改库的仓库本身。
+- **同名优先级**：本 profile 自己 `knowledge/skills/` 里的 skill 优先，其次是先加的库；被挡住的会在 `/skills lib` 里列出来。
+- **同步**：启动时同步一次，之后每 60 分钟一次（`skills.syncIntervalMinutes` 可改，`0` 表示只在启动和手动 `sync` 时拉）。
+- **权限**：`/skills lib` 只有管理员能用——库里的内容会直接成为 bot 的操作指令；`/skills` 查看对所有人开放。私有仓库用本机已配好的 SSH key 访问，不要把 token 写进地址（卡片和日志里的地址会遮掉凭据，但配置文件里是原样）。
+- **配置**：存在 profile 配置的 `skills` 段：
+
+```json
+"skills": {
+  "libraries": [
+    { "name": "team-skills", "url": "git@github.com:acme/team-skills.git", "ref": "main", "exclude": ["old-skill"] }
+  ],
+  "syncIntervalMinutes": 60
+}
+```
+
+镜像在 `~/.lark-channel/profiles/<profile>/skill-libraries/<名字>/`。每个 profile 各自配置、各自拉取，同一个库给几个 bot 用就在每个 bot 里各 `add` 一次。
+
 
 ## Git 能力
 
@@ -483,6 +514,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/profiles/<profile>/sessions.json` | 会话状态 |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | agent-aware 会话索引 |
 | `~/.lark-channel/profiles/<profile>/knowledge/` | 记忆与 skills（可作为 git 仓库同步） |
+| `~/.lark-channel/profiles/<profile>/skill-libraries/` | 共享 skill 库的只读镜像（`/skills lib`） |
 | `~/.lark-channel/profiles/<profile>/jobs.json` | 定时任务（`/cron`） |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |

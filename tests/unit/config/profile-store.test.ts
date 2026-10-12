@@ -272,6 +272,29 @@ describe('profile store canonical serialization', () => {
     expect(loaded?.profiles.claude?.approvals).toEqual(profile.approvals);
   });
 
+  it('persists shared skill libraries across save→load round-trip', async () => {
+    const root = await tmpRoot();
+    const configPath = join(root, 'config.json');
+    const profile = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } });
+    expect(profile.skills).toBeUndefined();
+    profile.skills = {
+      libraries: [
+        { name: 'team', url: 'git@github.com:acme/team-skills.git', ref: 'main', path: 'pack', exclude: ['old'] },
+      ],
+      syncIntervalMinutes: 30,
+    };
+
+    await saveRootConfig({
+      schemaVersion: 2,
+      activeProfile: 'claude',
+      preferences: {},
+      profiles: { claude: profile },
+    }, configPath);
+
+    const loaded = await loadRootConfig(configPath);
+    expect(loaded?.profiles.claude?.skills).toEqual(profile.skills);
+  });
+
   it('marks newly created roots as already evaluated for permission default migration', () => {
     const profile = createDefaultProfileConfig({
       agentKind: 'claude',

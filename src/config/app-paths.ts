@@ -28,6 +28,8 @@ export interface AppPaths {
   auditFile: string;
   /** Bridge-managed memory + skills for this profile (optionally a git repo). */
   knowledgeDir: string;
+  /** Read-only mirrors of the profile's shared skill libraries, one per directory. */
+  skillLibrariesDir: string;
   /** Scheduled jobs (`/cron`), one file per profile. */
   jobsFile: string;
   secretsFile: string;
@@ -80,6 +82,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     usageFile: join(profileDir, 'usage.json'),
     auditFile: join(profileDir, 'audit.jsonl'),
     knowledgeDir: join(profileDir, 'knowledge'),
+    skillLibrariesDir: join(profileDir, 'skill-libraries'),
     jobsFile: join(profileDir, 'jobs.json'),
     secretsFile: join(profileDir, 'secrets.enc'),
     keystoreSaltFile: join(profileDir, '.keystore.salt'),

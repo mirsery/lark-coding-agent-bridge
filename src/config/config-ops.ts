@@ -9,7 +9,7 @@ import {
 } from './profile-store';
 import { saveConfig } from './store';
 import { secretKeyForApp, type AppConfig, type AppPreferences } from './schema';
-import type { ProfileAccess, ProfileConfig, ProfileMode } from './profile-schema';
+import type { ProfileAccess, ProfileConfig, ProfileMode, SkillsConfig } from './profile-schema';
 import { applyLarkCliIdentityPolicy } from '../lark-cli/identity-policy';
 import { log, reportMetric } from '../core/logger';
 
@@ -118,6 +118,30 @@ export async function saveAccessConfig(
     reportMetric('command_fail', 1, { step: 'access.save' });
     throw err;
   }
+}
+
+/**
+ * Mutate the profile's shared skill libraries under the config file lock,
+ * persist, and refresh the in-memory state. Only profile (v2) configs carry
+ * this section; a legacy single-profile file has nowhere to put it.
+ */
+export async function saveSkillsConfig(
+  state: MutableProfileState,
+  mutate: (skills: SkillsConfig) => SkillsConfig,
+): Promise<SkillsConfig> {
+  return withConfigFileLock(state.configPath, async () => {
+    const root = await loadRootConfig(state.configPath);
+    if (!root) throw new Error('当前配置文件是旧版单 profile 结构，先运行 `lark-channel-bridge migrate` 再配置 skill 库。');
+    const profile = root.profiles[state.profile];
+    if (!profile) throw new Error(`profile not found: ${state.profile}`);
+    const skills = mutate(profile.skills ?? { libraries: [] });
+    root.profiles[state.profile] = { ...profile, skills };
+    await saveRootConfig(root, state.configPath);
+    state.profileConfig = root.profiles[state.profile]!;
+    state.cfg = runtimeProfileConfig(root, state.profile);
+    log.info('config-ops', 'skills-mutated', { libraries: skills.libraries.length });
+    return skills;
+  });
 }
 
 /**

@@ -5,7 +5,9 @@ import type { NormalizedMessage } from '@larksuite/channel';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
+import { loadRootConfig, saveRootConfig } from '../../../src/config/profile-store.js';
 import { git } from '../../../src/git/exec.js';
+import { SkillLibraries } from '../../../src/knowledge/libraries.js';
 import { KnowledgeStore } from '../../../src/knowledge/store.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
@@ -15,7 +17,7 @@ import { createTmpProfile } from '../../helpers/tmp-profile.js';
 
 const cleanups: Array<() => Promise<void>> = [];
 
-async function createHarness(opts: { withKnowledge?: boolean } = {}) {
+async function createHarness(opts: { withKnowledge?: boolean; withLibraries?: boolean } = {}) {
   const tmp = await createTmpProfile('knowledge-command-');
   const channel = createFakeChannel();
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
@@ -46,6 +48,21 @@ async function createHarness(opts: { withKnowledge?: boolean } = {}) {
     ...(opts.withKnowledge === false ? {} : { knowledge: store }),
   } as unknown as Controls;
 
+  let libraries: SkillLibraries | undefined;
+  if (opts.withLibraries) {
+    // `/skills lib add|rm` persist through the profile (v2) config file.
+    await saveRootConfig(
+      { schemaVersion: 2, activeProfile: 'claude', preferences: {}, profiles: { claude: profileConfig } },
+      controls.configPath,
+    );
+    libraries = new SkillLibraries({
+      dir: join(tmp.profile, 'skill-libraries'),
+      libraries: () => controls.profileConfig.skills?.libraries ?? [],
+    });
+    store.addSkillSource(libraries);
+    controls.skillLibraries = libraries;
+  }
+
   const run = (content: string, senderId = 'ou-admin'): Promise<boolean> =>
     tryHandleCommand({
       channel: channel as unknown as CommandContext['channel'],
@@ -74,7 +91,7 @@ async function createHarness(opts: { withKnowledge?: boolean } = {}) {
     await tmp.cleanup();
   });
 
-  return { tmp, channel, store, run };
+  return { tmp, channel, store, run, controls, libraries };
 }
 
 function lastMarkdown(channel: FakeChannel): string {
@@ -216,5 +233,88 @@ describe('/knowledge', () => {
 
     await expect(h.run('/knowledge sync', 'ou-member')).resolves.toBe(true);
     expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
+  });
+});
+
+describe('/skills lib', () => {
+  afterEach(async () => {
+    await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  });
+
+  async function libraryRepo(root: string, skills: Record<string, string>): Promise<string> {
+    const repo = join(root, 'team-skills');
+    await mkdir(repo, { recursive: true });
+    await git(repo, ['init', '-q', '--initial-branch=main']);
+    for (const [name, description] of Object.entries(skills)) {
+      await mkdir(join(repo, 'skills', name), { recursive: true });
+      await writeFile(join(repo, 'skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\n`);
+    }
+    await git(repo, ['add', '-A']);
+    const commit = await git(repo, ['-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'init']);
+    if (!commit.ok) throw new Error(commit.stderr);
+    return repo;
+  }
+
+  it('adds a library, lists it, syncs and removes it', async () => {
+    const h = await createHarness({ withLibraries: true });
+    await mkdir(join(h.store.skillsDir, 'deploy'), { recursive: true });
+    await writeFile(join(h.store.skillsDir, 'deploy', 'SKILL.md'), '---\nname: deploy\ndescription: 自己的\n---\n');
+    const repo = await libraryRepo(h.tmp.root, { deploy: '库里的', triage: '排查流程' });
+
+    await expect(h.run(`/skills lib add ${repo}`)).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已添加 skill 库 `team-skills`');
+    expect(lastMarkdown(h.channel)).toContain('载入 1 个 skill');
+    expect(lastMarkdown(h.channel)).toContain('同名已存在');
+    // Saved to the config file, not only in memory.
+    const saved = await loadRootConfig(h.controls.configPath);
+    expect(saved?.profiles.claude?.skills?.libraries).toEqual([{ name: 'team-skills', url: repo }]);
+
+    await expect(h.run('/skills')).resolves.toBe(true);
+    expect(lastCardJson(h.channel)).toContain('排查流程');
+    expect(lastCardJson(h.channel)).toContain('team-skills');
+
+    await expect(h.run('/skills show triage')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('排查流程');
+
+    await expect(h.run('/skills lib')).resolves.toBe(true);
+    expect(lastCardJson(h.channel)).toContain('triage');
+
+    await expect(h.run(`/skills lib add ${repo}`)).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已经有叫');
+
+    await expect(h.run('/skills lib sync')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已是最新');
+
+    await expect(h.run('/skills lib rm team-skills')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已移除');
+    expect((await loadRootConfig(h.controls.configPath))?.profiles.claude?.skills?.libraries ?? []).toEqual([]);
+    expect((await h.store.listSkills()).map((skill) => skill.name)).toEqual(['deploy']);
+  });
+
+  it('does not save a library that cannot be fetched', async () => {
+    const h = await createHarness({ withLibraries: true });
+
+    await expect(h.run(`/skills lib add ${join(h.tmp.root, 'missing-repo')} broken`)).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('拉取 `broken` 失败');
+    expect((await loadRootConfig(h.controls.configPath))?.profiles.claude?.skills).toBeUndefined();
+
+    await expect(h.run('/skills lib add not-a-url')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('不像 git 仓库地址');
+
+    await expect(h.run('/skills lib add /srv/x --path ../../etc')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('不合法');
+  });
+
+  it('is admin-only', async () => {
+    const h = await createHarness({ withLibraries: true });
+    const repo = await libraryRepo(h.tmp.root, { triage: '排查流程' });
+
+    await expect(h.run(`/skills lib add ${repo}`, 'ou-member')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('仅管理员');
+    expect(h.controls.profileConfig.skills).toBeUndefined();
+
+    // Listing what got loaded stays open to everyone.
+    await expect(h.run('/skills', 'ou-member')).resolves.toBe(true);
+    expect(lastCardJson(h.channel)).toContain('Skills');
   });
 });

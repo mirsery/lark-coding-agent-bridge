@@ -89,6 +89,7 @@ import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { reportInterruptedRuns } from './interrupted-notice';
 import { RunRegistry } from '../runtime/run-registry';
 import { buildKnowledgeContext } from '../knowledge/inject';
+import { getSkillSyncIntervalMinutes, SkillLibraries } from '../knowledge/libraries';
 import { KnowledgeStore } from '../knowledge/store';
 import { Scheduler } from '../scheduler/scheduler';
 import { JobStore } from '../scheduler/store';
@@ -257,7 +258,7 @@ export interface StartChannelDeps {
     | 'auditFile'
     | 'profileDir'
   > &
-    Partial<Pick<AppPaths, 'rotationsFile' | 'contextCursorsFile'>>;
+    Partial<Pick<AppPaths, 'rotationsFile' | 'contextCursorsFile' | 'skillLibrariesDir'>>;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -289,6 +290,20 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     await knowledge.ensure().catch((err: unknown) =>
       log.warn('knowledge', 'ensure-failed', { err: String(err) }),
     );
+  }
+  // Shared skill libraries (`/skills lib`): read-only git mirrors merged into
+  // the skill index behind the profile's own skills, pulled on start-up and
+  // then periodically.
+  const skillLibraries = deps.appPaths?.skillLibrariesDir
+    ? new SkillLibraries({
+        dir: deps.appPaths.skillLibrariesDir,
+        libraries: () => controls.profileConfig.skills?.libraries ?? [],
+      })
+    : undefined;
+  if (skillLibraries) {
+    controls.skillLibraries = skillLibraries;
+    knowledge?.addSkillSource(skillLibraries);
+    skillLibraries.startAutoSync(() => getSkillSyncIntervalMinutes(controls.profileConfig.skills));
   }
   // Scheduled jobs (`/cron`). Absent only in tests that omit appPaths — the
   // bridge then simply has no scheduler, and `/cron` says so.
@@ -744,6 +759,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
       await worktreeCleanup?.stop();
+      await skillLibraries?.stop();
+      controls.skillLibraries = undefined;
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();
