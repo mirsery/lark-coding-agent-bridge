@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -84,5 +84,13 @@ describe('release notes script', () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('missing tag');
+  });
+
+  it('has release notes for the version in package.json', () => {
+    const { version } = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string };
+    const result = run(process.cwd(), `v${version}`);
+
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
   });
 });
