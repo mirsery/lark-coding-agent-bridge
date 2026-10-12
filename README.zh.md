@@ -568,6 +568,23 @@ bridge 默认一直续用同一个会话。会话越聊越长，每一轮（以�
 }
 ```
 
+### Worktree 自动清理（默认关闭）
+
+在 `/config` 的「运行与权限」或 Web 控制台「配置 → 回复与运行」打开「Worktree 自动清理」，保存后生效。bridge 每小时检查一次，通过 `/worktree add` 创建并登记的 worktree 默认闲置 7 天后才参与清理；已有的、或 agent 在终端自行创建的 worktree 不会自动纳入。
+
+只清理已合入仓库默认分支的 worktree（优先使用 `origin/HEAD` 指向的本地分支，否则使用 `main` / `master`）。主工作区、锁定或分离 HEAD 的 worktree、切换过分支的目录，以及有改动、未跟踪或忽略文件的目录都会保留。其他 profile 的当前/命名工作区、默认目录和定时任务目录也受保护；有任务或保留进程时延后检查。不会强制删除。
+
+清理 worktree 后，只删除 bridge 新建的分支；借用的已有分支保留。删除分支时校验提交号，期间有新提交则保留分支。清理记录写入 bridge 日志，不删除远端分支。可在 profile 的 `preferences` 设置闲置天数（1–365，默认 7）：
+
+```json
+{
+  "autoWorktreeCleanup": true,
+  "worktreeCleanupIdleDays": 7
+}
+```
+
+依赖目录、构建产物等即使被 `.gitignore` 忽略，也会阻止自动清理；需要先自行移除。关闭开关会停止后续清理，已删除的 worktree 不会自动恢复。
+
 ### 高级：直接改配置文件
 
 不想在飞书里点的话，`/invite`、`/config` 背后写的是 `~/.lark-channel/config.json` 中对应 profile 的 `access` 字段。空白名单表示这个名单没人，不表示所有人都能用。下面只是 profile 里的字段片段，不要整段覆盖 `config.json`：

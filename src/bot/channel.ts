@@ -1,3 +1,4 @@
+import { protectedWorkspacePaths, startWorktreeCleanup } from '../git/worktree-cleanup';
 import type {
   LarkChannel,
   LarkChannelOptions,
@@ -47,6 +48,7 @@ import {
   getRunIdleTimeoutMs,
   getShowToolCalls,
   getSmartSession,
+  getWorktreeCleanupIdleDays,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
@@ -714,10 +716,22 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     forceReconnect: () => controls.restart(),
   });
 
+  const worktreeCleanup = deps.appPaths?.profileDir ? startWorktreeCleanup({
+    store: workspaces,
+    idleDays: () => getWorktreeCleanupIdleDays(controls.cfg),
+    protectedPaths: async () => {
+      if (activeRuns.snapshot().length > 0 || activeRuns.hasAnyKeptProcess()) {
+        throw new Error('profile has active or kept processes');
+      }
+      return [...await protectedWorkspacePaths(dirname(dirname(deps.appPaths!.profileDir))), ...(controls.profileConfig.workspaces.default ? [controls.profileConfig.workspaces.default] : [])];
+    },
+  }) : undefined;
+
   return {
     channel,
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
+      await worktreeCleanup?.stop();
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();

@@ -33,6 +33,7 @@ import {
   getRunIdleTimeoutMs,
   getShowToolCalls,
   getSmartSession,
+  getWorktreeCleanupIdleDays,
   type AppPreferences,
   type CotMessagesMode,
   type EffortLevel,
@@ -70,6 +71,7 @@ export interface ConfigView {
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   smartSession: boolean;
+  autoWorktreeCleanup: boolean;
   cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
   runIdleTimeoutMinutes: number;
@@ -106,6 +108,7 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
     messageReply: getMessageReplyMode(state.cfg),
     showToolCalls: getShowToolCalls(state.cfg),
     smartSession: Boolean(getSmartSession(state.cfg)),
+    autoWorktreeCleanup: getWorktreeCleanupIdleDays(state.cfg) !== undefined,
     cotMessages: getCotMessages(state.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(state.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
@@ -260,6 +263,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
     typeof fv.showToolCalls === 'boolean' ? fv.showToolCalls : getShowToolCalls(state.cfg);
   const smartSession =
     typeof fv.smartSession === 'boolean' ? fv.smartSession : Boolean(getSmartSession(state.cfg));
+  const autoWorktreeCleanup = typeof fv.autoWorktreeCleanup === 'boolean' ? fv.autoWorktreeCleanup : getWorktreeCleanupIdleDays(state.cfg) !== undefined;
   const cotMessages: CotMessagesMode =
     fv.cotMessages === 'brief' || fv.cotMessages === 'detailed' || fv.cotMessages === 'off'
       ? fv.cotMessages
@@ -306,6 +310,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       messageReplyMigrated: true,
       showToolCalls,
       smartSession,
+      autoWorktreeCleanup,
       cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,

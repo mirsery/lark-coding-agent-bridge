@@ -240,3 +240,11 @@ describe('configFormCard 会话智能压缩 switch', () => {
     expect(JSON.stringify(configSavedCard({ ...base, smartSession: true }))).toContain('会话智能压缩');
   });
 });
+
+describe('config Worktree 自动清理 switch', () => {
+  it('shows the current state in the form and saved card', () => {
+    expect(findNamedSelect(configFormCard(base), 'auto_worktree_cleanup')?.initial_option).toBe('off');
+    expect(findNamedSelect(configFormCard({ ...base, autoWorktreeCleanup: true }), 'auto_worktree_cleanup')?.initial_option).toBe('on');
+    expect(JSON.stringify(configSavedCard({ ...base, autoWorktreeCleanup: true }))).toContain('Worktree 自动清理');
+  });
+});

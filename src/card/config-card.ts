@@ -25,6 +25,7 @@ export interface ConfigFormOpts {
   approvalsEnabled: boolean;
   /** 会话智能压缩 on/off. Optional so callers predating the switch render it as off. */
   smartSession?: boolean;
+  autoWorktreeCleanup?: boolean;
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
@@ -423,6 +424,19 @@ export function configFormCard(opts: ConfigFormOpts): object {
               },
               {
                 tag: 'markdown',
+                content: '**Worktree 自动清理**\n<font color="grey">每小时检查 bridge 创建的 worktree；默认闲置 7 天、分支已合入主工作区且无会话引用才清理。改动、未跟踪/忽略文件、锁定目录会保留。只删除 bridge 新建的分支；天数可在配置文件调整</font>',
+              },
+              {
+                tag: 'select_static',
+                name: 'auto_worktree_cleanup',
+                initial_option: opts.autoWorktreeCleanup ? 'on' : 'off',
+                options: [
+                  { text: { tag: 'plain_text', content: '开' }, value: 'on' },
+                  { text: { tag: 'plain_text', content: '关(默认)' }, value: 'off' },
+                ],
+              },
+              {
+                tag: 'markdown',
                 content:
                   '**lark-cli 身份策略**\n<font color="grey">只允许应用身份=不碰个人资源；允许用户身份=可用已授权的个人日历/邮箱/云盘</font>' +
                   (teamMode ? teamOverrideNote : ''),
@@ -543,6 +557,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
           ['群里需要 @ bot', opts.requireMentionInGroup ? '是' : '否'],
           ['非管理员审批', opts.approvalsEnabled ? '开' : '关'],
           ['会话智能压缩', opts.smartSession ? '开' : '关'],
+          ['Worktree 自动清理', opts.autoWorktreeCleanup ? '开' : '关'],
           [
             'lark-cli 身份策略',
             opts.mode === 'team'

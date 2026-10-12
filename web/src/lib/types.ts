@@ -54,6 +54,7 @@ export interface ConfigView {
   messageReply: MessageReply;
   showToolCalls: boolean;
   smartSession: boolean;
+  autoWorktreeCleanup: boolean;
   cotMessages: CotMessages;
   maxConcurrentRuns: number;
   runIdleTimeoutMinutes: number;

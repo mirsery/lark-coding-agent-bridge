@@ -90,6 +90,7 @@ import {
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getSmartSession,
+  getWorktreeCleanupIdleDays,
   getShowToolCalls,
 } from '../config/schema';
 import type {
@@ -1758,6 +1759,13 @@ async function worktreeAdd(branch: string, base: string | undefined, ctx: Comman
     return;
   }
 
+  ctx.workspaces.trackWorktree({
+    repoRoot: repo.status.root,
+    path: created.path,
+    branch: created.branch,
+    ownedBranch: !created.existingBranch,
+  });
+
   // Creating a worktree for a task and then working in the old directory is
   // never what anyone means, so the session moves with it — same as `/cd`.
   const resolved = await resolveWorkingDirectory(created.path);
@@ -1841,6 +1849,7 @@ async function worktreeRemove(needle: string, force: boolean, ctx: CommandContex
     await reply(ctx, `❌ 删除失败：${removed.error}${force ? '' : '\n有未提交改动时可以加 `--force`。'}`);
     return;
   }
+  ctx.workspaces.forgetWorktree(match.path);
   log.info('git', 'worktree-removed', { scope: ctx.scope, path: match.path });
   await reply(ctx, `🗑 已删除 worktree \`${match.path}\`。`);
 }
@@ -2876,6 +2885,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
     approvalsEnabled: ctx.controls.profileConfig.approvals.enabled,
     smartSession: getSmartSession(ctx.controls.cfg) !== undefined,
+    autoWorktreeCleanup: getWorktreeCleanupIdleDays(ctx.controls.cfg) !== undefined,
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
     admins: access.admins,
@@ -3002,6 +3012,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   const rawSmartSession = String(fv.smart_session ?? '').trim();
   const smartSession =
     rawSmartSession === 'on' ? true : rawSmartSession === 'off' ? false : getSmartSession(ctx.controls.cfg) !== undefined;
+  const rawCleanup = String(fv.auto_worktree_cleanup ?? '').trim();
+  const autoWorktreeCleanup = rawCleanup === 'on' ? true : rawCleanup === 'off' ? false : getWorktreeCleanupIdleDays(ctx.controls.cfg) !== undefined;
   const rawLarkCliIdentity = String(fv.lark_cli_identity ?? '').trim();
   const larkCliIdentity =
     rawLarkCliIdentity === 'user-default' || rawLarkCliIdentity === 'bot-only'
@@ -3048,6 +3060,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       runIdleTimeoutMinutes,
       requireMentionInGroup,
       smartSession,
+      autoWorktreeCleanup,
     };
 
     let failureStep = 'config.save';
@@ -3098,6 +3111,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       larkCliIdentity,
       approvalsEnabled,
       smartSession,
+      autoWorktreeCleanup,
       allowedUsersCount: access.allowedUsers.length,
       allowedChatsCount: access.allowedChats.length,
       adminsCount: access.admins.length,
@@ -3120,6 +3134,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         larkCliIdentity,
         approvalsEnabled,
         smartSession,
+        autoWorktreeCleanup,
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,
         admins: access.admins,

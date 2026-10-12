@@ -117,6 +117,11 @@ describe('ui server (supervisor-backed)', () => {
     }
     const url = `/api/config?profile=${profile}`;
     expect((await json(await get(url, handle.token))).smartSession).toBe(false);
+    expect((await json(await get(url, handle.token))).autoWorktreeCleanup).toBe(false);
+    expect((await json(await post(url, handle.token, { autoWorktreeCleanup: true }))).autoWorktreeCleanup).toBe(true);
+    await post(url, handle.token, { autoWorktreeCleanup: 'false' });
+    expect((await loadRootConfig(configPath))!.profiles[profile]!.preferences?.autoWorktreeCleanup).toBe(true);
+    expect((await json(await post(url, handle.token, { autoWorktreeCleanup: false }))).autoWorktreeCleanup).toBe(false);
     expect((await json(await post(url, handle.token, { smartSession: true }))).smartSession).toBe(true);
     if (online.has(profile)) expect(online.get(profile).cfg.preferences.smartSession).toBe(true);
     expect((await loadRootConfig(configPath))!.profiles[profile]!.preferences?.smartSession).toBe(true);

@@ -568,6 +568,23 @@ Thresholds are tunable in the config file (the profile's `preferences`; restart 
 }
 ```
 
+### Automatic worktree cleanup (off by default)
+
+Enable 「Worktree 自动清理」 under `/config` → 运行与权限 or Web console → Configuration → Replies & runs, then save. Once an hour, the bridge checks worktrees registered by `/worktree add` that have been idle for at least 7 days. Existing worktrees and those created directly by an agent in a terminal are not enrolled automatically.
+
+A tree must be merged into the repository's default local branch (`origin/HEAD`, falling back to `main` / `master`). Main checkouts, locked/detached trees, changed branches, dirty trees and trees containing untracked **or ignored** files are preserved. Current/named/default workspaces and scheduled job directories across profiles are protected. Active runs or kept processes defer cleanup. Removal never uses force.
+
+Only branches newly created by the bridge are deleted after their tree is removed; pre-existing branches remain. Branch deletion checks the verified commit ID, preserving a concurrently changed tip. Remote branches are untouched. Results go to bridge logs. Set the idle period (1–365 days, default 7) in the profile's `preferences`:
+
+```json
+{
+  "autoWorktreeCleanup": true,
+  "worktreeCleanupIdleDays": 7
+}
+```
+
+Ignored dependencies and build artifacts also block removal and must first be removed manually. Disabling the switch stops future cleanup; removed worktrees are not automatically restored.
+
 ### Advanced: editing the config file directly
 
 If you'd rather not do it inside Feishu, `/invite` and `/config` write the matching profile's `access` field in `~/.lark-channel/config.json`. Empty lists mean nobody from that list, not open access. This is a profile-field snippet; do not replace the whole `config.json` with it:

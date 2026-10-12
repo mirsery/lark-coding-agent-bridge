@@ -105,6 +105,11 @@ export class ActiveRuns {
     return this.lingering.has(chatId);
   }
 
+  /** Any live process kept between turns, including idle sessions. */
+  hasAnyKeptProcess(): boolean {
+    return this.lingering.size > 0;
+  }
+
   lingeringScopes(): string[] {
     return [...this.lingering.entries()].filter(([, l]) => l.kind === 'background').map(([scope]) => scope);
   }

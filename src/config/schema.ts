@@ -190,6 +190,10 @@ export interface AppPreferences {
    * agent CLI is asked to auto-compact long sessions earlier. Default off.
    */
   smartSession?: boolean;
+  /** Clean idle, merged bridge-managed worktrees; default off. */
+  autoWorktreeCleanup?: boolean;
+  /** Minimum idle days before cleanup, 1–365, default 7. */
+  worktreeCleanupIdleDays?: number;
   /** Thresholds behind {@link smartSession}; config-file only. See {@link getSmartSession}. */
   smartSessionTuning?: SmartSessionTuning;
 }
@@ -366,4 +370,11 @@ export function getSmartSession(cfg: AppConfig): SmartSessionSettings | undefine
     hardIdleMinutes: pick(tuning.hardIdleMinutes, 30, 30 * 24 * 60, SMART_SESSION_DEFAULTS.hardIdleMinutes),
     compactWindowTokens: pick(tuning.compactWindowTokens, 100_000, 2_000_000, SMART_SESSION_DEFAULTS.compactWindowTokens),
   };
+}
+
+/** Undefined when automatic worktree cleanup is off. */
+export function getWorktreeCleanupIdleDays(cfg: AppConfig): number | undefined {
+  if (cfg.preferences?.autoWorktreeCleanup !== true) return undefined;
+  const days = cfg.preferences.worktreeCleanupIdleDays;
+  return typeof days === 'number' && Number.isFinite(days) && days >= 1 && days <= 365 ? Math.floor(days) : 7;
 }
