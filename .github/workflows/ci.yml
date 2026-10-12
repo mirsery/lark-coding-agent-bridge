@@ -1,8 +1,11 @@
 name: CI
 
 on:
+  # Branch pushes only: a version tag runs this through release.yml instead.
   push:
+    branches: ['**']
   pull_request:
+  workflow_call:
 
 jobs:
   test:

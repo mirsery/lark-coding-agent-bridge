@@ -33,6 +33,7 @@
 - 通过标准只有一个：`pnpm ci:local` 全绿。迭代中可以先跑 `npx vitest run <文件或目录>` 缩小范围，但交付前必须跑全量。
 - 已知噪声：机器负载高时，spawn 真实子进程的用例（`tests/process/`、`tests/unit/agent/*` 里的 fake binary 读流测试）可能撞 vitest 默认 5s 超时。（`tests/integration/ui/server.test.ts` 曾经偶发的 `4999 >= 5000` 是测试自身的时钟先后问题，已修。）处理方式：单独重跑该文件；必要时在未改动的 main 上跑同一文件对照，确认与本次改动无关，并在汇报里写明。不许把失败说成通过。
 - CI（`.github/workflows/ci.yml`）在 macOS / Ubuntu / Windows 三平台跑 test + typecheck + build。Windows 上 `claude` 是 `.cmd` shim、经 `cmd.exe` 启动：prompt 和系统提示词不能走 argv（`<` `>` 会被当重定向吃掉），一律走 stdin / 临时文件。
+- 发版推 `vX.Y.Z` tag，由 `.github/workflows/release.yml` 复用同一套 CI，过了才建 GitHub Release（正文取 `CHANGELOG.md` 对应段落）；步骤见 [`docs/dev/release.md`](docs/dev/release.md)。改了 `package.json` 的 `version` 就要在 `CHANGELOG.md` 补同版本段落，否则 `tests/unit/docs/release-notes.test.ts` 不过。
 
 ## 架构地图
 
@@ -120,7 +121,7 @@
 | | Claude Code（CC） | Codex（Poki） |
 |---|---|---|
 | 自动加载的约定 | `CLAUDE.md` → 导入本文件 | 本文件 |
-| 交付 / 重启 | `/ship`、`/restart-bridge`（`.claude/commands/`，内容指向 `docs/dev/`） | 直接按 `docs/dev/ship.md`、`docs/dev/restart-bridge.md` 执行 |
+| 交付 / 重启 / 发版 | `/ship`、`/restart-bridge`、`/release`（`.claude/commands/`，内容指向 `docs/dev/`） | 直接按 `docs/dev/ship.md`、`docs/dev/restart-bridge.md`、`docs/dev/release.md` 执行 |
 | 权限护栏 | `.claude/settings.json` 的 deny 列表 | 无对应配置，按本文件「仓库边界」自律 |
 
 改动约定时两边都要能用：不写只有一种 agent 才看得懂的步骤（例如只给 slash command 不给文档），新增操作流程先写 `docs/dev/`，需要的话再给 `.claude/commands/` 加一个指向它的入口。

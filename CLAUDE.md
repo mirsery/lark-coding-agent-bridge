@@ -6,5 +6,5 @@
 
 ## Claude Code 专用
 
-- `/ship`、`/restart-bridge`：`.claude/commands/` 下的快捷入口，步骤本体在 `docs/dev/`。
+- `/ship`、`/restart-bridge`、`/release`：`.claude/commands/` 下的快捷入口，步骤本体在 `docs/dev/`。
 - `.claude/settings.json` 的 deny 列表是护栏（禁读 keystore / `.env`、禁 force push、禁加 remote），不是约定本身。
