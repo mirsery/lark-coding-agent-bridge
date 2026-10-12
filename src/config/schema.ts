@@ -183,7 +183,41 @@ export interface AppPreferences {
    * Range 100-30000; out-of-range values fall back to default.
    */
   agentStopGraceMs?: number;
+  /**
+   * 会话智能压缩. When on, a conversation that has gone idle with a large
+   * context — or that the agent itself marked finished — is archived and the
+   * next message starts a fresh session (still listed in `/resume`), and the
+   * agent CLI is asked to auto-compact long sessions earlier. Default off.
+   */
+  smartSession?: boolean;
+  /** Thresholds behind {@link smartSession}; config-file only. See {@link getSmartSession}. */
+  smartSessionTuning?: SmartSessionTuning;
 }
+
+export interface SmartSessionTuning {
+  /** Idle this long with a large context starts a fresh session. Default 60. */
+  idleMinutes?: number;
+  /** What counts as a large context, in tokens. Default 150000. */
+  minContextTokens?: number;
+  /** Idle this long starts a fresh session whatever the context size. Default 480. */
+  hardIdleMinutes?: number;
+  /** Context window the agent CLI auto-compacts against, in tokens. Default 300000. */
+  compactWindowTokens?: number;
+}
+
+export interface SmartSessionSettings {
+  idleMinutes: number;
+  minContextTokens: number;
+  hardIdleMinutes: number;
+  compactWindowTokens: number;
+}
+
+export const SMART_SESSION_DEFAULTS: SmartSessionSettings = {
+  idleMinutes: 60,
+  minContextTokens: 150_000,
+  hardIdleMinutes: 480,
+  compactWindowTokens: 300_000,
+};
 
 /**
  * Top-level config shape on disk.
@@ -315,4 +349,21 @@ export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
   const clamped = Math.min(Math.max(Math.floor(raw), 1), 120);
   return clamped * 60_000;
+}
+
+/**
+ * Resolved 会话智能压缩 settings, or `undefined` when the switch is off.
+ * Out-of-range tuning values fall back to the defaults.
+ */
+export function getSmartSession(cfg: AppConfig): SmartSessionSettings | undefined {
+  if (cfg.preferences?.smartSession !== true) return undefined;
+  const tuning = cfg.preferences.smartSessionTuning ?? {};
+  const pick = (value: unknown, min: number, max: number, fallback: number): number =>
+    typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max ? Math.floor(value) : fallback;
+  return {
+    idleMinutes: pick(tuning.idleMinutes, 5, 24 * 60, SMART_SESSION_DEFAULTS.idleMinutes),
+    minContextTokens: pick(tuning.minContextTokens, 10_000, 2_000_000, SMART_SESSION_DEFAULTS.minContextTokens),
+    hardIdleMinutes: pick(tuning.hardIdleMinutes, 30, 30 * 24 * 60, SMART_SESSION_DEFAULTS.hardIdleMinutes),
+    compactWindowTokens: pick(tuning.compactWindowTokens, 100_000, 2_000_000, SMART_SESSION_DEFAULTS.compactWindowTokens),
+  };
 }

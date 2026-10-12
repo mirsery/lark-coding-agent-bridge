@@ -23,6 +23,8 @@ export interface ConfigFormOpts {
   larkCliIdentity: LarkCliIdentityPreset;
   /** Whether non-admins' side-effecting steps wait for an admin's approval (#6). */
   approvalsEnabled: boolean;
+  /** 会话智能压缩 on/off. Optional so callers predating the switch render it as off. */
+  smartSession?: boolean;
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
@@ -408,6 +410,20 @@ export function configFormCard(opts: ConfigFormOpts): object {
               {
                 tag: 'markdown',
                 content:
+                  '**会话智能压缩**\n<font color="grey">开=空闲超 1 小时且上下文超 15 万 token、或空闲超 8 小时，下一条消息自动开新会话；agent 判断事情做完也会收尾；长会话提前自动压缩。旧会话 /resume 可找回</font>',
+              },
+              {
+                tag: 'select_static',
+                name: 'smart_session',
+                initial_option: opts.smartSession ? 'on' : 'off',
+                options: [
+                  { text: { tag: 'plain_text', content: '开' }, value: 'on' },
+                  { text: { tag: 'plain_text', content: '关(默认)' }, value: 'off' },
+                ],
+              },
+              {
+                tag: 'markdown',
+                content:
                   '**lark-cli 身份策略**\n<font color="grey">只允许应用身份=不碰个人资源；允许用户身份=可用已授权的个人日历/邮箱/云盘</font>' +
                   (teamMode ? teamOverrideNote : ''),
               },
@@ -526,6 +542,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
           ['run 探活', opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'],
           ['群里需要 @ bot', opts.requireMentionInGroup ? '是' : '否'],
           ['非管理员审批', opts.approvalsEnabled ? '开' : '关'],
+          ['会话智能压缩', opts.smartSession ? '开' : '关'],
           [
             'lark-cli 身份策略',
             opts.mode === 'team'

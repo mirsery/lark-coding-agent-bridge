@@ -136,3 +136,23 @@ export function safeJsonStringify(value: unknown): string {
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
 }
+
+/**
+ * The user's own words from a prompt built by {@link buildAgentPrompt} — the
+ * `text` of its `<user_input>` section, without the `[name (user)]:` speaker
+ * labels a merged batch carries. Undefined when the prompt has no such section.
+ */
+export function extractUserInputText(prompt: string): string | undefined {
+  const open = '<user_input>\n';
+  const start = prompt.lastIndexOf(open);
+  if (start === -1) return undefined;
+  const end = prompt.indexOf('\n</user_input>', start + open.length);
+  if (end === -1) return undefined;
+  try {
+    const parsed = JSON.parse(prompt.slice(start + open.length, end)) as { text?: unknown };
+    if (typeof parsed.text !== 'string') return undefined;
+    return parsed.text.replace(/^\[[^\]\n]{1,80} \((?:user|bot)\)\]:\s*/gm, '').trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}

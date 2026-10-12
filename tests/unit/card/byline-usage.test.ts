@@ -19,4 +19,12 @@ describe('run card byline usage', () => {
     const card = JSON.stringify(renderCard(finished, { meta: { title: 'CC', agent: 'claude' } }));
     expect(card).not.toContain('Usage:');
   });
+
+  it('puts a conversation notice above the byline', () => {
+    const card = JSON.stringify(
+      renderCard(finished, { meta: { title: 'CC', agent: 'claude', notice: '已自动开启新会话' } }),
+    );
+    expect(card).toContain('🔄 已自动开启新会话');
+    expect(card.indexOf('已自动开启新会话')).toBeLessThan(card.indexOf('Agent: claude'));
+  });
 });

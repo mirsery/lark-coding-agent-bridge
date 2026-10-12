@@ -32,7 +32,7 @@ import {
   finalizeIfRunning,
   initialState,
   reduce,
-  stripNoReply,
+  stripControlMarkers,
   type RunState,
   type Terminal,
 } from '../card/run-state';
@@ -46,6 +46,7 @@ import {
   getMessageReplyMode,
   getRunIdleTimeoutMs,
   getShowToolCalls,
+  getSmartSession,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
@@ -66,7 +67,14 @@ import {
   type BackgroundTurnHandler,
   type RunApprovalGates,
 } from '../runtime/run-executor';
+import { probeAgentSession } from '../agent/session-probe';
 import type { SessionCatalog } from '../session/catalog';
+import {
+  newSessionRequest,
+  rotationNotice,
+  SMART_SESSION_INSTRUCTION,
+  type PendingRotation,
+} from '../session/smart-session';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns } from './active-runs';
@@ -352,6 +360,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       })
     : undefined;
   const activePolicyFingerprints = new Map<string, string>();
+  // 会话智能压缩: scopes whose last answer asked to close the conversation
+  // (`[[NEW_SESSION]]`); applied when the next message arrives. In-memory:
+  // a restart in between just keeps the conversation.
+  const pendingRotations = new Map<string, PendingRotation>();
   // Per-scope record of the model used on the last run, so a `/config` model
   // switch can inject a one-time "model changed" note into the next (resumed)
   // prompt. In-memory only: on restart the first run re-seeds silently.
@@ -464,6 +476,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           callbackAuth,
           activePolicyFingerprints,
           lastRunModelByScope,
+          pendingRotations,
           scope,
           mode,
           runs,
@@ -1027,6 +1040,7 @@ interface RunBatchDeps {
   callbackAuth?: CallbackAuth;
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
+  pendingRotations: Map<string, PendingRotation>;
   scope: string;
   mode: ChatMode;
   runs?: RunRegistry;
@@ -1047,6 +1061,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     callbackAuth,
     activePolicyFingerprints,
     lastRunModelByScope,
+    pendingRotations,
     scope,
     mode,
     runs,
@@ -1138,12 +1153,17 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prevModel = lastRunModelByScope.get(scope);
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
   lastRunModelByScope.set(scope, modelSelection);
-  const extraInstructions = modelSwitched
-    ? [
-        `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
-          '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
-      ]
-    : undefined;
+  const smartSession = getSmartSession(controls.cfg);
+  const instructions = [
+    ...(modelSwitched
+      ? [
+          `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
+            '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
+        ]
+      : []),
+    ...(smartSession ? [SMART_SESSION_INSTRUCTION] : []),
+  ];
+  const extraInstructions = instructions.length > 0 ? instructions : undefined;
 
   // Memory and the skill index are read fresh on every run: `/memory add` in
   // the middle of a conversation has to take effect on the next message, not
@@ -1223,6 +1243,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         agent: capability.agentId,
       }
     : undefined;
+  // 会话智能压缩: an agent-requested close is consumed by this message either
+  // way. Never rotate under a process this scope still keeps (its background
+  // work would be cut off — and a fresh submit would reuse it anyway) or when
+  // the user quotes an earlier message, which points back into the old context.
+  const pendingRotation = pendingRotations.get(scope);
+  pendingRotations.delete(scope);
+  const rotationBlocked = executor.hasLiveProcess(scope) || quotes.length > 0;
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -1237,6 +1264,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     executor,
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
+    ...(smartSession
+      ? {
+          compactWindowTokens: smartSession.compactWindowTokens,
+          ...(rotationBlocked
+            ? {}
+            : {
+                rotation: {
+                  settings: smartSession,
+                  ...(pendingRotation ? { pending: pendingRotation } : {}),
+                  probe: (handle: string, cwd: string) => probeAgentSession(controls.profileConfig, handle, cwd),
+                },
+              }),
+        }
+      : {}),
     ...(firstMsg.senderName ? { actorName: firstMsg.senderName } : {}),
     ...(gate ? { gate } : {}),
     onBackgroundTurn: (turn) => deliverBackgroundTurn?.(turn) ?? Promise.resolve(),
@@ -1282,6 +1323,14 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd });
   } else {
     log.info('session', 'fresh', { cwd });
+  }
+  if (flow.rotated) {
+    log.info('session', 'rotated', {
+      scope,
+      reason: flow.rotated.reason,
+      ...(flow.rotated.idleMinutes !== undefined ? { idleMinutes: flow.rotated.idleMinutes } : {}),
+      ...(flow.rotated.contextTokens !== undefined ? { contextTokens: flow.rotated.contextTokens } : {}),
+    });
   }
   const recordSession = (evt: AgentEvent): void => {
     recordRunSessionEvent({
@@ -1343,8 +1392,12 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // led to it. Only card mode renders it — `renderText` never did.
   // Marker-only answers ([[NO_REPLY]]) are stripped first, for every pref
   // combination: the run already delivered its result (e.g. a skill-posted card).
+  // So is a trailing `[[NEW_SESSION…]]`, read from `lastRawState` (the answer as
+  // the agent wrote it) once the run is over.
+  let lastRawState: RunState | undefined;
   const filterForPrefs = (raw: RunState): RunState => {
-    const state = stripNoReply(raw);
+    lastRawState = raw;
+    const state = stripControlMarkers(raw);
     if (getShowToolCalls(controls.cfg)) return state;
     return {
       ...state,
@@ -1359,6 +1412,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       model: modelLabel(agentKind, modelPref),
       effort: resolveEffortArg(agentKind, controls.profileConfig.preferences.effort),
       provider: capability.descriptor.provider,
+      ...(flow.rotated ? { notice: rotationNotice(flow.rotated) } : {}),
     },
     ...(callbackAuth
       ? {
@@ -1457,7 +1511,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           channel,
           chatId,
           scope,
-          state: finalAnswerOnlyState(stripNoReply(finalState)),
+          state: finalAnswerOnlyState(stripControlMarkers((lastRawState = finalState))),
           replyMode,
           sendOpts,
           cardRenderOptions,
@@ -1656,7 +1710,25 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
     if (runTerminal === 'done') void addDoneReaction(channel, lastMsg.messageId);
+    if (smartSession && runTerminal === 'done') {
+      const request = newSessionRequest(answerTextOf(lastRawState));
+      if (request) {
+        pendingRotations.set(scope, request);
+        log.info('session', 'rotation-requested', { scope, hasSummary: Boolean(request.summary) });
+      }
+    }
   }
+}
+
+/** The answer text of a run state: its final text, else its last text block. */
+function answerTextOf(state: RunState | undefined): string | undefined {
+  if (!state) return undefined;
+  if (state.finalText) return state.finalText;
+  for (let i = state.blocks.length - 1; i >= 0; i--) {
+    const block = state.blocks[i];
+    if (block?.kind === 'text') return block.content;
+  }
+  return undefined;
 }
 
 interface LazyProgressStream {

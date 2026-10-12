@@ -60,6 +60,8 @@ export interface SubmitRunInput {
   effort?: string;
   images?: readonly string[];
   stopGraceMs?: number;
+  /** See AgentRunOptions.compactWindowTokens. */
+  compactWindowTokens?: number;
   nowait?: boolean;
   /** Who this run is for — the person its usage is booked against. */
   actor?: { id: string; name?: string };
@@ -190,6 +192,7 @@ export class RunExecutor {
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
+      ...(input.compactWindowTokens ? { compactWindowTokens: input.compactWindowTokens } : {}),
     };
     const compatKey = runCompatKey({ ...runOptions, gated: Boolean(input.gate) });
     const dimensions = {
@@ -372,6 +375,16 @@ export class RunExecutor {
    * work is being stopped, then stop it — for shutdown / reconnect, where the
    * process dies with this daemon anyway.
    */
+  /**
+   * Whether `scopeId` still has an agent process this executor would hand the
+   * next message to (lingering for background work or kept idle), rather than
+   * one that is only finishing its own exit.
+   */
+  hasLiveProcess(scopeId: string): boolean {
+    const live = this.live.get(scopeId);
+    return Boolean(live && !live.finishing && !live.session.hasExited);
+  }
+
   async stopLingering(): Promise<void> {
     const lingering = [...this.live.values()].filter(
       (live) => !live.session.hasExited && !live.session.hasAttachedTurn && !live.finishing,
@@ -574,6 +587,7 @@ function runCompatKey(opts: {
   sandbox?: string;
   permissionMode?: string;
   images?: readonly string[];
+  compactWindowTokens?: number;
 }): string {
   return JSON.stringify([
     opts.gated ?? false,
@@ -584,6 +598,8 @@ function runCompatKey(opts: {
     opts.permissionMode ?? null,
     // Image arguments ride on argv; a turn that carries them needs a new process.
     opts.images?.length ? opts.images : null,
+    // The compaction window rides on the process environment.
+    opts.compactWindowTokens ?? null,
   ]);
 }
 

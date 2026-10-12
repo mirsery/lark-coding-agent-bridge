@@ -547,6 +547,27 @@ It lives in the profile config's `approvals` section (restart the profile to app
 - `allowTools`: tool names that run without asking; `*` matches anything. Listing `Bash` waives every command.
 - Steps waived this way are still audited (shown as "allowlisted" in `/audit`).
 
+### Smart session compaction (off by default)
+
+By default the bridge keeps resuming the same conversation. The longer it gets, the more every turn (and every tool call) re-reads; and once it has sat idle past the prompt cache's lifetime (1 hour), the next message first re-writes the whole context at cache-write price. Send `/config` in Feishu and switch on 「会话智能压缩」 under 运行与权限 (applies on submit) and the bridge will:
+
+- **Start fresh after idling**: when a message arrives more than 1 hour after the last exchange with a context over 150k tokens, or more than 8 hours after it, the conversation is not resumed; a new one starts.
+- **Close when the agent says the task is done**: the agent may end its final answer with `[[NEW_SESSION: one-line summary]]`; the bridge strips the marker from the reply and the next message starts a new conversation.
+- **Compact long conversations earlier** (Claude Code): Claude Code auto-compacts against a 300k-token window instead of waiting until the model's limit.
+
+Nothing is lost: the old conversation is archived as usual and `/resume` brings it back. The first turn of the new conversation carries a short hand-off (the old conversation's summary or last request), and the reply card notes that a new conversation was started. No switch happens while the conversation still has background work running, or when the user quotes an earlier message.
+
+Thresholds are tunable in the config file (the profile's `preferences`; restart the profile to apply):
+
+```json
+"smartSessionTuning": {
+  "idleMinutes": 60,
+  "minContextTokens": 150000,
+  "hardIdleMinutes": 480,
+  "compactWindowTokens": 300000
+}
+```
+
 ### Advanced: editing the config file directly
 
 If you'd rather not do it inside Feishu, `/invite` and `/config` write the matching profile's `access` field in `~/.lark-channel/config.json`. Empty lists mean nobody from that list, not open access. This is a profile-field snippet; do not replace the whole `config.json` with it:

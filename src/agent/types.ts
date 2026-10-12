@@ -84,6 +84,12 @@ export interface AgentRunOptions {
   */
   stopGraceMs?: number;
   approvals?: RunApprovals;
+  /**
+   * 会话智能压缩: auto-compact the conversation against a context window of
+   * this many tokens instead of the model's full window, so long sessions get
+   * summarised well before they reach it. Adapters without the knob ignore it.
+   */
+  compactWindowTokens?: number;
 }
 
 export interface AgentRun {

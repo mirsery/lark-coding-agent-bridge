@@ -18,7 +18,15 @@ import {
 import type { BackgroundTurnHandler, RunExecution, RunExecutor } from '../runtime/run-executor';
 import type { GateContext } from '../runtime/approvals';
 import { RunRejected, type RunRejectedCode } from '../runtime/errors';
+import type { AgentSessionProbe } from '../agent/session-probe';
+import type { SmartSessionSettings } from '../config/schema';
 import type { SessionCatalog } from '../session/catalog';
+import {
+  decideRotation,
+  handoffSection,
+  type PendingRotation,
+  type RotationVerdict,
+} from '../session/smart-session';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 
@@ -42,6 +50,18 @@ export interface StartRunFlowInput {
   /** Passed to the executor as `SubmitRunInput.onBackgroundTurn`. */
   onBackgroundTurn?: BackgroundTurnHandler;
   stopGraceMs?: number;
+  /** 会话智能压缩: see AgentRunOptions.compactWindowTokens. */
+  compactWindowTokens?: number;
+  /**
+   * 会话智能压缩 (IM only): may leave the conversation this message would
+   * resume and start fresh. Leave unset to always resume.
+   */
+  rotation?: {
+    settings: SmartSessionSettings;
+    /** The agent asked to close the conversation at the end of its last answer. */
+    pending?: PendingRotation;
+    probe: (handle: string, cwd: string) => Promise<AgentSessionProbe | undefined>;
+  };
   observability?: {
     profile: string;
     agent: string;
@@ -62,6 +82,8 @@ export type StartRunFlowResult =
       policy: RunPolicyAllow;
       cwdRealpath: string;
       resumeFrom?: string;
+      /** Set when 会话智能压缩 archived the conversation this message would have resumed. */
+      rotated?: RotationVerdict;
     }
   | {
       ok: false;
@@ -135,6 +157,30 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       input.sessions.clear(input.scopeId);
     }
   }
+  let runPolicy = policy;
+  let rotated: RotationVerdict | undefined;
+  if (resumeFrom && input.rotation) {
+    const probe = await input.rotation.probe(resumeFrom, workspace.cwdRealpath).catch(() => undefined);
+    rotated = decideRotation({
+      settings: input.rotation.settings,
+      probe,
+      ...(input.rotation.pending ? { pending: input.rotation.pending } : {}),
+      now: input.now,
+    });
+    if (rotated) {
+      // Same as `/new`: the conversation stays listed in /resume.
+      input.sessionCatalog?.archiveActive({
+        scopeId: input.scopeId,
+        agentId: input.capability.agentId,
+        cwdRealpath: workspace.cwdRealpath,
+        policyFingerprint: policy.policyFingerprint,
+        now: input.now,
+      });
+      if (descriptor.scopeSessionStore) input.sessions.clear(input.scopeId);
+      resumeFrom = undefined;
+      runPolicy = { ...policy, prompt: `${handoffSection(rotated)}\n\n${policy.prompt}` };
+    }
+  }
   const sessionId = descriptor.sessionHandle === 'sessionId' ? resumeFrom : undefined;
   const threadId = descriptor.sessionHandle === 'threadId' ? resumeFrom : undefined;
 
@@ -142,7 +188,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
   try {
     execution = await input.executor.submit({
       scopeId: input.scopeId,
-      policy,
+      policy: runPolicy,
       sessionId,
       threadId,
       model: resolveModelArg(
@@ -161,6 +207,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
               .filter((path): path is string => Boolean(path))
           : undefined,
       stopGraceMs: input.stopGraceMs,
+      ...(input.compactWindowTokens ? { compactWindowTokens: input.compactWindowTokens } : {}),
       actor: { id: input.scope.actorId, ...(input.actorName ? { name: input.actorName } : {}) },
       ...(input.scope.chatId ? { chatId: input.scope.chatId } : {}),
       ...(input.gate ? { gate: input.gate } : {}),
@@ -189,9 +236,10 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
   return {
     ok: true,
     execution,
-    policy,
+    policy: runPolicy,
     cwdRealpath: workspace.cwdRealpath,
     ...(resumeFrom ? { resumeFrom } : {}),
+    ...(rotated ? { rotated } : {}),
   };
 }
 

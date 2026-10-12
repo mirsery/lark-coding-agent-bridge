@@ -27,7 +27,7 @@ export function restoredSessionCost(
   }
 }
 
-function transcriptPath(sessionId: string, cwd: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
+export function transcriptPath(sessionId: string, cwd: string | undefined, env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (!/^[A-Za-z0-9-]+$/.test(sessionId)) return undefined;
   const projects = join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
   const name = `${sessionId}.jsonl`;

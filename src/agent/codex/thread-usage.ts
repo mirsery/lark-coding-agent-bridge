@@ -57,7 +57,7 @@ export function subtractBaseline(usage: UsageEvent, baseline: CodexUsageTotals |
   };
 }
 
-async function findRollout(sessionsDir: string, threadId: string): Promise<string | undefined> {
+export async function findRollout(sessionsDir: string, threadId: string): Promise<string | undefined> {
   let entries: string[];
   try {
     entries = await readdir(sessionsDir, { recursive: true });

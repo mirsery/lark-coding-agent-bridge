@@ -229,3 +229,14 @@ describe('configFormCard group panel management hints', () => {
     expect(panel).toContain('access.allowedChats');
   });
 });
+
+describe('configFormCard 会话智能压缩 switch', () => {
+  it('offers the switch, set to the current state', () => {
+    expect(findNamedSelect(configFormCard(base), 'smart_session')?.initial_option).toBe('off');
+    expect(findNamedSelect(configFormCard({ ...base, smartSession: true }), 'smart_session')?.initial_option).toBe('on');
+  });
+
+  it('reports the switch on the saved card', () => {
+    expect(JSON.stringify(configSavedCard({ ...base, smartSession: true }))).toContain('会话智能压缩');
+  });
+});

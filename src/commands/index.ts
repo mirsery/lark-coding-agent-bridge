@@ -89,6 +89,7 @@ import {
   getMessageReplyMode,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
+  getSmartSession,
   getShowToolCalls,
 } from '../config/schema';
 import type {
@@ -2874,6 +2875,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
     larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
     approvalsEnabled: ctx.controls.profileConfig.approvals.enabled,
+    smartSession: getSmartSession(ctx.controls.cfg) !== undefined,
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
     admins: access.admins,
@@ -2996,6 +2998,10 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   const rawApprovals = String(fv.approvals_enabled ?? '').trim();
   const approvalsEnabled =
     rawApprovals === 'on' ? true : rawApprovals === 'off' ? false : ctx.controls.profileConfig.approvals.enabled;
+  // 会话智能压缩 switch. Empty / unexpected keeps current.
+  const rawSmartSession = String(fv.smart_session ?? '').trim();
+  const smartSession =
+    rawSmartSession === 'on' ? true : rawSmartSession === 'off' ? false : getSmartSession(ctx.controls.cfg) !== undefined;
   const rawLarkCliIdentity = String(fv.lark_cli_identity ?? '').trim();
   const larkCliIdentity =
     rawLarkCliIdentity === 'user-default' || rawLarkCliIdentity === 'bot-only'
@@ -3041,6 +3047,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
+      smartSession,
     };
 
     let failureStep = 'config.save';
@@ -3090,6 +3097,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       requireMentionInGroup,
       larkCliIdentity,
       approvalsEnabled,
+      smartSession,
       allowedUsersCount: access.allowedUsers.length,
       allowedChatsCount: access.allowedChats.length,
       adminsCount: access.admins.length,
@@ -3111,6 +3119,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         requireMentionInGroup,
         larkCliIdentity,
         approvalsEnabled,
+        smartSession,
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,
         admins: access.admins,

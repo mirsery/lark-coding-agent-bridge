@@ -102,7 +102,12 @@ export class ClaudeAdapter implements AgentAdapter {
     const costBaseline = opts.sessionId ? (restoredSessionCost(opts.sessionId, opts.cwd) ?? 0) : 0;
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
-      env: mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel)),
+      env: mergeProcessEnv(process.env, {
+        ...buildLarkChannelEnv(this.larkChannel),
+        // 会话智能压缩: Claude Code auto-compacts against this window instead
+        // of the model's full (up to 1M-token) one.
+        ...(opts.compactWindowTokens ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(opts.compactWindowTokens) } : {}),
+      }),
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as ClaudeChild;
 
