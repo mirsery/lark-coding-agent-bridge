@@ -3,7 +3,7 @@
 Claude Code 与 Codex 共用的发版步骤（Claude Code 里的 `/release` 即执行本文）。推送 `vX.Y.Z` tag 会触发 `.github/workflows/release.yml`：
 
 1. `notes`：`.github/scripts/release-notes.mjs` 校验 tag 与 `package.json` 的 `version` 一致，且 `CHANGELOG.md` 里有非空的 `## vX.Y.Z` 段落；
-2. `ci`：复用 `ci.yml`，macOS / Ubuntu / Windows 三平台 test + typecheck + build；
+2. `ci`：复用 `ci.yml`，macOS / Ubuntu / Windows 三平台 test + typecheck + build（Windows 暂不阻断，见 `AGENTS.md`「质量门禁」）；
 3. `release`：`pnpm pack` 打包，创建 GitHub Release，正文取 `CHANGELOG.md` 里该版本的段落，附上 tgz。tag 带 `-`（如 `v0.9.0-rc.1`）的标为 pre-release。
 
 不发布到 npm：包名 `lark-channel-bridge` 属于上游。本机运行仍是主 checkout + `npm link`（见 `AGENTS.md`「本机运行形态」），发版不改变运行方式，也不需要重启。
