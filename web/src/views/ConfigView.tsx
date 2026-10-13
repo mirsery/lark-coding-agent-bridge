@@ -89,6 +89,7 @@ export function ConfigView({ profile }: { profile: string }) {
         smartSession: cfg.smartSession,
         autoWorktreeCleanup: cfg.autoWorktreeCleanup,
         dream: cfg.dream,
+        dreamAuto: cfg.dreamAuto,
         cotMessages: cfg.cotMessages,
         maxConcurrentRuns: cfg.maxConcurrentRuns,
         runIdleTimeoutMinutes: cfg.runIdleTimeoutMinutes,
@@ -173,6 +174,8 @@ export function ConfigView({ profile }: { profile: string }) {
             checked={cfg.autoWorktreeCleanup} onChange={(v) => set("autoWorktreeCleanup", v)} />
           <ToggleRow label="梦境整理" hint="打开后可以手动触发（/dream run 或下方「梦境整理」卡片）：读取已结束的会话，只读整理出记忆、笔记和 skill 提案，在知识库和 skill 库开 Draft PR，合并前不生效。默认关闭。"
             checked={cfg.dream} onChange={(v) => set("dream", v)} />
+          <ToggleRow label="自动整理" hint="需先打开梦境整理。不按天跑：新内容攒够（默认 5 个会话范围或 6 万字）、距上次至少 3 天、上一批 Draft PR 已审完、在允许时段（默认 01:00-07:00）且 bot 空闲时才自己整理一轮；有用户消息就让路，额度接近上限时跳过，不推送任何消息。条件在配置文件 dreamTuning 里调。默认关闭。"
+            checked={cfg.dreamAuto} onChange={(v) => set("dreamAuto", v)} />
           <Field label="COT 过程消息">
             <SelectRow value={cfg.cotMessages} onChange={(v) => set("cotMessages", v as ConfigData["cotMessages"])}
               options={[["off", "关闭"], ["brief", "简略"], ["detailed", "详细"]]} />

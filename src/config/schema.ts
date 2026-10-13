@@ -208,10 +208,16 @@ export interface AppPreferences {
   /**
    * 梦境整理. When on, an admin's `/dream run` turns ended conversations into
    * reviewable Draft PRs against the knowledge repo and the profile's own skill
-   * library. Never merges, never runs on its own. Independent of
-   * {@link smartSession}. Default off.
+   * library. Never merges. Independent of {@link smartSession}. Default off.
    */
   dream?: boolean;
+  /**
+   * 自动整理, on top of {@link dream}: the bridge starts a run by itself — not on
+   * a daily clock, but once enough new conversation has piled up, long enough
+   * after the last run, with the previous batch reviewed, inside the allowed
+   * hours and while the profile is idle. Default off.
+   */
+  dreamAuto?: boolean;
   /** Limits behind {@link dream}; config-file only. See {@link getDream}. */
   dreamTuning?: DreamTuning;
 }
@@ -232,6 +238,38 @@ export interface DreamTuning {
   skillLibrary?: string;
   /** Only these chat / topic scopes. Absent: every chat scope. */
   scopes?: string[];
+  /** 自动整理: hours a run may start in, `HH:MM-HH:MM` (may wrap midnight). Default `01:00-07:00`. */
+  window?: string;
+  /** IANA time zone of {@link window}. Default: the host's. */
+  timezone?: string;
+  /** 材料够: conversation scopes with new exchanges that make a run worth it. Default 5. */
+  minScopes?: number;
+  /** 材料够 (either is enough): new transcript characters. Default 60000. */
+  minInputChars?: number;
+  /** 间隔够: days since the last completed run. Default 3. */
+  minIntervalDays?: number;
+  /** Past this many days, any new input is enough; 0 turns the fallback off. Default 14. */
+  maxIntervalDays?: number;
+  /** 审得过来: open dream Draft PRs per target repository that pause automatic runs. Default 1. */
+  maxOpenPrs?: number;
+  /** Consecutive failed automatic runs after which they pause until a manual run succeeds. Default 3. */
+  maxAutoFailures?: number;
+  /** Skip automatic runs once any quota window of the agent account is this full (percent). Default 80. */
+  maxQuotaPercent?: number;
+}
+
+export interface DreamAutoSettings {
+  /** Minutes after local midnight; `end` may be smaller than `start` (wraps midnight). */
+  window: { start: number; end: number; text: string };
+  timezone: string;
+  minScopes: number;
+  minInputChars: number;
+  minIntervalDays: number;
+  /** 0: no fallback. */
+  maxIntervalDays: number;
+  maxOpenPrs: number;
+  maxAutoFailures: number;
+  maxQuotaPercent: number;
 }
 
 export interface DreamSettings {
@@ -241,13 +279,27 @@ export interface DreamSettings {
   minIdleMinutes: number;
   skillLibrary?: string;
   scopes?: string[];
+  auto: DreamAutoSettings;
 }
+
+export const DREAM_AUTO_DEFAULTS: DreamAutoSettings = {
+  window: { start: 60, end: 420, text: '01:00-07:00' },
+  timezone: hostTimeZone(),
+  minScopes: 5,
+  minInputChars: 60_000,
+  minIntervalDays: 3,
+  maxIntervalDays: 14,
+  maxOpenPrs: 1,
+  maxAutoFailures: 3,
+  maxQuotaPercent: 80,
+};
 
 export const DREAM_DEFAULTS: DreamSettings = {
   maxSessions: 20,
   maxInputChars: 120_000,
   maxRunMinutes: 20,
   minIdleMinutes: 30,
+  auto: DREAM_AUTO_DEFAULTS,
 };
 
 export interface SmartSessionTuning {
@@ -443,6 +495,15 @@ export function getDream(cfg: AppConfig): DreamSettings | undefined {
   return resolveDreamSettings(cfg.preferences.dreamTuning);
 }
 
+/**
+ * 自动整理 settings, or `undefined` when either {@link AppPreferences.dream}
+ * or {@link AppPreferences.dreamAuto} is off.
+ */
+export function getDreamAuto(cfg: AppConfig): DreamSettings | undefined {
+  if (cfg.preferences?.dreamAuto !== true) return undefined;
+  return getDream(cfg);
+}
+
 /** {@link getDream}'s limits whether or not the switch is on — for status displays. */
 export function resolveDreamSettings(tuning: DreamTuning | undefined): DreamSettings {
   const raw = tuning ?? {};
@@ -459,7 +520,49 @@ export function resolveDreamSettings(tuning: DreamTuning | undefined): DreamSett
     minIdleMinutes: pick(raw.minIdleMinutes, 0, 7 * 24 * 60, DREAM_DEFAULTS.minIdleMinutes),
     ...(library ? { skillLibrary: library } : {}),
     ...(scopes.length > 0 ? { scopes } : {}),
+    auto: {
+      window: (typeof raw.window === 'string' ? parseDreamWindow(raw.window) : undefined) ?? DREAM_AUTO_DEFAULTS.window,
+      timezone: typeof raw.timezone === 'string' && isTimeZone(raw.timezone.trim()) ? raw.timezone.trim() : DREAM_AUTO_DEFAULTS.timezone,
+      minScopes: pick(raw.minScopes, 1, 200, DREAM_AUTO_DEFAULTS.minScopes),
+      minInputChars: pick(raw.minInputChars, 1_000, 1_000_000, DREAM_AUTO_DEFAULTS.minInputChars),
+      minIntervalDays: pick(raw.minIntervalDays, 1, 90, DREAM_AUTO_DEFAULTS.minIntervalDays),
+      maxIntervalDays: pick(raw.maxIntervalDays, 0, 365, DREAM_AUTO_DEFAULTS.maxIntervalDays),
+      maxOpenPrs: pick(raw.maxOpenPrs, 1, 20, DREAM_AUTO_DEFAULTS.maxOpenPrs),
+      maxAutoFailures: pick(raw.maxAutoFailures, 1, 20, DREAM_AUTO_DEFAULTS.maxAutoFailures),
+      maxQuotaPercent: pick(raw.maxQuotaPercent, 10, 100, DREAM_AUTO_DEFAULTS.maxQuotaPercent),
+    },
   };
+}
+
+/** `HH:MM-HH:MM` → minutes after midnight; a window that ends where it starts is refused. */
+export function parseDreamWindow(text: string): DreamAutoSettings['window'] | undefined {
+  const match = /^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*$/.exec(text);
+  if (!match) return undefined;
+  const [h1, m1, h2, m2] = match.slice(1).map(Number) as [number, number, number, number];
+  if (h1 > 24 || h2 > 24 || m1 > 59 || m2 > 59) return undefined;
+  const start = (h1 * 60 + m1) % 1440;
+  const end = (h2 * 60 + m2) % 1440;
+  if (start === end) return undefined;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return { start, end, text: `${pad(Math.floor(start / 60))}:${pad(start % 60)}-${pad(Math.floor(end / 60))}:${pad(end % 60)}` };
+}
+
+function isTimeZone(zone: string): boolean {
+  if (!zone) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hostTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
 }
 
 /** Undefined when automatic worktree cleanup is off. */

@@ -34,7 +34,8 @@ const RUN: DreamRun = {
   targets: [{ repo: 'knowledge', label: '知识库', branch: 'dream/x', phase: 'pr-created', items: 2, prUrl: 'https://github.com/acme/k/pull/7', prNumber: 7 }],
 };
 
-async function createHarness() {
+async function createHarness(opts: { autoOn?: boolean } = {}) {
+  const autoOn = opts.autoOn ?? false;
   const tmp = await createTmpProfile('dream-command-');
   const channel = createFakeChannel();
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
@@ -56,6 +57,14 @@ async function createHarness() {
       openedPrs: 1,
       pendingDrafts: 0,
       trackedSessions: 3,
+      auto: {
+        enabled: autoOn,
+        settings: DREAM_DEFAULTS.auto,
+        ledger: {
+          consecutiveFailures: 0,
+          lastCheck: { at: 3, block: 'backlog', reason: '待审积压：还有 1 个梦境 Draft PR 没合并或关闭（上限 1），暂停自动整理' },
+        },
+      },
     })),
     start: vi.fn(async (_actor: unknown, onFinish?: (run: DreamRun) => void) => {
       finish = onFinish;
@@ -64,6 +73,11 @@ async function createHarness() {
     cancel: vi.fn(() => true),
     pullRequests: vi.fn(async () => [{ run: RUN, target: RUN.targets[0]!, state: '待审核（草稿）' }]),
     diff: vi.fn(async () => ({ id: RUN.id, parts: [{ label: '知识库', diff: '+ - [abc123] 一条\n```' }] })),
+    revert: vi.fn(async (id: string) =>
+      id === RUN.id
+        ? { id, results: [{ label: '知识库', prUrl: 'https://github.com/acme/k/pull/9', note: '撤销 Draft PR 已开' }] }
+        : { error: `没有批次 \`${id}\`。` },
+    ),
   };
   const controls = {
     profile: 'claude',
@@ -137,6 +151,31 @@ describe('/dream', () => {
     expect(out).toContain('git@github.com:acme/k.git');
     expect(out).toContain('没有配置 skill 库');
     expect(out).toContain('pull/7');
+  });
+
+  it('says whether 自动整理 is on and why it did not run', async () => {
+    const off = await createHarness();
+    await off.run('/dream');
+    expect(texts(off.channel)).toContain('自动整理：未开启');
+    const on = await createHarness({ autoOn: true });
+    await on.run('/dream');
+    const out = texts(on.channel);
+    expect(out).toContain('01:00-07:00');
+    expect(out).toContain('没跑——待审积压');
+  });
+
+  it('reverts a batch through a Draft PR', async () => {
+    const h = await createHarness();
+    await h.run('/dream revert');
+    expect(h.dream.revert).not.toHaveBeenCalled();
+    expect(texts(h.channel)).toContain('用法');
+    await h.run(`/dream revert ${RUN.id}`);
+    expect(h.dream.revert).toHaveBeenCalledWith(RUN.id);
+    expect(texts(h.channel)).toContain('pull/9');
+    await h.run('/dream revert nope');
+    expect(texts(h.channel)).toContain('没有批次');
+    await h.run(`/dream revert ${RUN.id}`, { senderId: 'ou-member' });
+    expect(h.dream.revert).toHaveBeenCalledTimes(2);
   });
 
   it('starts a run, reports its outcome once, and cancels', async () => {

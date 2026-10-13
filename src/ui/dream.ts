@@ -7,15 +7,17 @@ import { ApiError } from './api';
 import type { ProfileTarget } from './knowledge';
 
 /**
- * The console's 梦境整理 panel: the same status `/dream` shows, plus run /
- * cancel for a profile this process hosts. A profile run by its own daemon is
- * shown from its state file, read without writing anything back; runs for it
- * are started from Feishu (`/dream run` in a DM with the bot).
+ * The console's 梦境整理 panel: the same status `/dream` shows — 自动整理's
+ * last check included — plus run / cancel / revert for a profile this process
+ * hosts. A profile run by its own daemon is shown from its state file, read
+ * without writing anything back; actions for it go through Feishu (`/dream`
+ * in a DM with the bot).
  */
 
 export interface DreamRunView {
   id: string;
   status: DreamRun['status'];
+  trigger: 'manual' | 'auto';
   startedAt: number;
   endedAt?: number;
   note?: string;
@@ -24,7 +26,15 @@ export interface DreamRunView {
   skillItems: number;
   rejected: number;
   deferred: number;
-  targets: Array<{ label: string; phase: string; items: number; prUrl?: string; prNumber?: number; error?: string }>;
+  targets: Array<{
+    label: string;
+    phase: string;
+    items: number;
+    prUrl?: string;
+    prNumber?: number;
+    error?: string;
+    revertPrUrl?: string;
+  }>;
 }
 
 export interface DreamView extends Omit<DreamStatusView, 'running' | 'runs'> {
@@ -72,8 +82,14 @@ export async function mutateDream(target: ProfileTarget, body: unknown): Promise
     message = `已开始整理，批次 ${started.run.id}`;
   } else if (action === 'cancel') {
     message = service.cancel() ? '已请求取消，当前步骤结束后停止' : '现在没有在进行的整理';
+  } else if (action === 'revert') {
+    const id = (body as { id?: unknown }).id;
+    if (typeof id !== 'string' || !id) throw new ApiError(400, 'revert needs the batch id');
+    const reverted = await service.revert(id);
+    if ('error' in reverted) throw new ApiError(409, reverted.error);
+    message = reverted.results.map((item) => `${item.label}：${item.note}`).join('；');
   } else {
-    throw new ApiError(400, 'action must be run or cancel');
+    throw new ApiError(400, 'action must be run, cancel or revert');
   }
   return { ...(await dreamView(target)), message };
 }
@@ -82,6 +98,7 @@ function runView(run: DreamRun): DreamRunView {
   return {
     id: run.id,
     status: run.status,
+    trigger: run.trigger ?? 'manual',
     startedAt: run.startedAt,
     ...(run.endedAt ? { endedAt: run.endedAt } : {}),
     ...(run.note ? { note: run.note } : {}),
@@ -97,6 +114,7 @@ function runView(run: DreamRun): DreamRunView {
       ...(item.prUrl ? { prUrl: item.prUrl } : {}),
       ...(item.prNumber ? { prNumber: item.prNumber } : {}),
       ...(item.error ? { error: item.error } : {}),
+      ...(item.revertPrUrl ? { revertPrUrl: item.revertPrUrl } : {}),
     })),
   };
 }

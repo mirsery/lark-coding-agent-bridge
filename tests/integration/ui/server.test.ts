@@ -127,6 +127,11 @@ describe('ui server (supervisor-backed)', () => {
     await post(url, handle.token, { dream: 'false' });
     expect((await loadRootConfig(configPath))!.profiles[profile]!.preferences?.dream).toBe(true);
     expect((await json(await post(url, handle.token, { dream: false }))).dream).toBe(false);
+    expect((await json(await get(url, handle.token))).dreamAuto).toBe(false);
+    expect((await json(await post(url, handle.token, { dreamAuto: true }))).dreamAuto).toBe(true);
+    await post(url, handle.token, { dreamAuto: 'false' });
+    expect((await loadRootConfig(configPath))!.profiles[profile]!.preferences?.dreamAuto).toBe(true);
+    expect((await json(await post(url, handle.token, { dreamAuto: false }))).dreamAuto).toBe(false);
     expect((await json(await post(url, handle.token, { smartSession: true }))).smartSession).toBe(true);
     if (online.has(profile)) expect(online.get(profile).cfg.preferences.smartSession).toBe(true);
     expect((await loadRootConfig(configPath))!.profiles[profile]!.preferences?.smartSession).toBe(true);
@@ -149,7 +154,7 @@ describe('ui server (supervisor-backed)', () => {
       }),
     );
     const offline = await json(await get('/api/dream?profile=work', handle.token));
-    expect(offline).toMatchObject({ live: false, enabled: false, running: { id: 'b1' }, openedPrs: 1 });
+    expect(offline).toMatchObject({ live: false, enabled: false, running: { id: 'b1', trigger: 'manual' }, openedPrs: 1, auto: { enabled: false } });
     expect(JSON.stringify(offline)).not.toContain('/secret/path');
     expect(JSON.stringify(offline)).not.toContain('draft text');
     const refused = await post('/api/dream?profile=work', handle.token, { action: 'run' });
@@ -158,14 +163,20 @@ describe('ui server (supervisor-backed)', () => {
 
     // hosted profile: actions go to its live service
     const start = vi.fn(async () => ({ run: { id: 'b2' } }));
+    const revert = vi.fn(async (id: string) => ({ id, results: [{ label: '知识库', prUrl: 'https://x/pull/4', note: '撤销 Draft PR 已开' }] }));
     online.get('claude').dream = {
-      status: async () => ({ enabled: true, settings: {}, agent: 'Claude Code', targets: { knowledge: {}, skills: {} }, runs: [], openedPrs: 0, pendingDrafts: 0, trackedSessions: 0 }),
+      status: async () => ({ enabled: true, settings: {}, agent: 'Claude Code', targets: { knowledge: {}, skills: {} }, runs: [], openedPrs: 0, pendingDrafts: 0, trackedSessions: 0, auto: { enabled: false, settings: {}, ledger: { consecutiveFailures: 0 } } }),
       start,
       cancel: () => false,
+      revert,
     };
     const started = await json(await post('/api/dream?profile=claude', handle.token, { action: 'run' }));
     expect(started).toMatchObject({ live: true, message: expect.stringContaining('b2') });
     expect(start).toHaveBeenCalledWith({ id: 'web-console', name: 'Web 控制台' });
+    const reverted = await json(await post('/api/dream?profile=claude', handle.token, { action: 'revert', id: 'b1' }));
+    expect(reverted).toMatchObject({ message: expect.stringContaining('撤销 Draft PR 已开') });
+    expect(revert).toHaveBeenCalledWith('b1');
+    expect((await post('/api/dream?profile=claude', handle.token, { action: 'revert' })).status).toBe(400);
     expect((await post('/api/dream?profile=claude', handle.token, { action: 'nope' })).status).toBe(400);
   });
 

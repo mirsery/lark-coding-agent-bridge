@@ -1,4 +1,5 @@
-import type { DreamStatusView } from './service';
+import { formatChars } from './schedule';
+import type { DreamRevertResult, DreamStatusView } from './service';
 import type { DreamRun, DreamTarget } from './state';
 
 /** Chat text for `/dream`: status, a finished run, the PR list. Counts and links only — never draft content. */
@@ -34,13 +35,14 @@ export function formatDreamStatus(view: DreamStatusView): string {
   ];
   if (view.lastSucceededAt) lines.push(`- 上次完成：${formatTime(view.lastSucceededAt)}`);
   if (view.running) lines.push(`- 进行中：批次 \`${view.running.id}\`（${STATUS_LABEL[view.running.status]}，${formatTime(view.running.startedAt)} 开始）`);
+  lines.push(...autoLines(view));
   if (view.runs.length > 0) {
     lines.push('', '**最近几轮**');
     for (const run of view.runs) lines.push(`- ${runLine(run)}`);
   }
   lines.push(
     '',
-    '`/dream run` 立即整理 · `/dream cancel` 取消 · `/dream prs` PR 列表 · `/dream diff [批次]` 查看差异',
+    '`/dream run` 立即整理 · `/dream cancel` 取消 · `/dream prs` PR 列表 · `/dream diff [批次]` 查看差异 · `/dream revert <批次>` 撤销',
   );
   return lines.join('\n');
 }
@@ -68,8 +70,37 @@ export function formatDreamPrs(
   return lines.join('\n');
 }
 
+export function formatDreamRevert(result: DreamRevertResult): string {
+  const lines = [`**🌙 撤销批次 \`${result.id}\`**`, ''];
+  for (const item of result.results) {
+    lines.push(`- ${item.label}：${item.note}${item.prUrl ? `（[撤销 PR](${item.prUrl})）` : ''}`);
+  }
+  lines.push('', '撤销同样以 Draft PR 提交，审核合并后才生效。');
+  return lines.join('\n');
+}
+
+/** 自动整理: on or off, the gates in one line, and the last check's outcome. */
+function autoLines(view: DreamStatusView): string[] {
+  const { auto } = view;
+  if (!auto.enabled) return [`- 自动整理：未开启${view.enabled ? '（`/config` 里打开「自动整理」）' : ''}`];
+  const s = auto.settings;
+  const lines = [
+    `- 自动整理：已开启。${s.window.text}（${s.timezone}）内、距上次 ≥ ${s.minIntervalDays} 天、新内容 ≥ ${s.minScopes} 个会话范围或 ${formatChars(s.minInputChars)} 字${s.maxIntervalDays > 0 ? `（满 ${s.maxIntervalDays} 天有新内容即可）` : ''}、待审 PR 少于 ${s.maxOpenPrs} 个、额度低于 ${s.maxQuotaPercent}% 时才跑`,
+  ];
+  const check = auto.ledger.lastCheck;
+  if (check) {
+    lines.push(
+      check.started
+        ? `- 上次检查（${formatTime(check.at)}）：开始了批次 \`${check.started}\``
+        : `- 上次检查（${formatTime(check.at)}）：没跑——${check.reason ?? check.block ?? '未知'}`,
+    );
+  }
+  if (auto.ledger.consecutiveFailures > 0) lines.push(`- 自动整理连续失败：${auto.ledger.consecutiveFailures} 次`);
+  return lines;
+}
+
 function runLine(run: DreamRun): string {
-  const parts = [`\`${run.id}\` ${STATUS_LABEL[run.status]}`];
+  const parts = [`\`${run.id}\` ${run.trigger === 'auto' ? '（自动）' : ''}${STATUS_LABEL[run.status]}`];
   if (run.endedAt) parts.push(formatTime(run.endedAt));
   if (run.note) parts.push(run.note);
   const prs = run.targets.filter((target) => target.prUrl);

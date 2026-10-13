@@ -306,6 +306,121 @@ export async function pullRequestState(cwd: string, url: string): Promise<string
   }
 }
 
+/**
+ * `gh -R` form of a remote: `owner/repo` on github.com, `host/owner/repo`
+ * elsewhere; undefined for a local path or anything unrecognised.
+ */
+export function ghRepoSlug(url: string): string | undefined {
+  const trimmed = url.trim();
+  let host: string;
+  let path: string;
+  const scp = /^[\w.-]+@([\w.-]+):(.+)$/.exec(trimmed);
+  if (scp && !trimmed.includes('://')) {
+    host = scp[1]!;
+    path = scp[2]!;
+  } else {
+    try {
+      const parsed = new URL(trimmed);
+      if (!['https:', 'http:', 'ssh:'].includes(parsed.protocol) || !parsed.hostname) return undefined;
+      host = parsed.hostname;
+      path = parsed.pathname;
+    } catch {
+      return undefined;
+    }
+  }
+  const parts = path.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '').split('/');
+  if (parts.length !== 2 || !parts.every((part) => /^[\w.-]+$/.test(part))) return undefined;
+  const slug = parts.join('/');
+  return host.toLowerCase() === 'github.com' ? slug : `${host.toLowerCase()}/${slug}`;
+}
+
+/**
+ * Open `dream/*` PRs on the repository, whichever bot opened them. Undefined
+ * when `gh` cannot list them (no slug, not logged in…).
+ */
+export async function countOpenDreamPullRequests(cwd: string, url: string): Promise<number | undefined> {
+  const slug = ghRepoSlug(url);
+  if (!slug) return undefined;
+  const result = await runCapture(
+    'gh',
+    cwd,
+    ['pr', 'list', '-R', slug, '--state', 'open', '--limit', '100', '--json', 'number,headRefName'],
+    { timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (!result.ok) return undefined;
+  try {
+    const list = JSON.parse(result.stdout) as Array<{ headRefName?: unknown }>;
+    if (!Array.isArray(list)) return undefined;
+    return list.filter((pr) => typeof pr.headRefName === 'string' && pr.headRefName.startsWith('dream/')).length;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A PR's state with what a revert needs, or an error in words. */
+export async function pullRequestMergeInfo(
+  cwd: string,
+  url: string,
+): Promise<{ state: string; mergeCommit?: string; base?: string } | { error: string }> {
+  const result = await runCapture('gh', cwd, ['pr', 'view', url, '--json', 'state,mergeCommit,baseRefName'], {
+    timeoutMs: GH_TIMEOUT_MS,
+  });
+  if (!result.ok) return { error: describeGhFailure(result.code, result.stderr.trim()) };
+  try {
+    const view = JSON.parse(result.stdout) as { state?: unknown; mergeCommit?: { oid?: unknown } | null; baseRefName?: unknown };
+    const oid = view.mergeCommit?.oid;
+    return {
+      state: String(view.state ?? ''),
+      ...(typeof oid === 'string' && /^[0-9a-f]{7,64}$/i.test(oid) ? { mergeCommit: oid } : {}),
+      ...(typeof view.baseRefName === 'string' && isSafeRef(view.baseRefName) ? { base: view.baseRefName } : {}),
+    };
+  } catch {
+    return { error: 'gh 返回的 PR 信息无法解析' };
+  }
+}
+
+/**
+ * Revert one merged batch commit on the checkout's branch: a merge commit
+ * against its first parent, a squashed / rebased one as it is. A conflict —
+ * someone edited the same lines since — aborts and is reported, never forced.
+ */
+export async function revertDraft(
+  dir: string,
+  commit: string,
+  message: string,
+  hooksDir: string,
+): Promise<{ commit: string } | { error: string }> {
+  await mkdir(hooksDir, { recursive: true, mode: 0o700 });
+  // Usually already inside the fresh clone's history; fetched by id when not.
+  const present = (await git(dir, ['cat-file', '-e', `${commit}^{commit}`])).ok;
+  if (!present) {
+    const fetched = await git(dir, ['fetch', '-q', '--depth', '2', 'origin', commit], { timeoutMs: CLONE_TIMEOUT_MS });
+    if (!fetched.ok) return { error: `取不到合并提交 ${commit.slice(0, 8)}：${gitFailure(fetched)}` };
+  }
+  const parents = await git(dir, ['rev-list', '--parents', '-n', '1', commit]);
+  if (!parents.ok) return { error: `读不到合并提交：${gitFailure(parents)}` };
+  const isMerge = parents.stdout.trim().split(/\s+/).length > 2;
+  const named = (await git(dir, ['config', 'user.name'])).ok && (await git(dir, ['config', 'user.email'])).ok;
+  const identity = named ? [] : ['-c', 'user.name=lark-channel-bridge', '-c', 'user.email=bridge@localhost'];
+  const reverted = await git(
+    dir,
+    [...identity, '-c', `core.hooksPath=${hooksDir}`, 'revert', '--no-edit', ...(isMerge ? ['-m', '1'] : []), commit],
+    { timeoutMs: 30_000 },
+  );
+  if (!reverted.ok) {
+    await git(dir, ['revert', '--abort']);
+    return { error: `撤销有冲突（合并之后有人改过同样的内容），请在仓库里手动处理：${gitFailure(reverted)}` };
+  }
+  const amended = await git(
+    dir,
+    [...identity, '-c', `core.hooksPath=${hooksDir}`, 'commit', '-q', '--amend', '--no-verify', '-m', message],
+    { timeoutMs: 30_000 },
+  );
+  if (!amended.ok) return { error: `git commit 失败：${gitFailure(amended)}` };
+  const head = await git(dir, ['rev-parse', 'HEAD']);
+  return head.ok ? { commit: head.stdout.trim() } : { error: '读不到提交号' };
+}
+
 /** The batch commit of a kept checkout, as stat + patch. */
 export async function checkoutDiff(dir: string, maxBytes = 200_000): Promise<string | undefined> {
   const shown = await git(dir, ['show', '--format=%s', '--stat', '--patch', 'HEAD'], { maxBytes });

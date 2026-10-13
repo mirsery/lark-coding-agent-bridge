@@ -58,6 +58,13 @@ export class PendingQueue {
     return this.map.get(scope)?.messages.length ?? 0;
   }
 
+  /** Messages queued across every scope. */
+  totalDepth(): number {
+    let total = 0;
+    for (const entry of this.map.values()) total += entry.messages.length;
+    return total;
+  }
+
   cancel(scope: string): NormalizedMessage[] {
     const entry = this.map.get(scope);
     if (!entry) return [];

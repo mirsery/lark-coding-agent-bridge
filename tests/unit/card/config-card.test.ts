@@ -259,4 +259,11 @@ describe('config 梦境整理 switch', () => {
     expect(findNamedSelect(configFormCard({ ...base, dream: true }), 'dream')?.initial_option).toBe('on');
     expect(JSON.stringify(configSavedCard({ ...base, dream: true }))).toContain('梦境整理');
   });
+
+  it('has its own 自动整理 switch that says when it cannot act', () => {
+    expect(findNamedSelect(configFormCard(base), 'dream_auto')?.initial_option).toBe('off');
+    expect(findNamedSelect(configFormCard({ ...base, dreamAuto: true }), 'dream_auto')?.initial_option).toBe('on');
+    expect(JSON.stringify(configSavedCard({ ...base, dream: true, dreamAuto: true }))).toContain('自动整理');
+    expect(JSON.stringify(configSavedCard({ ...base, dream: false, dreamAuto: true }))).toContain('不生效');
+  });
 });

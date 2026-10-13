@@ -62,6 +62,37 @@ describe('DreamStateStore', () => {
     expect(JSON.parse(await readFile(path, 'utf8')).runs[0].status).toBe('failed');
   });
 
+  it('commits a checkpoint in one write and resumes a batch cut off after it instead of redoing it', async () => {
+    const path = await file();
+    const store = new DreamStateStore(path);
+    await store.load();
+    store.noteSession({ agentId: 'claude', handle: 'h1', scopeId: 'oc_1', cwd: '/w', at: 10 });
+    store.addRun(run('before', 'running'));
+    store.saveTarget('before', { repo: 'knowledge', label: '知识库', branch: 'dream/before', phase: 'committed', items: 1, commit: 'c1' });
+    store.addRun({ ...run('after', 'running'), trigger: 'auto' });
+    store.saveTarget('after', { repo: 'knowledge', label: '知识库', branch: 'dream/after', phase: 'committed', items: 1, commit: 'c2' });
+    store.checkpoint('after', 40, [{ key: 'claude:h1', consumed: 2, hash: 'hh' }], ['p1', 'p1']);
+    store.updateAuto({ consecutiveFailures: 1, lastWindowKey: '2026-10-13', lastCompletedAt: 5 });
+    await store.flush();
+
+    const restarted = new DreamStateStore(path);
+    await restarted.load(60);
+    await restarted.flush();
+    // cut before the checkpoint: the draft is void, the input is read again
+    expect(restarted.run('before')).toMatchObject({ status: 'failed', targets: [{ phase: 'failed', error: expect.stringContaining('草稿作废') }] });
+    // cut after it: the draft stays for the next run to push
+    expect(restarted.run('after')).toMatchObject({ status: 'succeeded', trigger: 'auto', checkpointAt: 40, targets: [{ phase: 'committed' }] });
+    expect(restarted.session('claude:h1')).toMatchObject({ consumed: 2, consumedHash: 'hh', consumedAt: 40 });
+    expect(restarted.isPublished('p1')).toBe(true);
+    expect(restarted.autoLedger()).toMatchObject({ consecutiveFailures: 1, lastWindowKey: '2026-10-13', lastCompletedAt: 40 });
+
+    restarted.updateAuto({ lastWindowKey: undefined, lastCheck: { at: 70, block: 'material', reason: '材料不足', material: { scopes: 1, sessions: 1, chars: 9 } } });
+    await restarted.flush();
+    const ledger = JSON.parse(await readFile(path, 'utf8')).auto;
+    expect(ledger).not.toHaveProperty('lastWindowKey');
+    expect(ledger.lastCheck).toMatchObject({ block: 'material', material: { scopes: 1 } });
+  });
+
   it('drops malformed records and survives a corrupt file', async () => {
     const path = await file();
     await writeFile(path, JSON.stringify({

@@ -55,8 +55,10 @@ export interface ConfigView {
   showToolCalls: boolean;
   smartSession: boolean;
   autoWorktreeCleanup: boolean;
-  /** 梦境整理 switch (runs are manual: /dream run or the dream card). */
+  /** 梦境整理 switch (manual runs: /dream run or the dream card). */
   dream: boolean;
+  /** 自动整理 on top of {@link dream}. */
+  dreamAuto: boolean;
   cotMessages: CotMessages;
   maxConcurrentRuns: number;
   runIdleTimeoutMinutes: number;
@@ -246,6 +248,7 @@ export type DreamRunStatus = "queued" | "running" | "deferred" | "succeeded" | "
 export interface DreamRun {
   id: string;
   status: DreamRunStatus;
+  trigger: "manual" | "auto";
   startedAt: number;
   endedAt?: number;
   note?: string;
@@ -254,7 +257,18 @@ export interface DreamRun {
   skillItems: number;
   rejected: number;
   deferred: number;
-  targets: { label: string; phase: string; items: number; prUrl?: string; prNumber?: number; error?: string }[];
+  targets: { label: string; phase: string; items: number; prUrl?: string; prNumber?: number; error?: string; revertPrUrl?: string }[];
+}
+
+/** One look by 自动整理: what it started, or what held it back. */
+export interface DreamAutoCheck {
+  at: number;
+  started?: string;
+  block?: string;
+  reason?: string;
+  material?: { scopes: number; sessions: number; chars: number; fallback?: boolean };
+  openPrs?: number;
+  quota?: { percent: number; label: string } | { unknown: true };
 }
 
 /** 梦境整理 (`/dream`): status, recent runs and their Draft PRs. */
@@ -271,5 +285,20 @@ export interface DreamView {
   openedPrs: number;
   pendingDrafts: number;
   trackedSessions: number;
+  auto: {
+    enabled: boolean;
+    settings: {
+      window: { start: number; end: number; text: string };
+      timezone: string;
+      minScopes: number;
+      minInputChars: number;
+      minIntervalDays: number;
+      maxIntervalDays: number;
+      maxOpenPrs: number;
+      maxAutoFailures: number;
+      maxQuotaPercent: number;
+    };
+    ledger: { consecutiveFailures: number; lastCompletedAt?: number; lastCheck?: DreamAutoCheck };
+  };
   message?: string;
 }

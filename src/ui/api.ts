@@ -73,8 +73,10 @@ export interface ConfigView {
   showToolCalls: boolean;
   smartSession: boolean;
   autoWorktreeCleanup: boolean;
-  /** 梦境整理 switch (manual runs only; see the dream panel). */
+  /** 梦境整理 switch (manual runs; see the dream panel). */
   dream: boolean;
+  /** 自动整理 on top of {@link dream}. */
+  dreamAuto: boolean;
   cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
   runIdleTimeoutMinutes: number;
@@ -113,6 +115,7 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
     smartSession: Boolean(getSmartSession(state.cfg)),
     autoWorktreeCleanup: getWorktreeCleanupIdleDays(state.cfg) !== undefined,
     dream: getDream(state.cfg) !== undefined,
+    dreamAuto: state.cfg.preferences?.dreamAuto === true,
     cotMessages: getCotMessages(state.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(state.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
@@ -269,6 +272,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
     typeof fv.smartSession === 'boolean' ? fv.smartSession : Boolean(getSmartSession(state.cfg));
   const autoWorktreeCleanup = typeof fv.autoWorktreeCleanup === 'boolean' ? fv.autoWorktreeCleanup : getWorktreeCleanupIdleDays(state.cfg) !== undefined;
   const dream = typeof fv.dream === 'boolean' ? fv.dream : getDream(state.cfg) !== undefined;
+  const dreamAuto = typeof fv.dreamAuto === 'boolean' ? fv.dreamAuto : state.cfg.preferences?.dreamAuto === true;
   const cotMessages: CotMessagesMode =
     fv.cotMessages === 'brief' || fv.cotMessages === 'detailed' || fv.cotMessages === 'off'
       ? fv.cotMessages
@@ -317,6 +321,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       smartSession,
       autoWorktreeCleanup,
       dream,
+      dreamAuto,
       cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,

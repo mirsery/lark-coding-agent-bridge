@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { isAgentKind, type AgentKind } from '../agent/registry';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
+import type { DreamAutoCheck, DreamAutoLedger } from './schedule';
 
 /**
  * Local bookkeeping of 梦境整理 — never knowledge itself. What was proposed
@@ -57,12 +58,16 @@ export interface DreamTarget {
   /** PR title / body, kept so a retry opens exactly the PR the first try meant to. */
   title?: string;
   body?: string;
+  /** Draft PR that reverts this target's merged batch (`/dream revert`). */
+  revertPrUrl?: string;
 }
 
 export interface DreamRun {
   /** Batch id; also the `dream/<id>` branch name of every target. */
   id: string;
   status: DreamRunStatus;
+  /** Who started it: an admin (`/dream run`, Web) or 自动整理. Absent in runs from before P2: manual. */
+  trigger?: 'manual' | 'auto';
   actorId: string;
   startedAt: number;
   endedAt?: number;
@@ -77,6 +82,13 @@ export interface DreamRun {
   /** Conversations left for a later run, and why. */
   deferred: Array<{ key: string; reason: string }>;
   targets: DreamTarget[];
+  /**
+   * Every draft of the batch was committed and the cursors moved past its
+   * input, in one write. Before this point an interrupted batch is dropped
+   * whole (its input is read again); after it, its drafts are only ever
+   * pushed / opened, never redone.
+   */
+  checkpointAt?: number;
 }
 
 interface DreamStateData {
@@ -85,6 +97,8 @@ interface DreamStateData {
   runs: DreamRun[];
   /** Hashes of proposals already put into a PR: a rejected one is not proposed again. */
   published: string[];
+  /** 自动整理 bookkeeping. */
+  auto?: DreamAutoLedger;
 }
 
 const MAX_SESSIONS = 1000;
@@ -131,16 +145,80 @@ export class DreamStateStore {
       if (record) sessions[key] = record;
     }
     let interrupted = false;
+    let cutAfterCheckpoint = 0;
     const runs = (Array.isArray(parsed.runs) ? parsed.runs : []).filter(isRun).map((run) => {
       if (options.readOnly || (run.status !== 'queued' && run.status !== 'running')) return run;
       interrupted = true;
-      return { ...run, status: 'failed' as const, endedAt: now, note: '进程重启时中断，下次整理会重新读取这些会话' };
+      if (run.checkpointAt !== undefined) {
+        cutAfterCheckpoint = Math.max(cutAfterCheckpoint, run.checkpointAt);
+        // Drafts committed and input consumed: only pushing / opening PRs was
+        // left, and the next run picks that up.
+        return { ...run, status: 'succeeded' as const, endedAt: now, note: '进程重启时中断；草稿已保存，下一轮补推、补开 PR' };
+      }
+      // Cut off before the checkpoint: whatever was committed locally is
+      // dropped — the input is read again and would otherwise be proposed twice.
+      return {
+        ...run,
+        status: 'failed' as const,
+        endedAt: now,
+        note: '进程重启时中断，下次整理会重新读取这些会话',
+        targets: run.targets.map((target) =>
+          target.phase === 'committed' || target.phase === 'pushed'
+            ? { ...target, phase: 'failed' as const, error: '进程重启时中断，草稿作废' }
+            : target,
+        ),
+      };
     });
     const published = (Array.isArray(parsed.published) ? parsed.published : []).filter(
       (hash): hash is string => typeof hash === 'string',
     );
-    this.data = { version: 1, sessions, runs, published };
+    let auto = normalizeAuto(parsed.auto);
+    // A batch cut off after its checkpoint did read its input: it counts as
+    // the last completed run for 间隔够.
+    if (cutAfterCheckpoint > (auto?.lastCompletedAt ?? 0)) {
+      auto = { ...(auto ?? { consecutiveFailures: 0 }), lastCompletedAt: cutAfterCheckpoint };
+    }
+    this.data = { version: 1, sessions, runs, published, ...(auto ? { auto } : {}) };
     if (interrupted) this.schedulePersist();
+  }
+
+  autoLedger(): DreamAutoLedger {
+    const auto = this.data.auto ?? { consecutiveFailures: 0 };
+    return { ...auto, ...(auto.lastCheck ? { lastCheck: cloneCheck(auto.lastCheck) } : {}) };
+  }
+
+  updateAuto(patch: Partial<DreamAutoLedger>): void {
+    const next: DreamAutoLedger = { ...(this.data.auto ?? { consecutiveFailures: 0 }), ...patch };
+    for (const key of Object.keys(next) as Array<keyof DreamAutoLedger>) if (next[key] === undefined) delete next[key];
+    this.data.auto = next;
+    this.schedulePersist();
+  }
+
+  /**
+   * The batch's commit point, in one write: its drafts are committed, these
+   * cursors move and these proposal hashes count as proposed.
+   */
+  checkpoint(
+    id: string,
+    at: number,
+    advances: ReadonlyArray<{ key: string; consumed: number; hash: string }>,
+    published: readonly string[],
+  ): void {
+    const run = this.data.runs.find((item) => item.id === id);
+    if (!run) return;
+    run.checkpointAt = at;
+    for (const item of advances) {
+      const record = this.data.sessions[item.key];
+      if (!record) continue;
+      const { consumedHash: _previous, ...rest } = record;
+      this.data.sessions[item.key] = { ...rest, consumed: item.consumed, consumedHash: item.hash, consumedAt: at };
+    }
+    const fresh = published.filter((hash) => !this.data.published.includes(hash));
+    this.data.published.push(...fresh);
+    if (this.data.published.length > MAX_PUBLISHED) {
+      this.data.published.splice(0, this.data.published.length - MAX_PUBLISHED);
+    }
+    this.schedulePersist();
   }
 
   sessions(): DreamSessionRecord[] {
@@ -264,6 +342,29 @@ export class DreamStateStore {
 
 export function sessionKey(agentId: AgentKind, handle: string): string {
   return `${agentId}:${handle}`;
+}
+
+function cloneCheck(check: DreamAutoCheck): DreamAutoCheck {
+  return {
+    ...check,
+    ...(check.material ? { material: { ...check.material } } : {}),
+    ...(check.quota ? { quota: { ...check.quota } } : {}),
+  };
+}
+
+function normalizeAuto(raw: unknown): DreamAutoLedger | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const item = raw as Partial<DreamAutoLedger>;
+  const failures = typeof item.consecutiveFailures === 'number' && item.consecutiveFailures >= 0 ? Math.floor(item.consecutiveFailures) : 0;
+  return {
+    consecutiveFailures: failures,
+    ...(typeof item.lastWindowKey === 'string' ? { lastWindowKey: item.lastWindowKey } : {}),
+    ...(typeof item.lastCompletedAt === 'number' ? { lastCompletedAt: item.lastCompletedAt } : {}),
+    ...(typeof item.lastFailedAt === 'number' ? { lastFailedAt: item.lastFailedAt } : {}),
+    ...(item.lastCheck && typeof item.lastCheck === 'object' && typeof item.lastCheck.at === 'number'
+      ? { lastCheck: cloneCheck(item.lastCheck) }
+      : {}),
+  };
 }
 
 function cloneRun(run: DreamRun): DreamRun {

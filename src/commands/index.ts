@@ -163,7 +163,7 @@ import { isMeetingNo } from '../meeting/api';
 import { answerInMeeting, meetingScopeId } from '../meeting/orchestrator';
 import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
-import { formatDreamPrs, formatDreamRun, formatDreamStatus } from '../dream/format';
+import { formatDreamPrs, formatDreamRevert, formatDreamRun, formatDreamStatus } from '../dream/format';
 import type { DreamService } from '../dream/service';
 
 export interface Controls {
@@ -1665,6 +1665,15 @@ async function handleDream(args: string, ctx: CommandContext): Promise<void> {
     case 'prs':
       await reply(ctx, formatDreamPrs(await dream.pullRequests()));
       return;
+    case 'revert': {
+      if (!rest[0]) {
+        await reply(ctx, '用法：`/dream revert <批次>`，批次号见 `/dream prs`。');
+        return;
+      }
+      const result = await dream.revert(rest[0]);
+      await reply(ctx, 'error' in result ? `❌ ${result.error}` : formatDreamRevert(result));
+      return;
+    }
     case 'diff': {
       const result = await dream.diff(rest[0]);
       if ('error' in result) {
@@ -1689,8 +1698,10 @@ async function handleDream(args: string, ctx: CommandContext): Promise<void> {
           '`/dream cancel` — 取消正在进行的整理',
           '`/dream prs` — 整理开出的 PR 及审核状态',
           '`/dream diff [批次]` — 查看某个批次的差异（默认最近一次）',
+          '`/dream revert <批次>` — 撤销一个已合并的批次（开一个撤销用的 Draft PR）',
           '',
-          '整理结果只以 Draft PR 的形式出现，审核合并后才生效；开关在 `/config` 里。',
+          '整理结果只以 Draft PR 的形式出现，审核合并后才生效；「梦境整理」「自动整理」两个开关在 `/config` 里。',
+          '自动整理不按天跑：新内容攒够、距上次够久、上一批 PR 审完、在允许时段且没有别的任务时才跑，用户消息一来就让路。',
         ].join('\n'),
       );
   }
@@ -3354,6 +3365,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     smartSession: getSmartSession(ctx.controls.cfg) !== undefined,
     autoWorktreeCleanup: getWorktreeCleanupIdleDays(ctx.controls.cfg) !== undefined,
     dream: getDream(ctx.controls.cfg) !== undefined,
+    dreamAuto: ctx.controls.cfg.preferences?.dreamAuto === true,
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
     admins: access.admins,
@@ -3485,6 +3497,9 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   // 梦境整理 switch. Empty / unexpected keeps current.
   const rawDream = String(fv.dream ?? '').trim();
   const dream = rawDream === 'on' ? true : rawDream === 'off' ? false : getDream(ctx.controls.cfg) !== undefined;
+  const rawDreamAuto = String(fv.dream_auto ?? '').trim();
+  const dreamAuto =
+    rawDreamAuto === 'on' ? true : rawDreamAuto === 'off' ? false : ctx.controls.cfg.preferences?.dreamAuto === true;
   const rawLarkCliIdentity = String(fv.lark_cli_identity ?? '').trim();
   const larkCliIdentity =
     rawLarkCliIdentity === 'user-default' || rawLarkCliIdentity === 'bot-only'
@@ -3533,6 +3548,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       smartSession,
       autoWorktreeCleanup,
       dream,
+      dreamAuto,
     };
 
     let failureStep = 'config.save';
@@ -3585,6 +3601,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       smartSession,
       autoWorktreeCleanup,
       dream,
+      dreamAuto,
       allowedUsersCount: access.allowedUsers.length,
       allowedChatsCount: access.allowedChats.length,
       adminsCount: access.admins.length,
@@ -3609,6 +3626,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         smartSession,
         autoWorktreeCleanup,
         dream,
+        dreamAuto,
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,
         admins: access.admins,

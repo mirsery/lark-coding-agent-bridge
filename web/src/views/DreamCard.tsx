@@ -25,6 +25,10 @@ const PHASE: Record<string, string> = {
   "pr-created": "Draft PR 已开",
 };
 
+function chars(n: number): string {
+  return n >= 10_000 ? `${(n / 10_000).toFixed(1).replace(/\.0$/, "")}万` : String(n);
+}
+
 function when(at: number): string {
   const d = new Date(at);
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -33,8 +37,9 @@ function when(at: number): string {
 
 /**
  * 梦境整理 (`/dream`): the bot reads finished conversations and opens Draft PRs
- * with memory / note / skill proposals. The switch is in 基本设置; this card
- * shows where drafts go and how recent runs went, and runs one on demand.
+ * with memory / note / skill proposals. The switches are in 基本设置; this card
+ * shows where drafts go, why 自动整理 did or did not run, how recent runs
+ * went, and runs / reverts one on demand.
  */
 export function DreamCard({ profile, refreshKey }: { profile: string; refreshKey: number }) {
   const [view, setView] = useState<DreamView | null>(null);
@@ -65,10 +70,10 @@ export function DreamCard({ profile, refreshKey }: { profile: string; refreshKey
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running?.id, profile]);
 
-  async function act(action: "run" | "cancel") {
+  async function act(action: "run" | "cancel" | "revert", id?: string) {
     setBusy(true);
     try {
-      const next = await apiPost<DreamView>(url, { action });
+      const next = await apiPost<DreamView>(url, { action, ...(id ? { id } : {}) });
       setView(next);
       if (next.message) toast.success(next.message);
     } catch (e) {
@@ -94,7 +99,7 @@ export function DreamCard({ profile, refreshKey }: { profile: string; refreshKey
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-xs text-muted-foreground">
-          读取已结束的会话，以只读方式整理出记忆、笔记和 skill 提案，在知识库和 skill 库各开一个 Draft PR；合并前不生效，从不自动合并。只在手动触发时运行，开关在上方「基本设置」。
+          读取已结束的会话，以只读方式整理出记忆、笔记和 skill 提案，在知识库和 skill 库各开一个 Draft PR；合并前不生效，从不自动合并。可以手动触发；打开「自动整理」后，攒够新内容、上一批审完且 bot 空闲时也会自己跑。开关在上方「基本设置」。
         </p>
         {error && <p className="text-sm text-destructive">加载失败：{error}</p>}
         {!error && !view && <p className="text-sm text-muted-foreground">加载中…</p>}
@@ -122,6 +127,9 @@ export function DreamCard({ profile, refreshKey }: { profile: string; refreshKey
                   {view.settings.maxSessions} 个会话 · {view.settings.maxInputChars} 字符 · {view.settings.maxRunMinutes} 分钟；会话空闲 {view.settings.minIdleMinutes} 分钟后才读（{view.agent} 只读运行）
                 </span>
               </Row>
+              <Row label="自动整理">
+                <AutoStatus view={view} />
+              </Row>
               <Row label="记录">
                 <span className="text-xs">
                   已登记会话 {view.trackedSessions} 个 · 已开 Draft PR {view.openedPrs} 个
@@ -131,7 +139,9 @@ export function DreamCard({ profile, refreshKey }: { profile: string; refreshKey
             </div>
             {view.runs.length > 0 && (
               <div className="space-y-2">
-                {view.runs.map((run) => <RunRow key={run.id} run={run} />)}
+                {view.runs.map((run) => (
+                  <RunRow key={run.id} run={run} onRevert={view.live && !busy ? () => act("revert", run.id) : undefined} />
+                ))}
               </div>
             )}
           </>
@@ -141,13 +151,41 @@ export function DreamCard({ profile, refreshKey }: { profile: string; refreshKey
   );
 }
 
-function RunRow({ run }: { run: DreamRun }) {
+function AutoStatus({ view }: { view: DreamView }) {
+  const { auto } = view;
+  if (!auto.enabled) return <span className="text-xs text-muted-foreground">未开启</span>;
+  const s = auto.settings;
+  const check = auto.ledger.lastCheck;
+  return (
+    <div className="space-y-1 text-xs">
+      <p>
+        {s.window.text}（{s.timezone}）内；距上次 ≥ {s.minIntervalDays} 天；新内容 ≥ {s.minScopes} 个会话范围或 {chars(s.minInputChars)} 字
+        {s.maxIntervalDays > 0 && `（满 ${s.maxIntervalDays} 天有新内容即可）`}；待审 PR 少于 {s.maxOpenPrs} 个；额度低于 {s.maxQuotaPercent}%
+      </p>
+      {check && (
+        <p className={check.started ? "" : "text-muted-foreground"}>
+          {when(check.at)} 检查：{check.started ? `开始了批次 ${check.started}` : `没跑——${check.reason ?? check.block}`}
+        </p>
+      )}
+      {auto.ledger.consecutiveFailures > 0 && (
+        <p className="text-destructive">连续失败 {auto.ledger.consecutiveFailures} 次</p>
+      )}
+    </div>
+  );
+}
+
+function RunRow({ run, onRevert }: { run: DreamRun; onRevert?: () => void }) {
+  const revertable = run.targets.some((target) => target.prUrl && !target.revertPrUrl);
   return (
     <div className="space-y-1 rounded-xl border px-3 py-2 text-xs">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="font-mono">{run.id}</span>
+        {run.trigger === "auto" && <Badge variant="outline">自动</Badge>}
         <Badge variant={run.status === "failed" ? "destructive" : "secondary"}>{STATUS[run.status]}</Badge>
         <span className="text-muted-foreground">{when(run.endedAt ?? run.startedAt)}</span>
+        {onRevert && revertable && (
+          <Button variant="ghost" size="sm" className="ml-auto h-6 px-2 text-xs" onClick={onRevert}>撤销</Button>
+        )}
       </div>
       {run.note && <p className="text-muted-foreground">{run.note}</p>}
       {run.targets.map((target) => (
@@ -158,6 +196,12 @@ function RunRow({ run }: { run: DreamRun }) {
             <>
               {" "}
               <a className="underline" href={target.prUrl} target="_blank" rel="noreferrer">#{target.prNumber ?? "PR"}</a>
+            </>
+          )}
+          {target.revertPrUrl && (
+            <>
+              {" · "}
+              <a className="underline" href={target.revertPrUrl} target="_blank" rel="noreferrer">撤销 PR</a>
             </>
           )}
           {target.error && <span className="text-muted-foreground">（{target.error}）</span>}

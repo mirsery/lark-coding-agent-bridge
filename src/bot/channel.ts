@@ -260,7 +260,7 @@ export interface StartChannelDeps {
     | 'auditFile'
     | 'profileDir'
   > &
-    Partial<Pick<AppPaths, 'rotationsFile' | 'contextCursorsFile' | 'skillLibrariesDir'>>;
+    Partial<Pick<AppPaths, 'rotationsFile' | 'contextCursorsFile' | 'skillLibrariesDir' | 'userLockDir'>>;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -705,15 +705,19 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     controls.scheduler = scheduler;
   }
 
-  // 梦境整理: only ever runs when an admin asks (`/dream run`, Web console).
-  // Notes the conversations the catalog records while the switch is on, so a
-  // later run can still read the ones a newer conversation replaced.
+  // 梦境整理: runs when an admin asks (`/dream run`, Web console) or, with
+  // 自动整理 on, when its gates pass — never while the profile has anything
+  // else to do. Notes the conversations the catalog records while the switch
+  // is on, so a later run can still read the ones a newer conversation replaced.
   let dream: DreamService | undefined;
   if (knowledge && deps.appPaths?.profileDir) {
+    const notDream = (scope: string) => !scope.startsWith('dream:');
     dream = new DreamService({
       profile: controls.profile,
       stateFile: join(deps.appPaths.profileDir, 'dream-state.json'),
       workDir: join(deps.appPaths.profileDir, 'dream'),
+      profileDir: deps.appPaths.profileDir,
+      ...(deps.appPaths.userLockDir ? { lockDir: deps.appPaths.userLockDir } : {}),
       knowledge,
       ...(sessionCatalog ? { sessionCatalog } : {}),
       executor,
@@ -721,6 +725,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       profileConfig: () => controls.profileConfig,
       isAdmin: (senderId) => canRunAdminCommand(controls.profileConfig, controls, senderId).ok,
       isScopeBusy: (scopeId) => activeRuns.get(scopeId) !== undefined || activeRuns.isLingering(scopeId),
+      isProfileBusy: () =>
+        activeRuns.scopes().some(notDream) ||
+        activeRuns.lingeringScopes().some(notDream) ||
+        pending.totalDepth() > 0,
     });
     await dream.init().catch((err: unknown) => log.fail('dream', err, { step: 'init' }));
     controls.dream = dream;
@@ -1111,6 +1119,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     return;
   }
 
+  // User tasks come first: an automatic 梦境整理 still drafting stops here.
+  deps.controls.dream?.preempt('有新的用户消息');
   const size = pending.push(scope, emsg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
 }

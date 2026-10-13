@@ -63,6 +63,7 @@ describe('profile-aware account and config commands', () => {
       show_tool_calls: 'hide',
       auto_worktree_cleanup: 'on',
       dream: 'on',
+      dream_auto: 'on',
       max_concurrent_runs: '7',
       run_idle_timeout_minutes: '15',
       require_mention_in_group: 'no',
@@ -81,6 +82,7 @@ describe('profile-aware account and config commands', () => {
       showToolCalls: false,
       autoWorktreeCleanup: true,
       dream: true,
+      dreamAuto: true,
       maxConcurrentRuns: 7,
       runIdleTimeoutMinutes: 15,
     });

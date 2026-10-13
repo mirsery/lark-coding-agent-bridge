@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentTranscript, TranscriptExchange } from '../../../src/agent/session-transcript.js';
 import { DREAM_DEFAULTS } from '../../../src/config/schema.js';
-import { exchangeHash, isChatScope, selectDreamInputs } from '../../../src/dream/select.js';
+import { exchangeCost, exchangeHash, isChatScope, measureNewInput, selectDreamInputs } from '../../../src/dream/select.js';
 import type { DreamSessionRecord } from '../../../src/dream/state.js';
 
 const HOUR = 3_600_000;
@@ -137,5 +137,30 @@ describe('selectDreamInputs', () => {
       read: reader({ a: t, b: t }),
     });
     expect(sel.scopes.map((s) => s.scopeId)).toEqual(['oc_b']);
+  });
+});
+
+describe('measureNewInput', () => {
+  it('counts what the next run would read, without moving anything', async () => {
+    const records = [
+      record('a', { consumed: 1, consumedHash: exchangeHash(exchange(1)), consumedAt: NOW - 3 * HOUR, firstSeenAt: NOW - 50 * HOUR }),
+      record('b', { firstSeenAt: NOW - 20 * HOUR }),
+      record('c', { scopeId: 'cron:daily' }),
+      record('d', { consumed: 2, consumedHash: exchangeHash(exchange(2)), consumedAt: NOW - HOUR }),
+    ];
+    const read = reader({
+      a: { exchanges: [exchange(1), exchange(2), exchange(3)] },
+      b: { exchanges: [exchange(1)] },
+      c: { exchanges: [exchange(1)] },
+      d: { exchanges: [exchange(1), exchange(2)] },
+    });
+    const measured = await measureNewInput({ records, settings, read });
+    expect(measured).toEqual({
+      scopes: 2,
+      sessions: 2,
+      chars: exchangeCost(exchange(2)) + exchangeCost(exchange(3)) + exchangeCost(exchange(1)),
+      oldestAt: NOW - 20 * HOUR,
+    });
+    expect(records[0]!.consumed).toBe(1);
   });
 });

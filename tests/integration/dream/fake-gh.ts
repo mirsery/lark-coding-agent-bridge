@@ -3,7 +3,9 @@ import { delimiter, join } from 'node:path';
 
 /**
  * A stand-in `gh` on PATH for 梦境整理's publishing: answers the handful of
- * calls it makes and logs each one. `permission` is what `repo view` reports.
+ * calls it makes and logs each one. `permission` is what `repo view` reports;
+ * `FAKE_GH_PR_VIEW` (JSON) replaces what `pr view` reports, `FAKE_GH_PR_URL`
+ * the URL `pr create` prints.
  */
 export async function installFakeGh(root: string, opts: { permission?: string } = {}) {
   const bin = join(root, 'fake-bin');
@@ -22,9 +24,9 @@ if (args[0] === 'repo' && args[1] === 'view') {
   if (process.env.FAKE_GH_CREATE_FAIL) { console.error('GraphQL: boom'); process.exit(1); }
   const body = fs.readFileSync(args[args.indexOf('--body-file') + 1], 'utf8');
   fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ body }) + '\\n');
-  console.log('https://github.com/acme/repo/pull/7');
+  console.log(process.env.FAKE_GH_PR_URL || 'https://github.com/acme/repo/pull/7');
 } else if (args[0] === 'pr' && args[1] === 'view') {
-  console.log(JSON.stringify({ state: 'OPEN', isDraft: true, reviewDecision: '' }));
+  console.log(process.env.FAKE_GH_PR_VIEW || JSON.stringify({ state: 'OPEN', isDraft: true, reviewDecision: '' }));
 } else if (args[0] === 'pr' && args[1] === 'diff') {
   console.log('diff --git a/x b/x');
 } else {
@@ -51,6 +53,8 @@ if (args[0] === 'repo' && args[1] === 'view') {
       process.env.PATH = previous;
       delete process.env.FAKE_GH_PERMISSION;
       delete process.env.FAKE_GH_CREATE_FAIL;
+      delete process.env.FAKE_GH_PR_VIEW;
+      delete process.env.FAKE_GH_PR_URL;
     },
   };
 }

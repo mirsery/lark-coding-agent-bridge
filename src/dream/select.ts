@@ -59,6 +59,56 @@ export function exchangeCost(exchange: TranscriptExchange): number {
   return Math.min(exchange.user.length, USER_EXCERPT_CHARS) + Math.min(exchange.assistant.length, ASSISTANT_EXCERPT_CHARS);
 }
 
+/**
+ * How much unread conversation is waiting, measured the way a run would read
+ * it — for 自动整理's 材料够 gate. Reads the same transcripts, moves nothing.
+ * `oldestAt` is when the oldest still-unread conversation was first seen.
+ */
+export async function measureNewInput(opts: {
+  records: readonly DreamSessionRecord[];
+  settings: DreamSettings;
+  read: (record: DreamSessionRecord) => Promise<AgentTranscript | undefined>;
+}): Promise<{ scopes: number; sessions: number; chars: number; oldestAt?: number }> {
+  const scopes = new Set<string>();
+  let sessions = 0;
+  let chars = 0;
+  let oldestAt: number | undefined;
+  for (const record of candidateRecords(opts.records, opts.settings)) {
+    const transcript = await opts.read(record);
+    if (!transcript) continue;
+    const fresh = transcript.exchanges.slice(resumePoint(record, transcript).start);
+    if (fresh.length === 0) continue;
+    sessions++;
+    scopes.add(record.scopeId);
+    for (const exchange of fresh) chars += exchangeCost(exchange);
+    const since = record.consumedAt ?? record.firstSeenAt;
+    oldestAt = oldestAt === undefined ? since : Math.min(oldestAt, since);
+  }
+  return { scopes: scopes.size, sessions, chars, ...(oldestAt !== undefined ? { oldestAt } : {}) };
+}
+
+/** Chat conversations in the allowed scopes with turns since they were last read, newest first. */
+function candidateRecords(records: readonly DreamSessionRecord[], settings: DreamSettings): DreamSessionRecord[] {
+  const allowed = settings.scopes ? new Set(settings.scopes) : undefined;
+  return records
+    .filter((record) => isChatScope(record.scopeId) && (!allowed || allowed.has(record.scopeId)))
+    // Nothing ran in it since it was last read: no need to open the transcript.
+    .filter((record) => record.consumedAt === undefined || record.lastSeenAt > record.consumedAt)
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+}
+
+/**
+ * Where reading resumes: after the cursor, or from the start when the
+ * transcript no longer matches it (rewritten or replaced).
+ */
+function resumePoint(record: DreamSessionRecord, transcript: AgentTranscript): { start: number; restarted: boolean } {
+  const start = record.consumed;
+  if (start <= 0) return { start: 0, restarted: false };
+  const last = transcript.exchanges[start - 1];
+  if (!last || (record.consumedHash && exchangeHash(last) !== record.consumedHash)) return { start: 0, restarted: true };
+  return { start, restarted: false };
+}
+
 export async function selectDreamInputs(opts: {
   records: readonly DreamSessionRecord[];
   settings: DreamSettings;
@@ -68,12 +118,7 @@ export async function selectDreamInputs(opts: {
   read: (record: DreamSessionRecord) => Promise<AgentTranscript | undefined>;
 }): Promise<DreamSelection> {
   const { settings, now } = opts;
-  const allowed = settings.scopes ? new Set(settings.scopes) : undefined;
-  const candidates = opts.records
-    .filter((record) => isChatScope(record.scopeId) && (!allowed || allowed.has(record.scopeId)))
-    // Nothing ran in it since it was last read: no need to open the transcript.
-    .filter((record) => record.consumedAt === undefined || record.lastSeenAt > record.consumedAt)
-    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+  const candidates = candidateRecords(opts.records, settings);
 
   const byScope = new Map<string, DreamSessionInput[]>();
   const idle: DreamSessionRecord[] = [];
@@ -97,17 +142,9 @@ export async function selectDreamInputs(opts: {
       deferred.push({ key: record.key, reason: '找不到或读不了这个会话的转录' });
       continue;
     }
-    let start = record.consumed;
-    let restarted = false;
-    if (start > 0) {
-      const last = transcript.exchanges[start - 1];
-      if (!last || (record.consumedHash && exchangeHash(last) !== record.consumedHash)) {
-        // Rewritten or replaced transcript: read it again from the start; the
-        // duplicate check at publish keeps already-merged facts out.
-        start = 0;
-        restarted = true;
-      }
-    }
+    // A rewritten or replaced transcript is read again from the start; the
+    // duplicate check at publish keeps already-merged facts out.
+    const { start, restarted } = resumePoint(record, transcript);
     const fresh = transcript.exchanges.slice(start);
     if (fresh.length === 0) {
       idle.push(record);
