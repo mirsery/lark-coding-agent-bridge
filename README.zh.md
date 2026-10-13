@@ -370,7 +370,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 
 绑定是合并而不是覆盖，所以绑之前写的记忆不会丢。同一个仓库可以给多个 profile、多台机器共用，凭据用的还是那台机器上已有的 git 配置。`/status` 里有一行展示条数与同步状态。
 
-- **自动同步**：绑定远端后，bridge 启动后不久同步一次，之后每 30 分钟一次（提交 → `pull --rebase --autostash` → 推送），所以共用一个仓库的几个 bot 不用手动 `sync` 也能看到彼此的记忆。间隔在 profile 配置的 `knowledge` 段改，`0` 表示关闭、只在手动 `/knowledge sync` 时同步；改完 `/reconnect` 或重启生效：
+- **自动同步**：绑定远端后，bridge 启动后不久同步一次，之后每 30 分钟一次（提交 → `pull --rebase --autostash` → 推送），所以共用一个仓库的几个 bot 不用手动 `sync` 也能看到彼此的记忆。间隔在 profile 配置的 `knowledge` 段改，`0` 表示关闭、只在手动 `/knowledge sync` 时同步；改完 `/reconnect` 或重启生效（在 Web 控制台改见下文）：
 
   ```json
   "knowledge": { "syncIntervalMinutes": 30 }
@@ -378,6 +378,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 
 - **不会互相打架**：自动同步和手动 `/knowledge sync`、`bind`、`unbind` 在同一个目录里排队执行，不会同时动 git。两个 bot 恰好同时推送时，后推的一方会再拉一次重推。
 - **记忆文件按行合并**：知识仓库里会自动加一个 `.gitattributes`（`MEMORY.md merge=union`、`chats/*.md merge=union`，已有内容保留、只补缺的行，单独提交），两个 bot 同时往同一个记忆文件末尾追加时两边的行都保留，不会冲突。代价是：一边删掉的记忆如果另一边同时在它附近追加了内容，可能会被合并回来。`MEMORY.md` 不带目录前缀，`notes/` 下同名的记忆索引也按这个规则合并。
+- **Web 控制台**：「配置」页的「知识库」卡片能看远端、分支、领先/落后、未提交改动和自动同步状态，也能绑定 / 改绑 / 解绑远端、立即同步、改同步间隔。git 操作当场执行；间隔由控制台托管的 profile 立即生效，由别的进程托管的（单 profile 后台服务）写进配置、下次重启生效。
 - **失败提醒**：每次失败都写日志；连续两轮自动同步失败时私聊 bot 主人一次（附 git 的第一行报错、知识目录路径，地址里的凭据会遮掉），恢复前不再提醒，恢复后补一句「已恢复」。有人手动 `/knowledge sync` 成功也算恢复。目录里留着没处理完的 merge / rebase 时不会自动同步，先处理完再说。
 
 Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两种 agent。
@@ -412,6 +413,8 @@ Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两�
 ```
 
 镜像在 `~/.lark-channel/profiles/<profile>/skill-libraries/<名字>/`。每个 profile 各自配置、各自拉取，同一个库给几个 bot 用就在每个 bot 里各 `add` 一次。
+
+也可以在 Web 控制台「配置」页的「Skill 库」卡片里管理：列出各库的提交、同步时间和载入的 skill（被同名挡住的划掉显示），添加（同样先拉取成功才保存）、单个或全部同步、移除、改同步间隔。拉取和删镜像当场执行；配置改动由控制台托管的 profile 立即生效，由别的进程托管的写进配置、下次重启生效——在那之前它若又拉回了已移除的库，启动时会把配置里没有的镜像清掉。
 
 
 ## Git 能力

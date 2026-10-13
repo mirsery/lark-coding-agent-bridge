@@ -9,7 +9,7 @@ import {
 } from './profile-store';
 import { saveConfig } from './store';
 import { secretKeyForApp, type AppConfig, type AppPreferences } from './schema';
-import type { ProfileAccess, ProfileConfig, ProfileMode, SkillsConfig } from './profile-schema';
+import type { KnowledgeConfig, ProfileAccess, ProfileConfig, ProfileMode, SkillsConfig } from './profile-schema';
 import { applyLarkCliIdentityPolicy } from '../lark-cli/identity-policy';
 import { log, reportMetric } from '../core/logger';
 
@@ -141,6 +141,30 @@ export async function saveSkillsConfig(
     state.cfg = runtimeProfileConfig(root, state.profile);
     log.info('config-ops', 'skills-mutated', { libraries: skills.libraries.length });
     return skills;
+  });
+}
+
+/**
+ * Mutate the profile's knowledge repo settings (auto-sync interval) under the
+ * config file lock, persist, and refresh the in-memory state. Profile (v2)
+ * configs only, like {@link saveSkillsConfig}.
+ */
+export async function saveKnowledgeConfig(
+  state: MutableProfileState,
+  mutate: (knowledge: KnowledgeConfig) => KnowledgeConfig,
+): Promise<KnowledgeConfig> {
+  return withConfigFileLock(state.configPath, async () => {
+    const root = await loadRootConfig(state.configPath);
+    if (!root) throw new Error('当前配置文件是旧版单 profile 结构，先运行 `lark-channel-bridge migrate` 再配置知识库。');
+    const profile = root.profiles[state.profile];
+    if (!profile) throw new Error(`profile not found: ${state.profile}`);
+    const knowledge = mutate(profile.knowledge ?? {});
+    root.profiles[state.profile] = { ...profile, knowledge };
+    await saveRootConfig(root, state.configPath);
+    state.profileConfig = root.profiles[state.profile]!;
+    state.cfg = runtimeProfileConfig(root, state.profile);
+    log.info('config-ops', 'knowledge-mutated', { syncIntervalMinutes: knowledge.syncIntervalMinutes });
+    return knowledge;
   });
 }
 

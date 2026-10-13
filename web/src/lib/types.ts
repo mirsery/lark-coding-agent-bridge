@@ -176,3 +176,65 @@ export interface OnboardState {
   detectedAgents: AgentKind[];
   agents: { kind: AgentKind; displayName: string }[];
 }
+
+/** One shared skill library (`/skills lib`). */
+export interface SkillLibrary {
+  name: string;
+  /** Credentials masked. */
+  url: string;
+  ref?: string;
+  path?: string;
+  include?: string[];
+  exclude?: string[];
+  /** A local mirror exists. */
+  present: boolean;
+  commit?: string;
+  commitAt?: number;
+  lastSyncAt?: number;
+  lastError?: string;
+  skills: { name: string; description: string }[];
+  /** Not loaded: an earlier skill has the same name. */
+  shadowed: string[];
+}
+
+export interface LibrarySyncResult {
+  name: string;
+  ok: boolean;
+  commit?: string;
+  changed?: boolean;
+  error?: string;
+}
+
+export interface SkillsView {
+  /** True when this console's process runs the profile (settings apply at once). */
+  live: boolean;
+  syncIntervalMinutes: number;
+  libraries: SkillLibrary[];
+  results?: LibrarySyncResult[];
+}
+
+export interface KnowledgeSyncRecord {
+  at: number;
+  trigger: "auto" | "manual";
+  ok: boolean;
+  error?: string;
+}
+
+/** The profile's knowledge directory and its git remote (`/knowledge`). */
+export interface KnowledgeView {
+  live: boolean;
+  dir: string;
+  /** The directory is a git repository of its own. */
+  repo: boolean;
+  remote?: string;
+  branch?: string;
+  ahead?: number;
+  behind?: number;
+  dirty?: boolean;
+  profileMemories: number;
+  ownSkills: number;
+  syncIntervalMinutes: number;
+  autoSync?: { syncing: boolean; failures: number; last?: KnowledgeSyncRecord };
+  outcome?: { committed: number; pulled: boolean; pushed: boolean; note?: string };
+  note?: string;
+}

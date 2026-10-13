@@ -61,6 +61,8 @@ export class KnowledgeAutoSync {
   private timer: NodeJS.Timeout | undefined;
   private loop: Promise<unknown> | undefined;
   private stopped = false;
+  /** A cycle is running; it schedules the next one itself when it ends. */
+  private cycling = false;
   private syncing = false;
   private last: KnowledgeSyncRecord | undefined;
   private failures = 0;
@@ -88,9 +90,8 @@ export class KnowledgeAutoSync {
 
   /**
    * First cycle after the start-up delay, then every `intervalMinutes()`,
-   * re-read each time. `0` schedules nothing (only `/knowledge sync`); the
-   * section is only re-read from disk on `/reconnect` or a restart, which
-   * starts a fresh loop anyway.
+   * re-read each time. `0` schedules nothing (only `/knowledge sync`) until
+   * {@link reschedule} is called after the interval changed.
    */
   start(): void {
     this.stopped = false;
@@ -99,6 +100,19 @@ export class KnowledgeAutoSync {
       return;
     }
     this.schedule(this.startDelayMs);
+  }
+
+  /**
+   * Apply a changed interval now: restart the wait with the current value, or
+   * start waiting at all when it was `0` before. A cycle that is running picks
+   * the new value up when it ends.
+   */
+  reschedule(): void {
+    if (this.stopped || this.cycling) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    const minutes = this.intervalMinutes();
+    if (minutes > 0) this.schedule(minutes * 60_000);
   }
 
   /**
@@ -175,7 +189,12 @@ export class KnowledgeAutoSync {
 
   private async cycle(): Promise<void> {
     if (this.stopped) return;
-    await this.tick().catch((err: unknown) => log.warn('knowledge', 'auto-sync-crashed', { err: String(err) }));
+    this.cycling = true;
+    await this.tick()
+      .catch((err: unknown) => log.warn('knowledge', 'auto-sync-crashed', { err: String(err) }))
+      .finally(() => {
+        this.cycling = false;
+      });
     if (this.stopped) return;
     const minutes = this.intervalMinutes();
     if (minutes <= 0) {

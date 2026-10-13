@@ -34,6 +34,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "@/components/ui/sonner";
+import { KnowledgeCard, SkillLibrariesCard } from "./KnowledgeCards";
 
 export function ConfigView({ profile }: { profile: string }) {
   const [cfg, setCfg] = useState<ConfigData | null>(null);
@@ -204,6 +205,9 @@ export function ConfigView({ profile }: { profile: string }) {
         cfg={cfg.meeting}
         onChange={(next) => set("meeting", next)}
       />
+
+      <SkillLibrariesCard profile={profile} />
+      <KnowledgeCard profile={profile} />
 
       <Card>
         <CardHeader><CardTitle>访问控制</CardTitle></CardHeader>

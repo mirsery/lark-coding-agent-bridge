@@ -1,11 +1,12 @@
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SkillLibraryConfig } from '../../../src/config/profile-schema';
 import { git } from '../../../src/git/exec';
 import { buildKnowledgeContext } from '../../../src/knowledge/inject';
 import {
+  buildLibraryConfig,
   libraryNameFromUrl,
   maskUrlCredentials,
   SkillLibraries,
@@ -168,6 +169,44 @@ describe('skill libraries', () => {
     await libraries.stop();
     await expect(stat(scratch)).rejects.toThrow();
   });
+
+  it('sweeps mirrors of libraries that are no longer configured on start-up', async () => {
+    const url = await sourceRepo('team', { deploy: '发布步骤' });
+    const other = await sourceRepo('other', { triage: '排查流程' });
+    config = [
+      { name: 'team', url },
+      { name: 'other', url: other },
+    ];
+    await libraries.sync();
+    // Removed from the configuration by another process (the web console)
+    // while this one kept the mirror around.
+    config = [{ name: 'team', url }];
+    await writeFile(join(root, 'skill-libraries', 'notes.txt'), 'not a mirror');
+
+    libraries.startAutoSync(() => 0);
+    await libraries.stop();
+
+    expect((await readdir(join(root, 'skill-libraries'))).sort()).toEqual(['notes.txt', 'team']);
+  });
+
+  it('applies a changed interval to the wait already running', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let minutes = 60;
+      const sync = vi.spyOn(libraries, 'sync');
+      libraries.startAutoSync(() => minutes);
+      await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
+      expect(sync).toHaveBeenCalledTimes(1);
+
+      minutes = 1;
+      libraries.reschedule();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(2));
+    } finally {
+      await libraries.stop();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('knowledge store with libraries', () => {
@@ -222,6 +261,39 @@ describe('helpers', () => {
       "fatal: unable to access 'https://***@host/r.git/'",
     );
     expect(maskUrlCredentials('git@github.com:a/b.git')).toBe('git@github.com:a/b.git');
+  });
+
+  it('checks a library before it is added', () => {
+    const taken = new Set(['team']);
+    expect(buildLibraryConfig({ url: 'git@github.com:acme/team-skills.git' }, taken)).toEqual({
+      library: { name: 'team-skills', url: 'git@github.com:acme/team-skills.git' },
+    });
+    expect(
+      buildLibraryConfig(
+        {
+          url: ' https://github.com/acme/x.git ',
+          name: 'x',
+          ref: ' main ',
+          path: './skills/',
+          include: [' a ', '', 'b'],
+          exclude: [],
+        },
+        taken,
+      ),
+    ).toEqual({ library: { name: 'x', url: 'https://github.com/acme/x.git', ref: 'main', path: 'skills', include: ['a', 'b'] } });
+    expect(buildLibraryConfig({ url: 'not a url' }, taken)).toMatchObject({ error: expect.stringContaining('不像 git') });
+    expect(buildLibraryConfig({ url: 'git@github.com:acme/team.git' }, taken)).toMatchObject({
+      error: expect.stringContaining('已经有叫'),
+    });
+    expect(buildLibraryConfig({ url: 'git@github.com:a/b.git', ref: '--upload-pack=x' }, taken)).toMatchObject({
+      error: expect.stringContaining('不合法'),
+    });
+    expect(buildLibraryConfig({ url: 'git@github.com:a/b.git', path: '../outside' }, taken)).toMatchObject({
+      error: expect.stringContaining('不合法'),
+    });
+    expect(buildLibraryConfig({ url: 'git@github.com:a/b.git', name: '-bad' }, taken)).toMatchObject({
+      error: expect.stringContaining('不可用'),
+    });
   });
 
   it('suggests a library name from the URL', () => {

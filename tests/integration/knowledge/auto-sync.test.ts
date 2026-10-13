@@ -116,6 +116,28 @@ describe('knowledge auto-sync', { timeout: GIT_TIMEOUT_MS }, () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('starts or restarts the wait when the interval changes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    interval = 0;
+    const loop = autoSync();
+    loop.start();
+    expect(vi.getTimerCount()).toBe(0);
+
+    interval = 5;
+    loop.reschedule();
+    expect(vi.getTimerCount()).toBe(1);
+    const tick = vi.spyOn(loop, 'tick').mockResolvedValue(undefined);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(tick).toHaveBeenCalledTimes(1);
+
+    interval = 0;
+    loop.reschedule();
+    expect(vi.getTimerCount()).toBe(0);
+    await loop.stop();
+    loop.reschedule();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('never runs git alongside a manual /knowledge sync', async () => {
     expect(isGitError(await bindKnowledgeRemote(store, remote))).toBe(false);
     await store.addMemory({ kind: 'profile' }, '自动那轮的');

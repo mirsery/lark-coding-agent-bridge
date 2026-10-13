@@ -283,7 +283,7 @@ async function ensureIdentity(store: KnowledgeStore): Promise<void> {
  * subdirectory of an unrelated one — committing with `add -A` there would
  * sweep up the outer repository's changes.
  */
-async function ownRepoStatus(store: KnowledgeStore): Promise<GitRepoStatus | undefined> {
+export async function ownRepoStatus(store: KnowledgeStore): Promise<GitRepoStatus | undefined> {
   const status = await readRepoStatus(store.dir).catch(() => undefined);
   if (!status) return undefined;
   // Empty prefix = the directory is the top level. Asking git avoids comparing

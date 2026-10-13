@@ -370,7 +370,7 @@ It is plain Markdown at `0600`, editable in any editor — and that is the point
 
 Binding merges instead of overwriting, so notes written before you had a remote survive. The same repository can back several profiles and several machines, and `gh`/`git` credentials stay the ones already on that machine. `/status` shows the counts and the sync state in one line.
 
-- **Auto-sync**: once a remote is bound, the bridge syncs shortly after start-up and then every 30 minutes (commit → `pull --rebase --autostash` → push), so bots sharing one repository see each other's memories without anyone running `sync`. Set the interval in the profile's `knowledge` section; `0` turns it off (manual `/knowledge sync` only). Changes apply on `/reconnect` or restart:
+- **Auto-sync**: once a remote is bound, the bridge syncs shortly after start-up and then every 30 minutes (commit → `pull --rebase --autostash` → push), so bots sharing one repository see each other's memories without anyone running `sync`. Set the interval in the profile's `knowledge` section; `0` turns it off (manual `/knowledge sync` only). Changes apply on `/reconnect` or restart (or edit it in the Web console, see below):
 
   ```json
   "knowledge": { "syncIntervalMinutes": 30 }
@@ -378,6 +378,7 @@ Binding merges instead of overwriting, so notes written before you had a remote 
 
 - **No overlapping git runs**: auto-sync and the manual `/knowledge sync` / `bind` / `unbind` queue up per directory. When two bots push at the same moment, the loser pulls once more and pushes again.
 - **Line-wise merge for memory files**: the knowledge repository gets a `.gitattributes` with `MEMORY.md merge=union` and `chats/*.md merge=union` (missing lines are appended, existing content is kept, committed on its own), so two bots appending to the same memory file at once keep both lines instead of conflicting. The trade-off: a memory deleted on one side can come back if the other side appended next to it at the same time. `MEMORY.md` has no directory prefix, so memory indexes of that name under `notes/` merge the same way.
+- **Web console**: the Knowledge card on the Configuration page shows the remote, branch, ahead/behind counts, uncommitted changes and auto-sync state, and can bind / rebind / unbind the remote, sync now and change the interval. Git work runs on the spot; the interval applies at once for profiles the console hosts, and is written to the config for profiles hosted by another process (per-profile daemons), taking effect on their next restart.
 - **Failure alerts**: every failure is logged; after two failed auto-sync rounds in a row the bot owner gets one DM (git's first error line, the knowledge directory, credentials in URLs masked), nothing more until it recovers, then a one-line "recovered" note. A successful manual `/knowledge sync` also ends the streak. A directory left mid-merge / mid-rebase is not auto-synced until someone finishes that.
 
 Skills are read by both Claude and Codex through the same index, so one file serves whichever agent a profile runs.
@@ -412,6 +413,8 @@ The knowledge directory belongs to one profile. To let several bots (say CC on C
 ```
 
 Mirrors live in `~/.lark-channel/profiles/<profile>/skill-libraries/<name>/`. Each profile configures and pulls its own; to share a library between bots, `add` it in each of them.
+
+The Skill libraries card on the Web console's Configuration page does the same: it lists each library's commit, last sync and loaded skills (shadowed ones struck through), and can add a library (saved only after the pull succeeds), sync one or all, remove one and change the interval. Pulls and mirror removal run on the spot; config changes apply at once for profiles the console hosts, and on the next restart for profiles hosted by another process — if such a process re-pulls a removed library before then, the mirror is swept at its start-up because the config no longer lists it.
 
 
 ## Git awareness

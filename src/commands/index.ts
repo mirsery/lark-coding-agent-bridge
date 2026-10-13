@@ -25,16 +25,15 @@ import {
   type KnowledgeAutoSync,
 } from '../knowledge/auto-sync';
 import {
+  buildLibraryConfig,
   getSkillSyncIntervalMinutes,
-  libraryNameFromUrl,
   maskUrlCredentials,
-  type LibraryStatus,
+  shadowedSkills,
   type SkillLibraries,
 } from '../knowledge/libraries';
-import type { KnowledgeStore, MemoryScope, SkillSummary } from '../knowledge/store';
+import type { KnowledgeStore, MemoryScope } from '../knowledge/store';
 import {
   bindKnowledgeRemote,
-  isPlausibleGitUrl,
   knowledgeRemoteUrl,
   knowledgeRepoStatus,
   syncKnowledge,
@@ -81,7 +80,7 @@ import {
   readDiffPatch,
   readDiffStat,
 } from '../git/diff';
-import { isGitError, isSafeRef } from '../git/exec';
+import { isGitError } from '../git/exec';
 import { checksLabel, parsePrArg, readPullRequest, reviewLabel } from '../git/pr';
 import { describeRepoStatus, isDirty, readRepoStatus, type GitRepoStatus } from '../git/status';
 import { addWorktree, listWorktrees, matchWorktree, removeWorktree } from '../git/worktree';
@@ -116,11 +115,7 @@ import type {
   ProfileMode,
   SkillLibraryConfig,
 } from '../config/profile-schema';
-import {
-  effectiveLarkCliIdentity,
-  isSafeSkillLibraryPath,
-  isValidSkillLibraryName,
-} from '../config/profile-schema';
+import { effectiveLarkCliIdentity } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import {
@@ -2168,12 +2163,6 @@ function configuredLibraries(ctx: CommandContext): SkillLibraryConfig[] {
   return ctx.controls.profileConfig.skills?.libraries ?? [];
 }
 
-/** Library skills that lost to an earlier skill of the same name in the merged index. */
-function shadowedSkills(status: LibraryStatus, merged: SkillSummary[]): string[] {
-  const winner = new Map(merged.map((skill) => [skill.name, skill.source]));
-  return status.skills.filter((skill) => winner.get(skill.name) !== status.config.name).map((skill) => skill.name);
-}
-
 async function skillLibraryList(
   ctx: CommandContext,
   store: KnowledgeStore,
@@ -2207,10 +2196,7 @@ async function skillLibraryList(
   );
 }
 
-interface ParsedLibraryAdd {
-  library?: SkillLibraryConfig;
-  error?: string;
-}
+type ParsedLibraryAdd = { library: SkillLibraryConfig } | { error: string };
 
 /** `<url> [name] [--ref x] [--path x] [--only a,b] [--exclude a,b] [--name x]`. */
 function parseLibraryAdd(tokens: string[], taken: Set<string>): ParsedLibraryAdd {
@@ -2231,35 +2217,18 @@ function parseLibraryAdd(tokens: string[], taken: Set<string>): ParsedLibraryAdd
   }
   const url = positional[0] ?? '';
   if (!url) return { error: '用法：`/skills lib add <git 地址> [名字]`' };
-  if (!isPlausibleGitUrl(url)) return { error: `看起来不像 git 仓库地址：\`${maskUrlCredentials(url)}\`` };
-  const name = flags.name ?? positional[1] ?? libraryNameFromUrl(url);
-  if (!isValidSkillLibraryName(name)) {
-    return { error: `库名 \`${name || '(空)'}\` 不可用：字母或数字开头，只含字母、数字、\`.\`、\`_\`、\`-\`，最长 64。` };
-  }
-  if (taken.has(name)) return { error: `已经有叫 \`${name}\` 的库了，换个名字或先 \`/skills lib rm ${name}\`。` };
-  const ref = flags.ref;
-  if (ref !== undefined && (!isSafeRef(ref) || ref.includes('..'))) return { error: `ref \`${ref}\` 不合法。` };
-  const path = flags.path?.replace(/^\.\/+/, '').replace(/\/+$/, '');
-  if (path !== undefined && !isSafeSkillLibraryPath(path)) {
-    return { error: `目录 \`${flags.path}\` 不合法：要写仓库内的相对路径。` };
-  }
-  const list = (value: string | undefined) =>
-    value
-      ?.split(',')
-      .map((item) => item.trim())
-      .filter(Boolean);
-  const include = list(flags.only);
-  const exclude = list(flags.exclude);
-  return {
-    library: {
-      name,
+  const list = (value: string | undefined) => value?.split(',');
+  return buildLibraryConfig(
+    {
       url,
-      ...(ref ? { ref } : {}),
-      ...(path ? { path } : {}),
-      ...(include?.length ? { include } : {}),
-      ...(exclude?.length ? { exclude } : {}),
+      name: flags.name ?? positional[1],
+      ref: flags.ref,
+      path: flags.path,
+      include: list(flags.only),
+      exclude: list(flags.exclude),
     },
-  };
+    taken,
+  );
 }
 
 async function skillLibraryAdd(
@@ -2269,8 +2238,8 @@ async function skillLibraryAdd(
   libraries: SkillLibraries,
 ): Promise<void> {
   const parsed = parseLibraryAdd(tokens, new Set(configuredLibraries(ctx).map((library) => library.name)));
-  if (!parsed.library) {
-    await reply(ctx, `❌ ${parsed.error ?? '参数不对'}\n\n${SKILL_LIB_HELP}`);
+  if (!('library' in parsed)) {
+    await reply(ctx, `❌ ${parsed.error}\n\n${SKILL_LIB_HELP}`);
     return;
   }
   const library = parsed.library;

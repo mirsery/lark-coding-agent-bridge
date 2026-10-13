@@ -1,10 +1,15 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
-import type { SkillLibraryConfig } from '../config/profile-schema';
+import {
+  isSafeSkillLibraryPath,
+  isValidSkillLibraryName,
+  type SkillLibraryConfig,
+} from '../config/profile-schema';
 import { log } from '../core/logger';
-import { git } from '../git/exec';
+import { git, isSafeRef } from '../git/exec';
 import { parseSkillHeader, type SkillSummary } from './store';
+import { isPlausibleGitUrl } from './sync';
 
 /**
  * Shared skill libraries: git repositories of skills that several profiles
@@ -54,6 +59,8 @@ export class SkillLibraries {
   private readonly lastSync = new Map<string, { at: number; error?: string }>();
   private timer: NodeJS.Timeout | undefined;
   private loop: Promise<unknown> | undefined;
+  private tick: ((first: boolean) => Promise<void>) | undefined;
+  private intervalMinutes: (() => number) | undefined;
   private stopped = false;
 
   constructor(opts: { dir: string; libraries: () => readonly SkillLibraryConfig[] }) {
@@ -137,19 +144,37 @@ export class SkillLibraries {
    */
   startAutoSync(intervalMinutes: () => number): void {
     this.stopped = false;
+    this.intervalMinutes = intervalMinutes;
     const tick = async (first: boolean): Promise<void> => {
       if (this.stopped) return;
-      if (first) await this.sweepScratch();
+      if (first) await this.sweepStale();
       const minutes = intervalMinutes();
       if (first || minutes > 0) await this.sync().catch(() => []);
       if (this.stopped) return;
-      const wait = (minutes > 0 ? minutes : DEFAULT_SKILL_SYNC_INTERVAL_MINUTES) * 60_000;
-      this.timer = setTimeout(() => {
-        this.loop = tick(false);
-      }, wait);
-      this.timer.unref?.();
+      this.scheduleNext(minutes);
     };
+    this.tick = tick;
     this.loop = tick(true);
+  }
+
+  /**
+   * Restart the wait with the interval as it is configured now, instead of
+   * finishing the one that was set with the old value. A sync in progress
+   * schedules its successor itself when it ends.
+   */
+  reschedule(): void {
+    if (this.stopped || !this.timer || !this.intervalMinutes) return;
+    clearTimeout(this.timer);
+    this.scheduleNext(this.intervalMinutes());
+  }
+
+  private scheduleNext(minutes: number): void {
+    const wait = (minutes > 0 ? minutes : DEFAULT_SKILL_SYNC_INTERVAL_MINUTES) * 60_000;
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      this.loop = this.tick?.(false);
+    }, wait);
+    this.timer.unref?.();
   }
 
   /**
@@ -174,18 +199,28 @@ export class SkillLibraries {
     if (grace) clearTimeout(grace);
   }
 
-  /** Remove `<name>.tmp-*` directories a first fetch left behind when the process died mid-way. */
-  private async sweepScratch(): Promise<void> {
-    let names: string[];
+  /**
+   * Remove what earlier runs left behind: `<name>.tmp-*` directories of a first
+   * fetch that died mid-way, and mirrors of libraries that are no longer
+   * configured — the web console removes a library from the configuration while
+   * a separate process may still be running this profile and pulling it.
+   */
+  private async sweepStale(): Promise<void> {
+    let entries;
     try {
-      names = await readdir(this.dir);
+      entries = await readdir(this.dir, { withFileTypes: true });
     } catch {
       return;
     }
+    const configured = new Set(this.libraries().map((library) => library.name));
     await Promise.all(
-      names
-        .filter((name) => /\.tmp-[0-9a-f]{8}$/.test(name))
-        .map((name) => rm(join(this.dir, name), { recursive: true, force: true }).catch(() => undefined)),
+      entries
+        .filter(
+          (entry) =>
+            /\.tmp-[0-9a-f]{8}$/.test(entry.name) ||
+            (entry.isDirectory() && isValidSkillLibraryName(entry.name) && !configured.has(entry.name)),
+        )
+        .map((entry) => rm(join(this.dir, entry.name), { recursive: true, force: true }).catch(() => undefined)),
     );
   }
 
@@ -301,6 +336,62 @@ export class SkillLibraries {
 /** Configured interval, defaulting when the profile has no `skills` section. */
 export function getSkillSyncIntervalMinutes(skills: { syncIntervalMinutes?: number } | undefined): number {
   return skills?.syncIntervalMinutes ?? DEFAULT_SKILL_SYNC_INTERVAL_MINUTES;
+}
+
+/** What someone asks to add: `/skills lib add` arguments or the web console form. */
+export interface LibraryDraft {
+  url: string;
+  /** Absent or empty: derived from the URL. */
+  name?: string;
+  ref?: string;
+  path?: string;
+  include?: string[];
+  exclude?: string[];
+}
+
+/**
+ * Turn a draft into a library entry, or say what is wrong with it. `taken` are
+ * the names already configured. Shared by the chat command and the web console
+ * so both accept exactly the same libraries.
+ */
+export function buildLibraryConfig(
+  draft: LibraryDraft,
+  taken: ReadonlySet<string>,
+): { library: SkillLibraryConfig } | { error: string } {
+  const url = draft.url.trim();
+  if (!url) return { error: '缺少 git 地址。' };
+  if (!isPlausibleGitUrl(url)) return { error: `看起来不像 git 仓库地址：\`${maskUrlCredentials(url)}\`` };
+  const name = draft.name?.trim() || libraryNameFromUrl(url);
+  if (!isValidSkillLibraryName(name)) {
+    return { error: `库名 \`${name || '(空)'}\` 不可用：字母或数字开头，只含字母、数字、\`.\`、\`_\`、\`-\`，最长 64。` };
+  }
+  if (taken.has(name)) return { error: `已经有叫 \`${name}\` 的库了，换个名字或先把它移除。` };
+  const ref = draft.ref?.trim() || undefined;
+  if (ref !== undefined && (!isSafeRef(ref) || ref.includes('..'))) return { error: `ref \`${ref}\` 不合法。` };
+  const rawPath = draft.path?.trim() || undefined;
+  const path = rawPath?.replace(/^\.\/+/, '').replace(/\/+$/, '');
+  if (rawPath !== undefined && !isSafeSkillLibraryPath(path ?? '')) {
+    return { error: `目录 \`${rawPath}\` 不合法：要写仓库内的相对路径。` };
+  }
+  const list = (items: string[] | undefined) => items?.map((item) => item.trim()).filter(Boolean);
+  const include = list(draft.include);
+  const exclude = list(draft.exclude);
+  return {
+    library: {
+      name,
+      url,
+      ...(ref ? { ref } : {}),
+      ...(path ? { path } : {}),
+      ...(include?.length ? { include } : {}),
+      ...(exclude?.length ? { exclude } : {}),
+    },
+  };
+}
+
+/** Skills of a library that lost to an earlier skill of the same name in the merged index. */
+export function shadowedSkills(status: LibraryStatus, merged: readonly SkillSummary[]): string[] {
+  const winner = new Map(merged.map((skill) => [skill.name, skill.source]));
+  return status.skills.filter((skill) => winner.get(skill.name) !== status.config.name).map((skill) => skill.name);
 }
 
 /**
