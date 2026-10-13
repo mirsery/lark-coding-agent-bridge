@@ -69,13 +69,7 @@ export class KnowledgeStore {
 
   async listMemories(scope: MemoryScope): Promise<MemoryEntry[]> {
     const raw = await readIfExists(this.memoryFile(scope));
-    if (!raw) return [];
-    const entries: MemoryEntry[] = [];
-    for (const line of raw.split('\n')) {
-      const match = ENTRY_RE.exec(line.trim());
-      if (match?.[1] && match[2]?.trim()) entries.push({ id: match[1], text: match[2].trim() });
-    }
-    return entries;
+    return raw ? parseMemoryEntries(raw) : [];
   }
 
   async addMemory(scope: MemoryScope, text: string): Promise<MemoryEntry> {
@@ -211,7 +205,17 @@ async function readIfExists(path: string): Promise<string | undefined> {
   }
 }
 
-function defaultMemoryHeader(scope: MemoryScope): string {
+/** The `- [id] text` bullets of a memory file, in order. */
+export function parseMemoryEntries(raw: string): MemoryEntry[] {
+  const entries: MemoryEntry[] = [];
+  for (const line of raw.split('\n')) {
+    const match = ENTRY_RE.exec(line.trim());
+    if (match?.[1] && match[2]?.trim()) entries.push({ id: match[1], text: match[2].trim() });
+  }
+  return entries;
+}
+
+export function defaultMemoryHeader(scope: MemoryScope): string {
   return scope.kind === 'profile'
     ? '# 记忆（全局）\n\n这个 profile 下所有会话都会看到下面的内容。\n'
     : '# 记忆（本会话）\n\n只有这个会话会看到下面的内容。\n';

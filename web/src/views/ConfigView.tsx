@@ -34,11 +34,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "@/components/ui/sonner";
+import { DreamCard } from "./DreamCard";
 import { KnowledgeCard, SkillLibrariesCard } from "./KnowledgeCards";
 
 export function ConfigView({ profile }: { profile: string }) {
   const [cfg, setCfg] = useState<ConfigData | null>(null);
   const [saving, setSaving] = useState(false);
+  // Bumped after a save so cards showing derived state (the dream switch) reload.
+  const [savedCount, setSavedCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   // chat_id → display name, for the allowed-chats list. Seeded from the bot's
   // known chats and topped up with names captured when adding from the picker.
@@ -85,6 +88,7 @@ export function ConfigView({ profile }: { profile: string }) {
         showToolCalls: cfg.showToolCalls,
         smartSession: cfg.smartSession,
         autoWorktreeCleanup: cfg.autoWorktreeCleanup,
+        dream: cfg.dream,
         cotMessages: cfg.cotMessages,
         maxConcurrentRuns: cfg.maxConcurrentRuns,
         runIdleTimeoutMinutes: cfg.runIdleTimeoutMinutes,
@@ -92,6 +96,7 @@ export function ConfigView({ profile }: { profile: string }) {
         larkCliIdentity: cfg.larkCliIdentity,
       });
       setCfg(next);
+      setSavedCount((n) => n + 1);
       toast.success(next.live ? "已保存，立即生效" : "已保存，下次启动该 profile 生效");
     } catch (e) {
       toast.error(String((e as Error).message ?? e));
@@ -166,6 +171,8 @@ export function ConfigView({ profile }: { profile: string }) {
             checked={cfg.smartSession} onChange={(v) => set("smartSession", v)} />
           <ToggleRow label="Worktree 自动清理" hint="每小时检查 bridge 创建的 worktree；默认闲置 7 天、已合入主工作区且无会话引用才清理。改动、未跟踪/忽略文件、锁定目录会保留；只删除 bridge 新建的分支。天数可在配置文件调整。"
             checked={cfg.autoWorktreeCleanup} onChange={(v) => set("autoWorktreeCleanup", v)} />
+          <ToggleRow label="梦境整理" hint="打开后可以手动触发（/dream run 或下方「梦境整理」卡片）：读取已结束的会话，只读整理出记忆、笔记和 skill 提案，在知识库和 skill 库开 Draft PR，合并前不生效。默认关闭。"
+            checked={cfg.dream} onChange={(v) => set("dream", v)} />
           <Field label="COT 过程消息">
             <SelectRow value={cfg.cotMessages} onChange={(v) => set("cotMessages", v as ConfigData["cotMessages"])}
               options={[["off", "关闭"], ["brief", "简略"], ["detailed", "详细"]]} />
@@ -208,6 +215,7 @@ export function ConfigView({ profile }: { profile: string }) {
 
       <SkillLibrariesCard profile={profile} />
       <KnowledgeCard profile={profile} />
+      <DreamCard profile={profile} refreshKey={savedCount} />
 
       <Card>
         <CardHeader><CardTitle>访问控制</CardTitle></CardHeader>

@@ -305,6 +305,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/memory [add\|forget\|clear]` | Cross-session memory; `--global` writes profile-wide |
 | `/skills [show <name>]` | The skill index the agent reads on demand |
 | `/knowledge [bind\|sync\|unbind]` | Git sync for memory and skills |
+| `/dream [run\|cancel\|prs\|diff]` | Dream consolidation: turn finished conversations into memory / skill Draft PRs (admins, DM only) |
 | `/diff [staged\|<ref>]` | Show the working tree's changes, with the full patch attached when long |
 | `/worktree [add\|use\|remove]` | Manage task worktrees; the session follows the new one |
 | `/pr [number\|url]` | Pull request, CI and review status for the current branch |
@@ -416,6 +417,41 @@ Mirrors live in `~/.lark-channel/profiles/<profile>/skill-libraries/<name>/`. Ea
 
 The Skill libraries card on the Web console's Configuration page does the same: it lists each library's commit, last sync and loaded skills (shadowed ones struck through), and can add a library (saved only after the pull succeeds), sync one or all, remove one and change the interval. Pulls and mirror removal run on the spot; config changes apply at once for profiles the console hosts, and on the next restart for profiles hosted by another process — if such a process re-pulls a removed library before then, the mirror is swept at its start-up because the config no longer lists it.
 
+
+### Dream consolidation (梦境整理, off by default)
+
+Rules agreed in a chat, verified conclusions and procedures that worked are easy to forget to `/memory add`. With dream consolidation on, an admin can have the bot go back over finished conversations and turn what is worth keeping into **Draft PRs for review**: memory and notes against the knowledge repository, skills against a shared skill library. Nothing takes effect before a human merges; the bridge never merges.
+
+```text
+/dream                 # switch, target repositories, limits, recent runs, PRs awaiting review
+/dream run             # run one round now; the outcome is posted back in the DM
+/dream cancel          # stop the running round (cursors do not move, it is re-read next time)
+/dream prs             # PRs it opened and their review state
+/dream diff [batch]    # the diff of a batch (default: the latest)
+```
+
+- **Switch**: 「梦境整理」 in `/config` or under Configuration → Replies & runs in the Web console; off by default. It runs only when asked — there is no schedule. Switching it off stops a running round before it publishes. `/dream` is admin-only and works only in a DM, since a round reads every chat.
+- **Input**: only conversations the bridge itself ran (Claude's session transcript, Codex's rollout, located by the session handle — nothing else on the host is scanned), and only each request and the final answer, no tool calls or progress. Scheduled jobs, meetings and doc-comment sessions are skipped. Each conversation has a cursor so the next round reads only what is new; a rewritten transcript is re-read from the start, and anything proposed before is not proposed again. Conversations still in progress (idle under 30 minutes) or running right now wait for a later round.
+- **Consolidation**: each scope (a group, DM or topic) gets its own read-only agent run (plan mode for Claude, the read-only sandbox for Codex; if read-only cannot be guaranteed it does not run), seeing only that scope's conversations, the profile-wide memory, that chat's memory and the skill index. Works for Claude and Codex profiles alike, with the profile's own agent.
+- **Validation**: the agent only suggests; each item is checked before anything is written — it must cite turns that exist in this round's input; promoting to profile-wide memory needs an admin saying it directly in their own message, otherwise it is kept for the originating chat only; merge / conflict / stale are flags written to `notes/<scope>/dream-review.md`, the original entries are not touched; anything that looks like a key, token or credential is dropped (and masked out of the excerpts the agent sees); file paths are derived by the bridge from the scope, never taken from the agent.
+- **Publishing**: a fresh clone of the remote's latest state, one commit on a `dream/<batch>` branch, a push of that new branch and a Draft PR — no force push, never the default branch, repository hooks off. The PR body lists each item's reason and source (conversation, scope, turns), what was downgraded and what was left out. Delete what you do not want in the PR, or close it to drop the batch (the same candidates are not proposed again); revert what was already merged.
+- **Targets**: existing configuration — the knowledge repository's `origin` from `/knowledge bind`; new skills go to the only library in `skills.libraries` (with several, name one in `preferences.dreamTuning.skillLibrary`), updates go back to the library the skill comes from. A library the current `gh` account cannot write to, or one pinned to a tag / commit, is skipped and reported. When `gh` is unavailable the draft stays local and the next round pushes it and opens the PR first.
+- **Limits** (optional, profile `preferences.dreamTuning`):
+
+```json
+"dreamTuning": {
+  "maxSessions": 20,
+  "maxInputChars": 120000,
+  "maxRunMinutes": 20,
+  "minIdleMinutes": 30,
+  "skillLibrary": "team-skills",
+  "scopes": ["oc_xxx"]
+}
+```
+
+With `scopes` set only those scopes are read. Local bookkeeping (cursors, PRs opened — no conversation text) is in the profile's `dream-state.json`; draft checkouts live under `dream/`, only the last few rounds are kept.
+
+The Web console's Configuration page has a 「梦境整理」 card with the targets, limits, recent rounds and PR links; for a profile the console hosts it can start or cancel a round, for one run by another process it shows status only — start a round from Feishu with `/dream run` in a DM.
 
 ## Git awareness
 

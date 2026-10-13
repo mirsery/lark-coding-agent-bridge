@@ -62,6 +62,7 @@ describe('profile-aware account and config commands', () => {
       message_reply: 'text',
       show_tool_calls: 'hide',
       auto_worktree_cleanup: 'on',
+      dream: 'on',
       max_concurrent_runs: '7',
       run_idle_timeout_minutes: '15',
       require_mention_in_group: 'no',
@@ -79,6 +80,7 @@ describe('profile-aware account and config commands', () => {
       messageReplyMigrated: true,
       showToolCalls: false,
       autoWorktreeCleanup: true,
+      dream: true,
       maxConcurrentRuns: 7,
       runIdleTimeoutMinutes: 15,
     });

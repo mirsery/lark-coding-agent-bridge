@@ -104,6 +104,7 @@ import {
   getMessageReplyMode,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
+  getDream,
   getSmartSession,
   getWorktreeCleanupIdleDays,
   getShowToolCalls,
@@ -162,6 +163,8 @@ import { isMeetingNo } from '../meeting/api';
 import { answerInMeeting, meetingScopeId } from '../meeting/orchestrator';
 import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
+import { formatDreamPrs, formatDreamRun, formatDreamStatus } from '../dream/format';
+import type { DreamService } from '../dream/service';
 
 export interface Controls {
   profile: string;
@@ -211,6 +214,8 @@ export interface Controls {
   audit?: AuditLog;
   /** 会话智能压缩 closes the agent asked for, read by `/status`. Late-bound by startChannel. */
   pendingRotations?: Pick<PendingRotationStore, 'get'>;
+  /** 梦境整理 backing `/dream` and the console's dream panel. Late-bound by startChannel. */
+  dream?: DreamService;
 }
 
 export interface CommandContext {
@@ -295,6 +300,7 @@ const handlers: Record<string, Handler> = {
   '/coffee': handleCoffee,
   '/usage': handleUsage,
   '/audit': handleAudit,
+  '/dream': handleDream,
   // Card buttons of approval prompts (not typed by people; see ApprovalBroker).
   '/approval': handleApproval,
 };
@@ -331,6 +337,8 @@ const ADMIN_COMMANDS = new Set([
   '/meeting',
   // Shows who had the bot do what across every chat of the profile.
   '/audit',
+  // Reads every chat's conversations and opens PRs against shared repositories.
+  '/dream',
 ]);
 
 function isAdminCommand(cmd: string): boolean {
@@ -1616,6 +1624,81 @@ const AUDIT_EVENT_LABELS: Record<string, string> = {
   timeout: '超时拒绝',
   cancelled: '已取消',
 };
+
+/**
+ * `/dream` — 梦境整理. Admin-only and DM-only: a run reads every chat's
+ * conversations, and its drafts and diffs can carry any of them. The chat only
+ * ever sees counts and PR links; `diff` is the one view of draft content.
+ */
+async function handleDream(args: string, ctx: CommandContext): Promise<void> {
+  if (ctx.chatMode !== 'p2p') {
+    await reply(ctx, '梦境整理涉及所有会话的内容，请私聊 bot 发送 `/dream`。');
+    return;
+  }
+  const dream = ctx.controls.dream;
+  if (!dream) {
+    await reply(ctx, '当前 bridge 没有启用梦境整理（缺少 profile 数据目录或知识库）。');
+    return;
+  }
+  const [sub = '', ...rest] = args.trim().split(/\s+/);
+  switch (sub) {
+    case '':
+    case 'status':
+      await reply(ctx, formatDreamStatus(await dream.status()));
+      return;
+    case 'run': {
+      const actor = { id: ctx.msg.senderId, ...(ctx.msg.senderName ? { name: ctx.msg.senderName } : {}) };
+      const started = await dream.start(actor, (run) => {
+        void reply(ctx, formatDreamRun(run));
+      });
+      await reply(
+        ctx,
+        'error' in started
+          ? `❌ ${started.error}`
+          : `🌙 已开始整理，批次 \`${started.run.id}\`。读取已结束的会话、生成草稿并开 Draft PR，完成后在这里回复结果；\`/dream cancel\` 可以取消。`,
+      );
+      return;
+    }
+    case 'cancel':
+      await reply(ctx, dream.cancel() ? '⏹ 已请求取消，当前步骤结束后停止；游标不会移动。' : '现在没有在进行的整理。');
+      return;
+    case 'prs':
+      await reply(ctx, formatDreamPrs(await dream.pullRequests()));
+      return;
+    case 'diff': {
+      const result = await dream.diff(rest[0]);
+      if ('error' in result) {
+        await reply(ctx, result.error);
+        return;
+      }
+      const fence = '```';
+      const body = result.parts
+        .map((part) => `**${part.label}**\n${fence}diff\n${clipDiff(part.diff, 6000).replaceAll(fence, "'''")}\n${fence}`)
+        .join('\n\n');
+      await reply(ctx, `**🌙 批次 \`${result.id}\` 的差异**\n\n${body}`);
+      return;
+    }
+    default:
+      await reply(
+        ctx,
+        [
+          '**🌙 梦境整理**',
+          '',
+          '`/dream` — 状态：开关、目标仓库、上次结果、待审核 PR 数',
+          '`/dream run` — 立即整理：读取已结束的会话，生成记忆 / 笔记 / skill 草稿并开 Draft PR',
+          '`/dream cancel` — 取消正在进行的整理',
+          '`/dream prs` — 整理开出的 PR 及审核状态',
+          '`/dream diff [批次]` — 查看某个批次的差异（默认最近一次）',
+          '',
+          '整理结果只以 Draft PR 的形式出现，审核合并后才生效；开关在 `/config` 里。',
+        ].join('\n'),
+      );
+  }
+}
+
+function clipDiff(diff: string, max: number): string {
+  return diff.length > max ? `${diff.slice(0, max)}\n… (已截断，完整内容见 PR)` : diff;
+}
 
 /**
  * `/audit [N]`: the latest side-effecting steps (commands, file writes,
@@ -3270,6 +3353,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     approvalsEnabled: ctx.controls.profileConfig.approvals.enabled,
     smartSession: getSmartSession(ctx.controls.cfg) !== undefined,
     autoWorktreeCleanup: getWorktreeCleanupIdleDays(ctx.controls.cfg) !== undefined,
+    dream: getDream(ctx.controls.cfg) !== undefined,
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
     admins: access.admins,
@@ -3398,6 +3482,9 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     rawSmartSession === 'on' ? true : rawSmartSession === 'off' ? false : getSmartSession(ctx.controls.cfg) !== undefined;
   const rawCleanup = String(fv.auto_worktree_cleanup ?? '').trim();
   const autoWorktreeCleanup = rawCleanup === 'on' ? true : rawCleanup === 'off' ? false : getWorktreeCleanupIdleDays(ctx.controls.cfg) !== undefined;
+  // 梦境整理 switch. Empty / unexpected keeps current.
+  const rawDream = String(fv.dream ?? '').trim();
+  const dream = rawDream === 'on' ? true : rawDream === 'off' ? false : getDream(ctx.controls.cfg) !== undefined;
   const rawLarkCliIdentity = String(fv.lark_cli_identity ?? '').trim();
   const larkCliIdentity =
     rawLarkCliIdentity === 'user-default' || rawLarkCliIdentity === 'bot-only'
@@ -3445,6 +3532,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       requireMentionInGroup,
       smartSession,
       autoWorktreeCleanup,
+      dream,
     };
 
     let failureStep = 'config.save';
@@ -3496,6 +3584,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       approvalsEnabled,
       smartSession,
       autoWorktreeCleanup,
+      dream,
       allowedUsersCount: access.allowedUsers.length,
       allowedChatsCount: access.allowedChats.length,
       adminsCount: access.admins.length,
@@ -3519,6 +3608,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         approvalsEnabled,
         smartSession,
         autoWorktreeCleanup,
+        dream,
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,
         admins: access.admins,

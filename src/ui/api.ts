@@ -26,6 +26,7 @@ import {
 import {
   EFFORT_LEVEL_LABELS,
   getCotMessages,
+  getDream,
   getEffort,
   getMaxConcurrentRuns,
   getMessageReplyMode,
@@ -72,6 +73,8 @@ export interface ConfigView {
   showToolCalls: boolean;
   smartSession: boolean;
   autoWorktreeCleanup: boolean;
+  /** 梦境整理 switch (manual runs only; see the dream panel). */
+  dream: boolean;
   cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
   runIdleTimeoutMinutes: number;
@@ -109,6 +112,7 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
     showToolCalls: getShowToolCalls(state.cfg),
     smartSession: Boolean(getSmartSession(state.cfg)),
     autoWorktreeCleanup: getWorktreeCleanupIdleDays(state.cfg) !== undefined,
+    dream: getDream(state.cfg) !== undefined,
     cotMessages: getCotMessages(state.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(state.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
@@ -264,6 +268,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
   const smartSession =
     typeof fv.smartSession === 'boolean' ? fv.smartSession : Boolean(getSmartSession(state.cfg));
   const autoWorktreeCleanup = typeof fv.autoWorktreeCleanup === 'boolean' ? fv.autoWorktreeCleanup : getWorktreeCleanupIdleDays(state.cfg) !== undefined;
+  const dream = typeof fv.dream === 'boolean' ? fv.dream : getDream(state.cfg) !== undefined;
   const cotMessages: CotMessagesMode =
     fv.cotMessages === 'brief' || fv.cotMessages === 'detailed' || fv.cotMessages === 'off'
       ? fv.cotMessages
@@ -311,6 +316,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       showToolCalls,
       smartSession,
       autoWorktreeCleanup,
+      dream,
       cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,

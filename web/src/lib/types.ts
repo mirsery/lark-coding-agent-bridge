@@ -55,6 +55,8 @@ export interface ConfigView {
   showToolCalls: boolean;
   smartSession: boolean;
   autoWorktreeCleanup: boolean;
+  /** 梦境整理 switch (runs are manual: /dream run or the dream card). */
+  dream: boolean;
   cotMessages: CotMessages;
   maxConcurrentRuns: number;
   runIdleTimeoutMinutes: number;
@@ -237,4 +239,37 @@ export interface KnowledgeView {
   autoSync?: { syncing: boolean; failures: number; last?: KnowledgeSyncRecord };
   outcome?: { committed: number; pulled: boolean; pushed: boolean; note?: string };
   note?: string;
+}
+
+export type DreamRunStatus = "queued" | "running" | "deferred" | "succeeded" | "failed" | "cancelled";
+
+export interface DreamRun {
+  id: string;
+  status: DreamRunStatus;
+  startedAt: number;
+  endedAt?: number;
+  note?: string;
+  sessions: number;
+  memoryItems: number;
+  skillItems: number;
+  rejected: number;
+  deferred: number;
+  targets: { label: string; phase: string; items: number; prUrl?: string; prNumber?: number; error?: string }[];
+}
+
+/** 梦境整理 (`/dream`): status, recent runs and their Draft PRs. */
+export interface DreamView {
+  /** True when this console's process runs the profile (run / cancel available). */
+  live: boolean;
+  enabled: boolean;
+  agent: string;
+  settings: { maxSessions: number; maxInputChars: number; maxRunMinutes: number; minIdleMinutes: number; skillLibrary?: string; scopes?: string[] };
+  targets: { knowledge: { url?: string; problem?: string }; skills: { library?: string; problem?: string } };
+  running?: DreamRun;
+  runs: DreamRun[];
+  lastSucceededAt?: number;
+  openedPrs: number;
+  pendingDrafts: number;
+  trackedSessions: number;
+  message?: string;
 }

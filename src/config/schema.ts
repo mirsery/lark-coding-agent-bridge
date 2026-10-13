@@ -205,7 +205,50 @@ export interface AppPreferences {
   worktreeCleanupIdleDays?: number;
   /** Thresholds behind {@link smartSession}; config-file only. See {@link getSmartSession}. */
   smartSessionTuning?: SmartSessionTuning;
+  /**
+   * 梦境整理. When on, an admin's `/dream run` turns ended conversations into
+   * reviewable Draft PRs against the knowledge repo and the profile's own skill
+   * library. Never merges, never runs on its own. Independent of
+   * {@link smartSession}. Default off.
+   */
+  dream?: boolean;
+  /** Limits behind {@link dream}; config-file only. See {@link getDream}. */
+  dreamTuning?: DreamTuning;
 }
+
+export interface DreamTuning {
+  /** Conversations read per run, newest first. Default 20. */
+  maxSessions?: number;
+  /** Transcript characters handed to the agent per run, all scopes together. Default 120000. */
+  maxInputChars?: number;
+  /** Wall-clock limit for one run's agent turns, in minutes. Default 20. */
+  maxRunMinutes?: number;
+  /** A conversation still active is read only after this many idle minutes. Default 30. */
+  minIdleMinutes?: number;
+  /**
+   * `skills.libraries[].name` new skills go to. Needed only when more than one
+   * library is configured; absent with exactly one, that one.
+   */
+  skillLibrary?: string;
+  /** Only these chat / topic scopes. Absent: every chat scope. */
+  scopes?: string[];
+}
+
+export interface DreamSettings {
+  maxSessions: number;
+  maxInputChars: number;
+  maxRunMinutes: number;
+  minIdleMinutes: number;
+  skillLibrary?: string;
+  scopes?: string[];
+}
+
+export const DREAM_DEFAULTS: DreamSettings = {
+  maxSessions: 20,
+  maxInputChars: 120_000,
+  maxRunMinutes: 20,
+  minIdleMinutes: 30,
+};
 
 export interface SmartSessionTuning {
   /** Idle this long with a large context starts a fresh session. Default 60. */
@@ -388,6 +431,34 @@ export function getSmartSession(cfg: AppConfig): SmartSessionSettings | undefine
     minContextTokens: pick(tuning.minContextTokens, 10_000, 2_000_000, SMART_SESSION_DEFAULTS.minContextTokens),
     hardIdleMinutes: pick(tuning.hardIdleMinutes, 30, 30 * 24 * 60, SMART_SESSION_DEFAULTS.hardIdleMinutes),
     compactWindowTokens: pick(tuning.compactWindowTokens, 100_000, 2_000_000, SMART_SESSION_DEFAULTS.compactWindowTokens),
+  };
+}
+
+/**
+ * Resolved 梦境整理 limits, or `undefined` when the switch is off.
+ * Out-of-range values fall back to the defaults.
+ */
+export function getDream(cfg: AppConfig): DreamSettings | undefined {
+  if (cfg.preferences?.dream !== true) return undefined;
+  return resolveDreamSettings(cfg.preferences.dreamTuning);
+}
+
+/** {@link getDream}'s limits whether or not the switch is on — for status displays. */
+export function resolveDreamSettings(tuning: DreamTuning | undefined): DreamSettings {
+  const raw = tuning ?? {};
+  const pick = (value: unknown, min: number, max: number, fallback: number): number =>
+    typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max ? Math.floor(value) : fallback;
+  const library = typeof raw.skillLibrary === 'string' ? raw.skillLibrary.trim() : '';
+  const scopes = Array.isArray(raw.scopes)
+    ? raw.scopes.filter((scope): scope is string => typeof scope === 'string' && scope.trim() !== '').map((scope) => scope.trim())
+    : [];
+  return {
+    maxSessions: pick(raw.maxSessions, 1, 200, DREAM_DEFAULTS.maxSessions),
+    maxInputChars: pick(raw.maxInputChars, 10_000, 1_000_000, DREAM_DEFAULTS.maxInputChars),
+    maxRunMinutes: pick(raw.maxRunMinutes, 2, 120, DREAM_DEFAULTS.maxRunMinutes),
+    minIdleMinutes: pick(raw.minIdleMinutes, 0, 7 * 24 * 60, DREAM_DEFAULTS.minIdleMinutes),
+    ...(library ? { skillLibrary: library } : {}),
+    ...(scopes.length > 0 ? { scopes } : {}),
   };
 }
 

@@ -385,6 +385,18 @@ export class RunExecutor {
     return Boolean(live && !live.finishing && !live.session.hasExited);
   }
 
+  /**
+   * Close `scopeId`'s process now if it is only being kept idle for a next
+   * turn — for one-shot internal runs (梦境整理) that will never have one.
+   */
+  async closeIdleScope(scopeId: string): Promise<void> {
+    const live = this.live.get(scopeId);
+    if (!live || live.finishing || live.session.hasExited || live.session.hasAttachedTurn) return;
+    if (live.session.background > 0) return;
+    this.endLinger(live);
+    await this.closeIdle(live);
+  }
+
   async stopLingering(): Promise<void> {
     const lingering = [...this.live.values()].filter(
       (live) => !live.session.hasExited && !live.session.hasAttachedTurn && !live.finishing,

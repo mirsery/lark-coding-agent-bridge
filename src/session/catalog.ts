@@ -59,6 +59,7 @@ export function sessionCatalogKey(input: SessionCatalogIdentity): string {
 
 export class SessionCatalog {
   private data = new Map<string, SessionCatalogEntry>();
+  private readonly listeners = new Set<(entry: SessionCatalogEntry) => void>();
   private saving: Promise<void> = Promise.resolve();
   private readonly path: string;
 
@@ -117,7 +118,24 @@ export class SessionCatalog {
     };
     this.data.set(key, entry);
     this.schedulePersist();
+    for (const listener of this.listeners) {
+      try {
+        listener({ ...entry });
+      } catch (err) {
+        log.fail('session-catalog', err, { step: 'listener' });
+      }
+    }
     return { ...entry };
+  }
+
+  /**
+   * Hear about every conversation {@link upsertActive} records. The catalog
+   * keeps only the latest conversation per identity, so a consumer that needs
+   * the ones replaced since (梦境整理) has to note them as they come.
+   */
+  onUpsert(listener: (entry: SessionCatalogEntry) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   archiveActive(input: ArchiveSessionCatalogInput): boolean {

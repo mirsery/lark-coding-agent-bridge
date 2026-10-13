@@ -23,6 +23,7 @@ import {
   userLoginStart,
 } from './api';
 import { activateProfile, listBots, listProfiles } from './fleet';
+import { dreamView, mutateDream } from './dream';
 import { knowledgeView, mutateKnowledge, mutateSkills, skillsView } from './knowledge';
 import { listRuns, stopRun } from './runs';
 import { onboardCreate, onboardState, onboardValidate } from './onboard';
@@ -256,6 +257,17 @@ async function route(
   if (path === '/api/knowledge' && p) {
     const target = await resolveTargetState(deps, url);
     sendJson(res, 200, await mutateKnowledge(target, await readJsonBody(req)));
+    return;
+  }
+
+  // --- 梦境整理 (/dream) ---
+  if (path === '/api/dream' && g) {
+    sendJson(res, 200, await dreamView(await resolveTargetState(deps, url)));
+    return;
+  }
+  if (path === '/api/dream' && p) {
+    const target = await resolveTargetState(deps, url);
+    sendJson(res, 200, await mutateDream(target, await readJsonBody(req)));
     return;
   }
 

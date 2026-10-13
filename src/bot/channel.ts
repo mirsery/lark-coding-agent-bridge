@@ -59,7 +59,7 @@ import {
   toPolicyAttachment,
   toPromptAttachment,
 } from '../media/attachment';
-import { canUseDm, canUseGroup, requireMentionForChat, runNeedsApproval } from '../policy/access';
+import { canRunAdminCommand, canUseDm, canUseGroup, requireMentionForChat, runNeedsApproval } from '../policy/access';
 import { MeetingManager } from '../meeting/manager';
 import type { VcRequestClient } from '../meeting/api';
 import { attachMeetingAgent, summarizeEndedMeeting } from '../meeting/orchestrator';
@@ -93,6 +93,7 @@ import { getKnowledgeSyncIntervalMinutes, KnowledgeAutoSync } from '../knowledge
 import { getSkillSyncIntervalMinutes, SkillLibraries } from '../knowledge/libraries';
 import { KnowledgeStore } from '../knowledge/store';
 import { Scheduler } from '../scheduler/scheduler';
+import { DreamService } from '../dream/service';
 import { JobStore } from '../scheduler/store';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
@@ -704,6 +705,27 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     controls.scheduler = scheduler;
   }
 
+  // 梦境整理: only ever runs when an admin asks (`/dream run`, Web console).
+  // Notes the conversations the catalog records while the switch is on, so a
+  // later run can still read the ones a newer conversation replaced.
+  let dream: DreamService | undefined;
+  if (knowledge && deps.appPaths?.profileDir) {
+    dream = new DreamService({
+      profile: controls.profile,
+      stateFile: join(deps.appPaths.profileDir, 'dream-state.json'),
+      workDir: join(deps.appPaths.profileDir, 'dream'),
+      knowledge,
+      ...(sessionCatalog ? { sessionCatalog } : {}),
+      executor,
+      appConfig: () => controls.cfg,
+      profileConfig: () => controls.profileConfig,
+      isAdmin: (senderId) => canRunAdminCommand(controls.profileConfig, controls, senderId).ok,
+      isScopeBusy: (scopeId) => activeRuns.get(scopeId) !== undefined || activeRuns.isLingering(scopeId),
+    });
+    await dream.init().catch((err: unknown) => log.fail('dream', err, { step: 'init' }));
+    controls.dream = dream;
+  }
+
   const ownerRefresh = createOwnerRefreshController({
     controls,
     source: channel,
@@ -789,6 +811,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       meetingManager?.dispose();
       scheduler?.stop();
       controls.scheduler = undefined;
+      await dream?.dispose().catch((err: unknown) => log.fail('dream', err, { step: 'dispose' }));
+      controls.dream = undefined;
       controls.meeting = undefined;
       controls.runsMonitor = undefined;
       controls.usage = undefined;

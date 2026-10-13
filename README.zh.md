@@ -305,6 +305,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/memory [add\|forget\|clear]` | 跨会话记忆，`--global` 写到全局 |
 | `/skills [show <名字>]` | agent 按需读取的 skill 索引 |
 | `/knowledge [bind\|sync\|unbind]` | 记忆与 skill 的 git 同步 |
+| `/dream [run\|cancel\|prs\|diff]` | 梦境整理：把已结束的会话整理成记忆 / skill 的 Draft PR（管理员私聊） |
 | `/diff [staged\|<ref>]` | 查看工作目录的改动，patch 过长时附带完整文件 |
 | `/worktree [add\|use\|remove]` | 管理任务级 worktree，会话自动跟着切 |
 | `/pr [编号\|链接]` | 当前分支的 PR、CI 与评审状态 |
@@ -416,6 +417,41 @@ Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两�
 
 也可以在 Web 控制台「配置」页的「Skill 库」卡片里管理：列出各库的提交、同步时间和载入的 skill（被同名挡住的划掉显示），添加（同样先拉取成功才保存）、单个或全部同步、移除、改同步间隔。拉取和删镜像当场执行；配置改动由控制台托管的 profile 立即生效，由别的进程托管的写进配置、下次重启生效——在那之前它若又拉回了已移除的库，启动时会把配置里没有的镜像清掉。
 
+
+### 梦境整理（默认关闭）
+
+会话里定下的约定、验证过的结论、做成功的流程，过后常常没人记得 `/memory add`。打开梦境整理后，管理员可以让 bot 回头把已经结束的会话整理一遍，把值得长期保留的内容做成**待审核的 Draft PR**：记忆和笔记进知识库仓库，skill 进共享 skill 库。合并之前什么都不生效，bridge 从不自动合并。
+
+```text
+/dream                 # 开关、目标仓库、每轮上限、最近几轮结果、待审核 PR 数
+/dream run             # 立即整理一轮，完成后在私聊里回复结果
+/dream cancel          # 取消正在进行的整理（游标不动，下次重读）
+/dream prs             # 整理开出的 PR 及其审核状态
+/dream diff [批次]     # 某一批的差异（默认最近一次）
+```
+
+- **开关**：`/config` 的「梦境整理」或 Web 控制台「配置 → 回复与运行」，默认关闭；只在手动触发时运行，没有定时任务。关掉开关后正在跑的一轮在发布前会停下。`/dream` 只有管理员能用，而且只能私聊——一轮会读到所有会话的内容。
+- **读什么**：只读 bridge 自己跑过的会话（Claude 的会话转录、Codex 的 rollout，按会话句柄精确定位，不扫本机别的历史），只取每轮的用户请求和最终回答，不含工具调用和中间过程；定时任务、会议、云文档评论的会话不读。每个会话有游标，下一轮只读新增的部分；转录被改写时从头重读，已经提过的内容不会重复提。仍在进行（空闲不足 30 分钟）或正在运行的会话留到下一轮。
+- **怎么整理**：每个会话范围（一个群 / 私聊 / 话题）单独开一个只读 agent 运行（Claude 用 plan 模式，Codex 用只读沙箱，开不成只读就不跑），只给它看这个范围自己的对话、全局记忆、本会话记忆和 skill 索引。Claude 和 Codex profile 都能用，用的是 profile 自己的 agent。
+- **校验**：agent 的输出只是建议，写入前逐条校验——每条都要引用本次输入里真实存在的轮次；提升为全局约定必须有管理员本人在单独发言里直接提出，否则降级为只写进原会话；合并 / 冲突 / 过时只做标记（写进 `notes/<范围>/dream-review.md`），不改原条目；疑似密钥、令牌、凭证的条目直接丢弃，给 agent 的对话摘录里也先遮掉；文件路径由 bridge 按范围推出来，agent 不能指定路径。
+- **怎么提交**：从远端最新状态新拉一份，在 `dream/<批次>` 分支上提交一次，推送这个新分支并开 Draft PR；不 force push、不碰默认分支、不跑仓库的 hooks。PR 正文写明每条的理由、来源（会话、范围、轮次）、哪些被降级、哪些没采纳。不要的条目直接在 PR 里删，整批不要就关掉 PR，同样的候选不会再提；已经合并的用 revert 撤销。
+- **目标仓库**：沿用现有配置——知识库用 `/knowledge bind` 绑定的 `origin`；skill 新建到 `skills.libraries` 里唯一的那个库（有多个库时在 `preferences.dreamTuning.skillLibrary` 指定），更新则回到该 skill 所在的库。当前 `gh` 账号对某个库没有写权限、或库固定在 tag / 提交上时，跳过该库并在结果里说明。`gh` 不可用时草稿留在本地，下一轮先补推、补开 PR。
+- **上限**（profile 的 `preferences.dreamTuning`，可选）：
+
+```json
+"dreamTuning": {
+  "maxSessions": 20,
+  "maxInputChars": 120000,
+  "maxRunMinutes": 20,
+  "minIdleMinutes": 30,
+  "skillLibrary": "team-skills",
+  "scopes": ["oc_xxx"]
+}
+```
+
+`scopes` 填了就只整理这些会话范围。本地记录（读到哪、开了哪些 PR，不含对话内容）在 profile 目录的 `dream-state.json`，草稿的工作副本在 `dream/` 下，只保留最近几轮。
+
+Web 控制台「配置」页有「梦境整理」卡片：显示目标仓库、上限、最近几轮结果和 PR 链接；控制台托管的 profile 可以直接「立即整理」/「取消整理」，别的进程托管的只显示状态，整理请在飞书里私聊发 `/dream run`。
 
 ## Git 能力
 

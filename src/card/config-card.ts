@@ -26,6 +26,8 @@ export interface ConfigFormOpts {
   /** 会话智能压缩 on/off. Optional so callers predating the switch render it as off. */
   smartSession?: boolean;
   autoWorktreeCleanup?: boolean;
+  /** 梦境整理 on/off. Optional so callers predating the switch render it as off. */
+  dream?: boolean;
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
@@ -436,6 +438,20 @@ export function configFormCard(opts: ConfigFormOpts): object {
               {
                 tag: 'markdown',
                 content:
+                  '**梦境整理**\n<font color="grey">开=管理员可用 /dream run 把已结束的会话整理成记忆 / 笔记 / skill 草稿，以 Draft PR 提交到知识库和自有 skill 库，审核合并后才生效；不会自动运行或推送日报</font>',
+              },
+              {
+                tag: 'select_static',
+                name: 'dream',
+                initial_option: opts.dream ? 'on' : 'off',
+                options: [
+                  { text: { tag: 'plain_text', content: '开' }, value: 'on' },
+                  { text: { tag: 'plain_text', content: '关(默认)' }, value: 'off' },
+                ],
+              },
+              {
+                tag: 'markdown',
+                content:
                   '**lark-cli 身份策略**\n<font color="grey">只允许应用身份=不碰个人资源；允许用户身份=可用已授权的个人日历/邮箱/云盘</font>' +
                   (teamMode ? teamOverrideNote : ''),
               },
@@ -556,6 +572,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
           ['非管理员审批', opts.approvalsEnabled ? '开' : '关'],
           ['会话智能压缩', opts.smartSession ? '开' : '关'],
           ['Worktree 自动清理', opts.autoWorktreeCleanup ? '开' : '关'],
+          ['梦境整理', opts.dream ? '开' : '关'],
           [
             'lark-cli 身份策略',
             opts.mode === 'team'
