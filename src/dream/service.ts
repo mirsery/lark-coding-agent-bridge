@@ -186,7 +186,7 @@ interface CurrentRun {
 }
 
 const KEEP_CHECKOUT_RUNS = 5;
-const AUTO_CHECK_MS = 10 * 60_000;
+const AUTO_CHECK_MS = 30 * 60_000;
 const WATCHDOG_MS = 15_000;
 const UNKNOWN_QUOTA_BUDGET = 0.5;
 const AUTO_ACTOR: DreamActor = { id: 'dream-auto', name: '自动整理' };
