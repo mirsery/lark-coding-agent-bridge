@@ -1,3 +1,4 @@
+import { isPlainCoffeeRequest } from './coffee-intent';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -345,16 +346,10 @@ function isAdminCommand(cmd: string): boolean {
   return ADMIN_COMMANDS.has(cmd.startsWith('/') ? cmd : `/${cmd}`);
 }
 
-// Natural-language phrasing for the `/coffee` easter egg — "给xxx发一杯咖啡",
-// "来一杯咖啡", "整杯咖啡" — so the card isn't gated behind knowing the exact
-// slash command. Deliberately narrow (verb + 杯咖啡) to avoid firing on
-// unrelated chat that merely mentions coffee (e.g. "喝咖啡", "咖啡因").
-const COFFEE_NL_INTENT_RE = /(给\S{0,12})?(发|来|整|要)(一)?杯咖啡/;
-
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const trimmed = ctx.msg.content.trim();
   if (!trimmed.startsWith('/')) {
-    if (COFFEE_NL_INTENT_RE.test(trimmed)) {
+    if (isPlainCoffeeRequest(trimmed, ctx.msg.mentions, ctx.channel.botIdentity?.openId)) {
       await handleCoffee('', ctx);
       return true;
     }

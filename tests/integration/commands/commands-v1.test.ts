@@ -41,6 +41,15 @@ describe('Bridge command contracts', () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
 
+  it('leaves coffee requests with recipients or groups to the agent', async () => {
+    const h = await createHarness();
+    expect(await h.run('给 @同事 发杯咖啡', { mentions: [mention('ou-colleague', '同事')] })).toBe(false);
+    expect(await h.run('在研发群发杯咖啡')).toBe(false);
+    expect(h.channel.sent).toHaveLength(0);
+    expect(await h.run('来杯咖啡')).toBe(true);
+    expect(h.channel.sent).toHaveLength(1);
+  });
+
   it('switches /cd to any existing non-risk working directory', async () => {
     const h = await createHarness();
     const target = join(h.tmp.root, 'plain-workdir');
