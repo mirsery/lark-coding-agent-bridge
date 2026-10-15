@@ -9,10 +9,12 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 ## What it does
 
 - Forwards Feishu / Lark messages to local Claude Code or Codex CLI. Send a DM directly, or `@bot` in a group.
-- **Streaming card**: text replies and tool calls update on one Lark card in real time.
+- **Streaming card**: text replies and tool calls update on one Lark card in real time; the footer shows a run clock and the current step, and flags a run that has gone quiet.
 - **COT process messages**: optionally send a process message with agent progress text and tool calls, then send the final answer separately.
 - **Session continuity**: each chat, topic, or document comment thread keeps its own session.
 - **Queueing and batching**: messages sent in quick succession are handled together; messages sent during a run are queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
+- **Auto-resume after the quota runs out** (Claude): a run that hits the plan's quota pauses and picks up again once the quota resets.
+- **Task ledger resume**: the bot owner's long tasks pick up from their task ledger after an unexpected interruption (process killed, bridge restarted).
 - **Multiple workspaces**: use `/cd` to switch the current project, and `/ws` to save and reuse common project directories.
 - **Images and files**: send them to the bot directly, and the bridge downloads them locally for the agent.
 - **Interactive cards**: `/help`, `/ws list`, and `/status` return cards with clickable buttons.
@@ -290,8 +292,8 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws save <name>` | Save the current working directory as a named workspace |
 | `/ws use <name>` | Switch to a named workspace |
 | `/ws remove <name>` | Delete a named workspace |
-| `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
-| `/status` | Show profile, agent, working directory, session (current context size, time since the last exchange, and — with smart session compaction on — whether the next message starts a new conversation), lark-cli identity, and run state |
+| `/resume [N\|all]` | Resume a conversation this chat has used (same agent, working directory, and permission mode); `all` lists every one, admins only |
+| `/status` | Show profile, agent, working directory, session (current context size, time since the last exchange, and — with smart session compaction on — whether the next message starts a new conversation), lark-cli identity, run state, and any pending auto-resume; non-admins see only the current task and its resume time |
 | `/config` | Adjust presentation preferences, access settings, and lark-cli identity policy |
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |
@@ -300,7 +302,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/invite member @name` | Add a person to the current group's member allowlist |
 | `/invite all group` | Allow all groups the bot has joined |
 | `/remove user @name`, `/remove admin @name`, `/remove group [chat id]`, `/remove member @name` | Remove access entries; `/remove group <chat id>` drops the named group by full id or trailing characters, also from a DM |
-| `/stop` | Stop the current run, including the card stop button |
+| `/stop` | Stop the current run, including the card stop button; with nothing running, cancel a pending auto-resume |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
 | `/memory [add\|forget\|clear]` | Cross-session memory; `--global` writes profile-wide |
 | `/skills [show <name>]` | The skill index the agent reads on demand |
@@ -519,6 +521,27 @@ The reply card is posted when a run starts and then updated in place, and Feishu
 
 The threshold is the profile's `preferences.longRunNoticeMinutes` (minutes, `0` turns it off), config-file only.
 
+### Progress card
+
+- **Run clock**: while a run is going, the card footer shows the current step, the elapsed time and how long ago the agent last did anything, refreshed every 15 seconds — so a live run never looks frozen. After 3 minutes without activity it is flagged with ⚠️.
+- **Current step**: during a tool call the footer shows the agent's own one-line description when it is in Chinese (never the raw command, which can carry hosts or tokens), otherwise just the tool name. While a subagent works, its current step shows too; its own output stays out of the card — only the main agent's answer goes in.
+- **Oversized answers**: Feishu caps card size. An answer too long for the card is truncated there and sent in full as a separate message.
+- **Failed card updates**: when Feishu rejects a card update (over the limit, card deleted), the bridge says so in the chat and sends the answer on its own, so it never gets stuck in a frozen card.
+
+### Auto-resume when the quota runs out (Claude)
+
+When the Claude plan's quota (5-hour or 7-day window) runs out, the run isn't a failure: the card is marked 「额度用完，已暂停」 (orange) with when the quota resets and when the run continues. At that time (one minute after the reset) the bridge picks the task up in the same conversation, in a new card, and notes on the old card that it went on.
+
+- When Claude didn't say when the quota resets, it retries after 30 minutes. A task auto-resumes at most 6 times.
+- The resume runs on behalf of whoever started the task, and their access is checked again when it fires.
+- Pending resumes are kept in the profile's `auto-resume.json` and survive a restart. `/status` shows the resume time; the starter, admins and `access.stoppers` can cancel it with `/stop`.
+
+### Task ledger: long tasks continue after an interruption
+
+For big tasks (likely over 30 minutes, or split into subtasks) the agent first writes a task ledger at `~/.lark-channel/tasks/<task>.md` — goal, milestones, each one's status and output, next step — and puts `📒 任务台账：<path>` on a line of its own in the reply.
+
+For tasks the **bot owner started in person** only: when one is interrupted unexpectedly (process killed, bridge restarted or crashed), after 30 seconds the bridge has the agent read the ledger and `git log` and continue from the next step, without redoing finished work — at most 3 times per task. A run stopped with `/stop` is not resumed, and neither is anyone else's.
+
 ## lark-cli identity policy
 
 Each profile uses a profile-local lark-cli directory at `~/.lark-channel/profiles/<profile>/lark-cli`. The agent process receives `LARKSUITE_CLI_CONFIG_DIR` for that directory, so personal authorization in one profile is not shared with another profile.
@@ -683,6 +706,12 @@ Configure what's open in the profile's `access` section (`~` allowed; restart th
 - `guestToolGrants`: per person, entries of the two lists above lifted for their runs (commands by their exact regex string); a run gets an entry back only when every sender in its batch has it, and never when a bot is in the batch.
 
 This is string matching, not a sandbox: it stops the plain ways of doing it, and the agent's system prompt states the same rules. Codex runs aren't fenced this way yet.
+
+### Who can stop a run
+
+`/stop` and the progress card's stop button work only for the run's starter, the bot owner, admins and people in `access.stoppers`. The button asks for confirmation first; a click from someone not allowed doesn't use the button up. Background work keeps the starter of its last turn. Stopping another chat's run with `/stop <scope>` is for admins only.
+
+Stopping a Claude run ends its child processes too; leftovers are killed after the grace period. A run stopped this way shows as 「已中断」 (interrupted).
 
 ### Smart session compaction (off by default)
 
