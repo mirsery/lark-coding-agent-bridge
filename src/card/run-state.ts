@@ -105,6 +105,18 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       return { ...state, blocks };
     }
 
+    case 'supplement': {
+      // Mark where the user's mid-run supplement was read, so the reply shows
+      // which part of the answer already accounts for it.
+      const note: Block = { kind: 'text', content: `➕ **收到补充**：${evt.preview}`, streaming: false };
+      return {
+        ...state,
+        blocks: [...closeStreamingText(state.blocks), note],
+        reasoning: { ...state.reasoning, active: false },
+        footer: 'thinking',
+      };
+    }
+
     case 'error': {
       const terminal =
         evt.terminationReason === 'interrupted'

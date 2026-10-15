@@ -10,6 +10,8 @@ export type AgentEvent =
   | { type: 'thinking'; delta: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; output: string; isError: boolean }
+  /** A message added mid-run through `AgentRun.inject` was read by the agent. */
+  | { type: 'supplement'; preview: string }
   | {
       /**
        * One turn's consumption. `inputTokens` is the whole prompt, the cached
@@ -116,6 +118,15 @@ export interface AgentRun {
    * fresh run instead.
    */
   send?(prompt: string): boolean;
+  /**
+   * Add a user message to the turn under way: the agent reads it at its next
+   * turn boundary (after the current tool call) and folds it into the ongoing
+   * task, reporting a `supplement` event with `preview` once it has. Returns
+   * false when the turn can no longer take input (it already ended, or the
+   * process exited) — the caller then queues the message for the next run.
+   * Only adapters whose CLI accepts input mid-turn offer it.
+   */
+  inject?(prompt: string, preview: string): boolean;
   /**
    * No more turns are coming: close the process's input so it exits on its
    * own. Offered by adapters whose processes otherwise stay up between turns.

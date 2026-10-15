@@ -50,12 +50,13 @@ describe('ClaudeAdapter process contract', () => {
       type: 'user',
       message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
     });
-    expect(record.argv.slice(0, 9)).toEqual([
+    expect(record.argv.slice(0, 10)).toEqual([
       '-p',
       '--input-format',
       'stream-json',
       '--output-format',
       'stream-json',
+      '--replay-user-messages',
       '--verbose',
       '--permission-mode',
       'acceptEdits',
@@ -129,7 +130,7 @@ describe('ClaudeAdapter process contract', () => {
     const record = await readRecord(fake.recordPath);
 
     expect(record.argv.slice(-4)).toEqual(['--resume', 'sess-old', '--model', 'sonnet']);
-    expect(record.argv[7]).toBe('bypassPermissions');
+    expect(record.argv[8]).toBe('bypassPermissions');
   });
 
   it('includes stderr when the process exits non-zero', async () => {
@@ -211,6 +212,68 @@ describe('ClaudeAdapter process contract', () => {
     expect(await run.waitForExit(10)).toBe(false);
     expect(await run.waitForExit(1_000)).toBe(true);
     await iterator.return?.();
+  });
+
+  it('folds a supplement written mid-turn into the running turn', async () => {
+    const fake = await createMultiTurnClaude([
+      [{ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] } }],
+      [
+        { type: 'user', isReplay: true, uuid: '$IN', message: { role: 'user', content: [] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'adjusted answer' }] } },
+        { type: 'result', num_turns: 2, session_id: 'sess-sup' },
+      ],
+    ]);
+    cleanup.push(fake.dir);
+
+    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'run-sup', prompt: 'first', cwd: fake.dir });
+    const iterator = run.events[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'tool_use', id: 't1' });
+
+    expect(run.inject?.('also do X', 'also do X')).toBe(true);
+    const rest: AgentEvent[] = [];
+    for (let next = await iterator.next(); !next.done; next = await iterator.next()) rest.push(next.value);
+    expect(rest).toEqual([
+      { type: 'supplement', preview: 'also do X' },
+      { type: 'text', delta: 'adjusted answer' },
+      { type: 'done', sessionId: 'sess-sup', terminationReason: 'normal' },
+    ]);
+    const written = (await readFile(fake.recordPath, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(written[1]).toMatchObject({ type: 'user', uuid: expect.any(String) });
+    expect(written[1].message.content[0].text).toBe('also do X');
+    // The turn ended with no background tasks: input closed, the process exited.
+    expect(await run.waitForExit(1_000)).toBe(true);
+    // A finished turn takes no more supplements.
+    expect(run.inject?.('too late', 'too late')).toBe(false);
+  });
+
+  it('does not end the run on a result that leaves a supplement unread', async () => {
+    // Written as the turn wraps up, the supplement gets a turn of its own: the
+    // first result arrives before the CLI reads it.
+    const fake = await createMultiTurnClaude([
+      [{ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] } }],
+      [
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'first answer' }] } },
+        { type: 'result', num_turns: 1, session_id: 'sess-late' },
+        { type: 'user', isReplay: true, uuid: '$IN', message: { role: 'user', content: [] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'second answer' }] } },
+        { type: 'result', num_turns: 1, session_id: 'sess-late' },
+      ],
+    ]);
+    cleanup.push(fake.dir);
+
+    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'run-late', prompt: 'first', cwd: fake.dir });
+    const iterator = run.events[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'tool_use' });
+    expect(run.inject?.('late add', 'late add')).toBe(true);
+    const rest: AgentEvent[] = [];
+    for (let next = await iterator.next(); !next.done; next = await iterator.next()) rest.push(next.value);
+    expect(rest).toEqual([
+      { type: 'text', delta: 'first answer' },
+      { type: 'supplement', preview: 'late add' },
+      { type: 'text', delta: 'second answer' },
+      { type: 'done', sessionId: 'sess-late', terminationReason: 'normal' },
+    ]);
+    expect(await run.waitForExit(1_000)).toBe(true);
   });
 
   it('keeps input open while background tasks run, takes the next message, and closes after the turn that leaves none', async () => {
@@ -407,7 +470,10 @@ async function createMultiTurnClaude(turns: unknown[][]): Promise<FakeBinary> {
       '    const line = buffered.slice(0, nl);',
       '    buffered = buffered.slice(nl + 1);',
       `    appendFileSync(${JSON.stringify(recordPath)}, line + "\\n");`,
-      '    for (const out of turns[turn++] ?? []) console.log(JSON.stringify(out));',
+      // "$IN" stands for the uuid of the message being answered, so a turn can
+      // replay it the way `--replay-user-messages` does.
+      '    const uuid = JSON.parse(line).uuid;',
+      '    for (const out of turns[turn++] ?? []) console.log(JSON.stringify(out.uuid === "$IN" ? { ...out, uuid } : out));',
       '  }',
       '});',
       'process.stdin.on("end", () => process.exit(0));',

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,7 +18,7 @@ import {
   type AgentRunOptions,
 } from '../types';
 import { restoredSessionCost } from './session-cost';
-import { encodeUserMessage, isNoTurnResult, translateEvent } from './stream-json';
+import { encodeUserMessage, isFailedResult, isNoTurnResult, replayedUuid, translateEvent } from './stream-json';
 
 export interface ClaudeAdapterOptions {
   binary?: string;
@@ -75,12 +76,16 @@ export class ClaudeAdapter implements AgentAdapter {
     // leaves background tasks running, the process lives on to run the turns
     // those tasks trigger, and the bridge can hand it the next user message
     // (`send`) instead of killing that work to spawn a new process.
+    // `--replay-user-messages` echoes each written message back (same uuid)
+    // once the CLI actually reads it — what tells a turn that still has input
+    // queued (a mid-run supplement, see `inject`) apart from the real end.
     const args = [
       '-p',
       '--input-format',
       'stream-json',
       '--output-format',
       'stream-json',
+      '--replay-user-messages',
       '--verbose',
       '--permission-mode',
       gatedPermissionMode(opts),
@@ -159,25 +164,17 @@ export class ClaudeAdapter implements AgentAdapter {
     });
     // stdin stays open only while the CLI still has background tasks: a turn
     // that ends with none left closes it, and the process exits on its own.
-    let inputOpen = true;
+    const input = new ClaudeInput(child.stdin);
     let background = 0;
-    const closeInput = (): void => {
-      if (!inputOpen) return;
-      inputOpen = false;
-      child.stdin.end();
-    };
-    const send = (prompt: string): boolean => {
-      if (!inputOpen || child.exitCode !== null || child.signalCode !== null) return false;
-      child.stdin.write(encodeUserMessage(prompt), 'utf8');
-      return true;
-    };
-    child.once('exit', () => {
-      inputOpen = false;
-    });
-    child.stdin.write(encodeUserMessage(opts.prompt), 'utf8');
+    const closeInput = (): void => input.close();
+    child.once('exit', () => input.detach());
+    input.write(opts.prompt);
     const onEvent = (evt: AgentEvent): void => {
       if (evt.type === 'background') background = evt.count;
-      if ((evt.type === 'done' || evt.type === 'error') && background === 0) closeInput();
+      if (evt.type === 'done' || evt.type === 'error') {
+        input.turnOver();
+        if (background === 0) closeInput();
+      }
     };
 
     // Default 5s if caller didn't specify — claude often has live
@@ -189,8 +186,13 @@ export class ClaudeAdapter implements AgentAdapter {
 
     return {
       runId: opts.runId,
-      events: createEventStream(child, stderrChunks, () => runtimeError, onEvent, costBaseline),
-      send,
+      events: createEventStream(child, stderrChunks, () => runtimeError, onEvent, costBaseline, input),
+      send: (prompt) => input.write(prompt),
+      inject(prompt: string, preview: string): boolean {
+        const ok = input.inject(prompt, preview);
+        log.info('agent', ok ? 'inject' : 'inject-refused', { pid: child.pid ?? null, promptChars: prompt.length });
+        return ok;
+      },
       endInput: closeInput,
       async stop() {
         if (child.exitCode !== null || child.signalCode !== null) return;
@@ -234,12 +236,89 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 }
 
+/**
+ * How long a `result` that left written input unread may be followed by
+ * silence before the turn is ended anyway. The CLI starts the queued turn at
+ * once; this only guards against it never doing so.
+ */
+const NEXT_TURN_GUARD_MS = 30_000;
+
+/**
+ * The streamed stdin of one claude process. A supplement (`inject`) carries a
+ * uuid that `--replay-user-messages` echoes back once the CLI reads it: one
+ * written mid tool call is read at the next tool boundary and folded into the
+ * same turn, one written as the turn wraps up gets a turn of its own. So a
+ * `result` while a supplement is still unread is not the end of the bridge's
+ * turn — the CLI has another one queued for it.
+ */
+class ClaudeInput {
+  /** uuid → preview of each supplement written but not yet read. */
+  private readonly unread = new Map<string, string>();
+  private open = true;
+  /** A user turn is under way: what `inject` may add to. */
+  private turn = false;
+
+  constructor(private readonly stdin: Writable) {}
+
+  /** Start a turn with `prompt` (the run's first, or a later `send`). */
+  write(prompt: string): boolean {
+    if (!this.writable()) return false;
+    this.stdin.write(encodeUserMessage(prompt), 'utf8');
+    this.turn = true;
+    return true;
+  }
+
+  /** Add to the turn under way; refused once that turn has ended. */
+  inject(prompt: string, preview: string): boolean {
+    if (!this.turn || !this.writable()) return false;
+    const uuid = randomUUID();
+    this.unread.set(uuid, preview);
+    this.stdin.write(encodeUserMessage(prompt, uuid), 'utf8');
+    return true;
+  }
+
+  private writable(): boolean {
+    return this.open && !this.stdin.destroyed && !this.stdin.writableEnded;
+  }
+
+  /** A replayed message was read; returns its preview when it was a supplement. */
+  ack(uuid: string): string | undefined {
+    const preview = this.unread.get(uuid);
+    this.unread.delete(uuid);
+    return preview;
+  }
+
+  get unreadCount(): number {
+    return this.unread.size;
+  }
+
+  /** The bridge's turn ended (`done` / `error` went out). */
+  turnOver(): void {
+    this.turn = false;
+    this.unread.clear();
+  }
+
+  close(): void {
+    if (!this.open) return;
+    this.open = false;
+    this.turn = false;
+    if (!this.stdin.destroyed && !this.stdin.writableEnded) this.stdin.end();
+  }
+
+  /** The process is gone: refuse further writes without touching the pipe. */
+  detach(): void {
+    this.open = false;
+    this.turn = false;
+  }
+}
+
 async function* createEventStream(
   child: ClaudeChild,
   stderrChunks: Buffer[],
   getError: () => Error | null,
   onEvent: (evt: AgentEvent) => void,
   costBaseline: number,
+  input: ClaudeInput,
 ): AsyncGenerator<AgentEvent> {
   // If fork itself failed synchronously, child.pid is undefined. The 'error'
   // event (ENOENT etc.) fires in the next tick, so also check getError().
@@ -278,10 +357,43 @@ async function* createEventStream(
     costSoFar = evt.costUsd;
     return { ...evt, costUsd: turnCost };
   };
+  // A `result` that left a supplement unread is not the end of the bridge's
+  // turn: its `done` waits here for the turn the CLI runs next. If that turn
+  // never starts, the guard lets the `done` go out anyway.
+  let deferredDone: AgentEvent | undefined;
+  let guard: ReturnType<typeof setTimeout> | undefined;
+  const clearGuard = (): void => {
+    if (guard) clearTimeout(guard);
+    guard = undefined;
+  };
+  const lines = rl[Symbol.asyncIterator]();
+  // A read the guard raced past stays pending; the next round awaits it
+  // rather than asking for another line (which would skip this one).
+  let pendingLine: Promise<IteratorResult<string>> | undefined;
   try {
-    for await (const line of rl) {
+    for (;;) {
+      pendingLine ??= lines.next();
+      const next = deferredDone
+        ? await Promise.race([
+            pendingLine,
+            new Promise<'guard'>((resolve) => {
+              guard = setTimeout(() => resolve('guard'), NEXT_TURN_GUARD_MS);
+            }),
+          ])
+        : await pendingLine;
+      clearGuard();
+      if (next === 'guard') {
+        log.warn('agent', 'next-turn-guard-expired', { pid: child.pid ?? null, unread: input.unreadCount });
+        const done = deferredDone!;
+        deferredDone = undefined;
+        onEvent(done);
+        yield done;
+        continue;
+      }
+      pendingLine = undefined;
+      if (next.done) break;
       sawStdout = true;
-      const trimmed = line.trim();
+      const trimmed = next.value.trim();
       if (!trimmed) continue;
       let parsed: unknown;
       try {
@@ -289,23 +401,45 @@ async function* createEventStream(
       } catch {
         continue;
       }
+      const replayed = replayedUuid(parsed);
+      if (replayed !== undefined) {
+        const preview = input.ack(replayed);
+        if (preview !== undefined) {
+          const evt: AgentEvent = { type: 'supplement', preview };
+          onEvent(evt);
+          yield evt;
+        }
+        continue;
+      }
       if (isNoTurnResult(parsed)) {
         heldResult = [...translateEvent(parsed)];
         continue;
       }
+      const moreInput = input.unreadCount > 0 && !isFailedResult(parsed);
       for (const raw of translateEvent(parsed)) {
         const evt = raw.type === 'usage' ? perTurnCost(raw) : raw;
-        if (evt.type === 'done') heldResult = undefined;
+        if (evt.type === 'done') {
+          heldResult = undefined;
+          if (moreInput) {
+            log.info('agent', 'turn-result-more-input', { pid: child.pid ?? null, unread: input.unreadCount });
+            deferredDone = evt;
+            continue;
+          }
+          deferredDone = undefined;
+        }
         onEvent(evt);
         yield evt;
       }
     }
   } finally {
+    clearGuard();
     if (silentExitTimer) clearTimeout(silentExitTimer);
     child.removeListener('exit', closeSilentStdout);
     rl.close();
   }
   if (heldResult) yield* heldResult;
+  // The process ended before the turn its unread input was queued for.
+  if (deferredDone) yield deferredDone;
 
   const earlyRuntimeError = getError();
   if (earlyRuntimeError && child.exitCode === null && child.signalCode === null) {

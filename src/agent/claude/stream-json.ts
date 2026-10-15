@@ -115,7 +115,31 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
   }
 }
 
-/** Encode one prompt as a stream-json user message (`--input-format stream-json`). */
-export function encodeUserMessage(prompt: string): string {
-  return `${JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } })}\n`;
+/**
+ * Encode one prompt as a stream-json user message (`--input-format stream-json`).
+ * With `--replay-user-messages` the CLI echoes it back with the same `uuid`
+ * once it reads it (see {@link replayedUuid}).
+ */
+export function encodeUserMessage(prompt: string, uuid?: string): string {
+  return `${JSON.stringify({
+    type: 'user',
+    ...(uuid ? { uuid } : {}),
+    message: { role: 'user', content: [{ type: 'text', text: prompt }] },
+  })}\n`;
+}
+
+/** The uuid of a user message the CLI echoed back on reading it (`isReplay`), else undefined. */
+export function replayedUuid(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const evt = raw as { type?: unknown; isReplay?: unknown; uuid?: unknown };
+  if (evt.type !== 'user' || evt.isReplay !== true || typeof evt.uuid !== 'string') return undefined;
+  return evt.uuid;
+}
+
+/** A `result` reporting the turn failed: it ends the run whatever input is still unread. */
+export function isFailedResult(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const evt = raw as ClaudeRawEvent & { is_error?: unknown };
+  if (evt.type !== 'result') return false;
+  return evt.is_error === true || (evt.subtype !== undefined && evt.subtype !== 'success');
 }

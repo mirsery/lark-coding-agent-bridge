@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ClaudeAdapter } from '../../../src/agent/claude/adapter.js';
-import { translateEvent } from '../../../src/agent/claude/stream-json.js';
+import {
+  encodeUserMessage,
+  isFailedResult,
+  replayedUuid,
+  translateEvent,
+} from '../../../src/agent/claude/stream-json.js';
 import type { AgentEvent } from '../../../src/agent/types.js';
 
 describe('Claude stream-json translator', () => {
@@ -264,3 +269,20 @@ async function createFakeBinary(lines: string[], exitCode: number, stderr: strin
     },
   };
 }
+
+describe('streamed input bookkeeping', () => {
+  it('tags a message with its uuid and recognizes the CLI replaying it', () => {
+    const line = JSON.parse(encodeUserMessage('hi', 'u-1'));
+    expect(line).toEqual({ type: 'user', uuid: 'u-1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } });
+    // Shape from `claude -p --replay-user-messages` 2.1.296.
+    expect(replayedUuid({ type: 'user', isReplay: true, uuid: 'u-1', message: { role: 'user', content: [] } })).toBe('u-1');
+    expect(replayedUuid({ type: 'user', uuid: 'u-2', message: { content: [{ type: 'tool_result' }] } })).toBeUndefined();
+  });
+
+  it('tells failed results apart', () => {
+    expect(isFailedResult({ type: 'result', subtype: 'success', is_error: false })).toBe(false);
+    expect(isFailedResult({ type: 'result', subtype: 'error_during_execution' })).toBe(true);
+    expect(isFailedResult({ type: 'result', subtype: 'success', is_error: true })).toBe(true);
+    expect(isFailedResult({ type: 'assistant' })).toBe(false);
+  });
+});

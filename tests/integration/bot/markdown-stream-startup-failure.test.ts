@@ -3,7 +3,7 @@ import { realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../../src/agent/types.js';
-import type { FakeAgentEvents, FakeBackgroundTurn } from '../../helpers/fake-agent.js';
+import type { FakeAgentEvents, FakeBackgroundTurn, FakePause } from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -379,6 +379,89 @@ describe('markdown stream startup failures', () => {
 
     await h.channel.handlers.message?.(message('om_eager', 'run'));
     await waitFor(() => streamCalls.length === 1);
+  });
+
+  describe('mid-run supplements', () => {
+    const paused = (): Parameters<typeof createHarness>[0] => ({
+      agentKind: 'claude',
+      pause: { afterEvents: 1 },
+      events: [
+        [
+          { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'sleep 60' } },
+          { type: 'text', delta: 'answer' },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+        [{ type: 'done', terminationReason: 'normal' }],
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void>; messageId: string }) => Promise<void>;
+        }).markdown;
+        await producer?.({ setContent: vi.fn(async () => {}), messageId: 'om_stream' });
+      },
+    });
+
+    it('folds a 补充 message from the initiator into the running task', async () => {
+      const h = await createHarness(paused());
+      await startTestBridge(h);
+      await h.channel.handlers.message?.(message('om_task', '查一下 EUR 的日志'));
+      await waitFor(() => h.agent.runs.length === 1);
+
+      await h.channel.handlers.message?.(message('om_more', '补充：只看最近一小时'));
+      const run = h.agent.runs[0]!;
+      await waitFor(() => run.injected.length === 1);
+      expect(run.injected[0]).toContain('只看最近一小时');
+      expect(run.injected[0]).toContain('不是新任务');
+      await waitFor(() => reactionTypesAdded(h.channel).includes('Get'));
+      await waitFor(() => reactionTypesAdded(h.channel).includes('DONE'));
+      // Folded in, not queued: no second run follows.
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      expect(h.agent.runs).toHaveLength(1);
+    });
+
+    it('treats a quote-reply to the run reply as a supplement', async () => {
+      const h = await createHarness(paused());
+      await startTestBridge(h);
+      await h.channel.handlers.message?.(message('om_task', '查一下 EUR 的日志'));
+      await waitFor(() => h.agent.runs.length === 1);
+
+      await h.channel.handlers.message?.({
+        ...message('om_quote', '换成 AUS'),
+        replyToMessageId: 'om_stream',
+      } as NormalizedMessage);
+      await waitFor(() => h.agent.runs[0]!.injected.length === 1);
+    });
+
+    it('queues the same message from someone other than the initiator', async () => {
+      const h = await createHarness(paused());
+      h.profileConfig.access.allowedUsers.push('ou_other');
+      await startTestBridge(h);
+      await h.channel.handlers.message?.(message('om_task', '查一下 EUR 的日志'));
+      await waitFor(() => h.agent.runs.length === 1);
+
+      await h.channel.handlers.message?.(message('om_other', '补充：顺便看下 AUS', 'ou_other'));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const run = h.agent.runs[0]!;
+      expect(run.injected).toHaveLength(0);
+      run.release();
+      // It runs on its own once the first task is over.
+      await waitFor(() => h.agent.runs.length === 2);
+      expect(h.agent.runOptions[1]?.prompt).toContain('顺便看下 AUS');
+    });
+
+    it('queues a message without a supplement signal', async () => {
+      const h = await createHarness(paused());
+      await startTestBridge(h);
+      await h.channel.handlers.message?.(message('om_task', '查一下 EUR 的日志'));
+      await waitFor(() => h.agent.runs.length === 1);
+
+      await h.channel.handlers.message?.(message('om_new', '另一个问题'));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const run = h.agent.runs[0]!;
+      expect(run.injected).toHaveLength(0);
+      run.release();
+      await waitFor(() => h.agent.runs.length === 2);
+    });
   });
 
   it('does not repeat streamed text as the final reply when Codex held nothing back', async () => {
@@ -759,6 +842,8 @@ async function createHarness(options: {
   agentKind?: 'claude' | 'codex';
   /** A turn the first run emits on its own after its user turn. */
   background?: FakeBackgroundTurn;
+  /** The first run pauses mid-turn and takes supplements. */
+  pause?: FakePause;
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;
@@ -800,6 +885,7 @@ async function createHarness(options: {
     id: 'codex',
     displayName: 'Codex',
     ...(options.background ? { background: options.background } : {}),
+    ...(options.pause ? { pause: options.pause } : {}),
     events: options.events ?? [
       [
         {
@@ -951,12 +1037,12 @@ function createControls(profileConfig: ReturnType<typeof createDefaultProfileCon
   };
 }
 
-function message(messageId: string, content: string): NormalizedMessage {
+function message(messageId: string, content: string, senderId = 'ou_user'): NormalizedMessage {
   return {
     messageId,
     chatId: 'oc_dm',
     chatType: 'p2p',
-    senderId: 'ou_user',
+    senderId,
     senderName: 'User',
     content,
     rawContentType: 'text',
