@@ -32,6 +32,8 @@ export interface AppPaths {
   skillLibrariesDir: string;
   /** Scheduled jobs (`/cron`), one file per profile. */
   jobsFile: string;
+  /** Tasks waiting to be resumed (quota reset, task-ledger interruptions). */
+  autoResumeFile: string;
   secretsFile: string;
   keystoreSaltFile: string;
   secretsGetterScript: string;
@@ -84,6 +86,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     knowledgeDir: join(profileDir, 'knowledge'),
     skillLibrariesDir: join(profileDir, 'skill-libraries'),
     jobsFile: join(profileDir, 'jobs.json'),
+    autoResumeFile: join(profileDir, 'auto-resume.json'),
     secretsFile: join(profileDir, 'secrets.enc'),
     keystoreSaltFile: join(profileDir, '.keystore.salt'),
     secretsGetterScript: join(rootDir, 'secrets-getter'),

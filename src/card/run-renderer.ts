@@ -1,4 +1,5 @@
 import { deepMaskEmails } from './mask-email';
+import { pauseNotice } from './pause-notice';
 import type { Block, FooterStatus, RunState, Terminal, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
@@ -81,6 +82,8 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   } else if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;
     elements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
+  } else if (state.terminal === 'paused') {
+    elements.push(markdown(pauseNotice(state.limit)));
   } else if (state.terminal === 'error' && state.errorMsg) {
     elements.push(noteMd(`⚠️ agent 失败：${state.errorMsg}`));
   } else if (state.terminal === 'done' && elements.length === 0) {
@@ -110,10 +113,17 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   });
 }
 
-/** Coloured title bar: purple while healthy, red on failure, grey when cut short. */
+/** Coloured title bar: purple while healthy, red on failure, orange while
+ * paused for quota, grey when cut short. */
 function cardHeader(title: string, terminal: Terminal): object {
   const template =
-    terminal === 'error' ? 'red' : terminal === 'running' || terminal === 'done' ? 'purple' : 'grey';
+    terminal === 'error'
+      ? 'red'
+      : terminal === 'paused'
+        ? 'orange'
+        : terminal === 'running' || terminal === 'done'
+          ? 'purple'
+          : 'grey';
   return {
     template,
     title: { tag: 'plain_text', content: title },
@@ -306,6 +316,7 @@ export function formatAgo(ms: number): string {
 function summaryText(state: RunState): string {
   if (state.terminal === 'interrupted') return '已中断';
   if (state.terminal === 'idle_timeout') return '已超时';
+  if (state.terminal === 'paused') return '额度用完，已暂停';
   if (state.terminal === 'error') return '出错';
   if (state.terminal === 'done') return '已完成';
   if (state.footer === 'tool_running') return '正在调用工具';

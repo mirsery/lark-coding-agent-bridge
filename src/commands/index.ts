@@ -119,6 +119,7 @@ import type {
 import { effectiveLarkCliIdentity } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
 import { describeActiveRun } from '../bot/run-status';
+import { formatMoment, limitLabel, type AutoResumer } from '../bot/auto-resume';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import {
   canRunAdminCommand,
@@ -206,6 +207,8 @@ export interface Controls {
   /** Scheduled-job engine backing `/cron`; present only while the channel is
    * connected and a profile data dir exists. Late-bound by startChannel. */
   scheduler?: Scheduler;
+  /** Late-bound like `scheduler`: stopped tasks waiting to be resumed. */
+  autoResumer?: AutoResumer;
   /** Per-person consumption backing `/usage`; present only while the channel
    * is connected and a profile data dir exists. Late-bound by startChannel. */
   usage?: UsageLedger;
@@ -960,6 +963,7 @@ async function larkCliStatus(ctx: CommandContext): Promise<'app' | 'user-ready' 
 
 async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   const activeHandle = ctx.activeRuns.get(ctx.scope);
+  const pendingResume = ctx.controls.autoResumer?.get(ctx.scope);
   const cwd = effectiveWorkspaceCwd(ctx);
   const sess = ctx.sessions.getRaw(ctx.scope);
   // Scope-store agents report the scope's session (and whether its cwd went
@@ -987,6 +991,14 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     ...(await knowledgeStatusLine(ctx)),
     activeRun: Boolean(activeHandle),
     ...(activeHandle ? { activeRunDetail: describeActiveRun(activeHandle) } : {}),
+    ...(pendingResume
+      ? {
+          autoResume:
+            pendingResume.kind === 'interrupted'
+              ? `任务意外中断，${formatMoment(pendingResume.resumeAt)} 按任务台账自动继续（发 /stop 取消）`
+              : `${limitLabel(pendingResume.limitType)}用完暂停，${formatMoment(pendingResume.resumeAt)} 自动继续（发 /stop 取消）`,
+        }
+      : {}),
     backgroundRun: ctx.activeRuns.isLingering(ctx.scope),
     activeScopes: ctx.activeRuns.scopes().filter((scope) => !scope.startsWith('comment:')),
     activeCommentScopes: ctx.activeRuns.scopes().filter((scope) => scope.startsWith('comment:')),
@@ -1047,6 +1059,21 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
   const scope = targetScope || ctx.scope;
   const stopped = ctx.activeRuns.interruptDetailed(scope);
   const ok = stopped.active || stopped.background;
+  // Nothing running, but a stopped task may be waiting to be resumed.
+  const waiting = !targetScope && !ok ? ctx.controls.autoResumer?.get(scope) : undefined;
+  if (waiting) {
+    const mayCancel =
+      waiting.senderId === ctx.msg.senderId ||
+      canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok;
+    if (!mayCancel) {
+      await reply(ctx, '❌ 只有任务的发起人、bot 主人或管理员可以取消自动续跑。');
+      return;
+    }
+    await ctx.controls.autoResumer?.cancel(scope, 'stop-command');
+    log.info('command', 'stop-auto-resume', { scope });
+    await reply(ctx, `已取消自动续跑（原定 ${formatMoment(waiting.resumeAt)}）。需要时发「继续」即可接着做。`);
+    return;
+  }
   log.info('command', 'stop', {
     scope,
     targeted: Boolean(targetScope),

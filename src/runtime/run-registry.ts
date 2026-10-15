@@ -29,6 +29,13 @@ export interface RunRecord {
   startedAt: number;
   /** pid of the bridge daemon that owns this run. */
   ownerPid: number;
+  /**
+   * Who the run would be resumed for, recorded only for runs the bot owner
+   * started — the only ones resumed without being asked again.
+   */
+  resumeAs?: { senderId: string; senderName?: string; chatType: 'p2p' | 'group' | 'topic' };
+  /** The task ledger the agent announced (see the system prompt), once it did. */
+  ledger?: string;
 }
 
 /**
@@ -106,6 +113,14 @@ export class RunRegistry {
 
   start(rec: Omit<RunRecord, 'ownerPid'>): void {
     this.data[rec.runId] = { ...rec, ownerPid: this.pid };
+    this.schedulePersist();
+  }
+
+  /** Add facts learned mid-run (e.g. its task ledger) to a live record. */
+  annotate(runId: string, patch: Pick<RunRecord, 'ledger'>): void {
+    const rec = this.data[runId];
+    if (!rec) return;
+    this.data[runId] = { ...rec, ...patch };
     this.schedulePersist();
   }
 

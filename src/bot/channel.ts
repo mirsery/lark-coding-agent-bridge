@@ -90,6 +90,18 @@ import {
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
+import {
+  AutoResumer,
+  INTERRUPT_REASONS,
+  MAX_AUTO_RESUMES,
+  formatMoment,
+  resumeAtFor,
+  resumePromptFor,
+  type PendingResume,
+} from './auto-resume';
+import { INTERRUPT_RESUME_DELAY_MS, MAX_INTERRUPT_RESUMES, isKilledExit } from './task-ledger';
+import { isOwnerBatch } from '../policy/owner-guard';
+import type { RunRecord } from '../runtime/run-registry';
 import { CardPatchHealth, instrumentCardPatches } from './card-patch-health';
 import { processAgentStream } from './agent-stream';
 import { createRunsMonitor } from './runs-monitor';
@@ -271,7 +283,12 @@ export interface StartChannelDeps {
     | 'auditFile'
     | 'profileDir'
   > &
-    Partial<Pick<AppPaths, 'rotationsFile' | 'contextCursorsFile' | 'skillLibrariesDir' | 'userLockDir'>>;
+    Partial<
+      Pick<
+        AppPaths,
+        'rotationsFile' | 'contextCursorsFile' | 'skillLibrariesDir' | 'userLockDir' | 'autoResumeFile'
+      >
+    >;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -322,6 +339,15 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // bridge then simply has no scheduler, and `/cron` says so.
   const jobs = deps.appPaths?.jobsFile ? new JobStore(deps.appPaths.jobsFile) : undefined;
   await jobs?.load();
+  // Tasks stopped halfway (quota ran out, or killed with a task ledger),
+  // resumed on their starter's behalf. `fire` is bound below, once the
+  // pending queue it feeds exists.
+  let fireAutoResume: (resume: PendingResume) => Promise<void> = async () => {};
+  const autoResumer = new AutoResumer({
+    ...(deps.appPaths?.autoResumeFile ? { file: deps.appPaths.autoResumeFile } : {}),
+    fire: (resume) => fireAutoResume(resume),
+  });
+  await autoResumer.load();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
   const chatModeCache = new ChatModeCache();
@@ -522,6 +548,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           scope,
           mode,
           runs,
+          autoResumer,
           ...(knowledge ? { knowledge } : {}),
         });
       } catch (err) {
@@ -537,6 +564,25 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // same interrupt the IM /stop command uses. Late-bound like `meeting`
   // because all three sources live only inside this channel instance.
   controls.runsMonitor = createRunsMonitor({ activeRuns, pending, ...(runs ? { runs } : {}) });
+
+  fireAutoResume = async (resume) => {
+    // Runs on the starter's behalf, so their access is re-checked now: a
+    // resume must not outlive the permission that started the task.
+    const access =
+      resume.chatType === 'p2p'
+        ? canUseDm(controls.profileConfig, controls, resume.senderId)
+        : canUseGroup(controls.profileConfig, controls, resume.chatId, resume.senderId);
+    if (!access.ok) {
+      log.warn('auto-resume', 'access-denied', { scope: resume.scope, reason: access.reason });
+      return;
+    }
+    if (resume.cardMessageId && resume.card) {
+      await channel
+        .updateCard(resume.cardMessageId, withResumedNote(resume.card, Date.now()))
+        .catch((err) => log.warn('auto-resume', 'card-note-failed', { err: String(err) }));
+    }
+    pending.push(resume.scope, autoResumeMessage(resume));
+  };
 
   // Counter for stdout reconnect escalation; reset on `reconnected`.
   let consecutiveReconnects = 0;
@@ -683,9 +729,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   if (runs) {
     const orphans = runs.takeOrphans();
     if (orphans.length > 0) {
-      void reportInterruptedRuns(channel, orphans, 'restart').catch((err: unknown) =>
-        log.warn('interrupted-notice', 'sweep-failed', { err: String(err) }),
-      );
+      void resumeInterruptedRecords(autoResumer, orphans, 'restart')
+        .then((resumed) => reportInterruptedRuns(channel, orphans, 'restart', Date.now(), resumed))
+        .catch((err: unknown) =>
+          log.warn('interrupted-notice', 'sweep-failed', { err: String(err) }),
+        );
     }
   }
   // Messages that were waiting behind a run when the previous process went
@@ -716,6 +764,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     scheduler.start();
     controls.scheduler = scheduler;
   }
+  // Same reason as the scheduler: only resume once the channel can deliver.
+  autoResumer.start();
+  controls.autoResumer = autoResumer;
 
   // 梦境整理: runs when an admin asks (`/dream run`, Web console) or, with
   // 自动整理 on, when its gates pass — never while the profile has anything
@@ -831,6 +882,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       meetingManager?.dispose();
       scheduler?.stop();
       controls.scheduler = undefined;
+      autoResumer.stop();
+      controls.autoResumer = undefined;
       await dream?.dispose().catch((err: unknown) => log.fail('dream', err, { step: 'dispose' }));
       controls.dream = undefined;
       controls.meeting = undefined;
@@ -858,8 +911,15 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       if (runs) {
         // Bounded: launchd is already counting down to SIGKILL, and a hung
         // Feishu call must not be what stops us from exiting cleanly.
+        const own = runs.takeOwn();
+        const resumed = await resumeInterruptedRecords(autoResumer, own, 'shutdown').catch(
+          (err: unknown) => {
+            log.fail('auto-resume', err, { step: 'shutdown' });
+            return new Set<string>();
+          },
+        );
         await withDeadline(
-          reportInterruptedRuns(channel, runs.takeOwn(), 'shutdown'),
+          reportInterruptedRuns(channel, own, 'shutdown', Date.now(), resumed),
           SHUTDOWN_NOTICE_BUDGET_MS,
           'interrupted-notice',
         );
@@ -872,6 +932,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         callbackNonceStore?.flush(),
         workspaces.flush(),
         jobs?.flush(),
+        autoResumer.flush(),
         pendingStore?.flush(),
         pendingRotations.flush(),
         contextCursors.flush(),
@@ -1210,6 +1271,7 @@ interface RunBatchDeps {
   mode: ChatMode;
   runs?: RunRegistry;
   knowledge?: KnowledgeStore;
+  autoResumer?: AutoResumer;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -1232,6 +1294,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     mode,
     runs,
     knowledge,
+    autoResumer,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -1493,6 +1556,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Written before the first token so a hard kill at any point after this
   // leaves a trace the next process can act on.
   const chatName = mode === 'p2p' ? undefined : controls.knownChats?.find(c => c.id === chatId)?.name;
+  const ownerRun = isOwnerBatch(controls, batch, (m) => senderTypeOf(m) === 'bot');
   runs?.start({
     runId: execution.runId,
     scope,
@@ -1505,6 +1569,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     actorId: firstMsg.senderId,
     ...(firstMsg.senderName ? { actorName: firstMsg.senderName } : {}),
     startedAt: Date.now(),
+    // Only the owner's runs are picked up again unasked (task-ledger.ts).
+    ...(ownerRun
+      ? {
+          resumeAs: {
+            senderId: lastMsg.senderId,
+            ...(lastMsg.senderName ? { senderName: lastMsg.senderName } : {}),
+            chatType: resumeChatType(lastMsg, mode),
+          },
+        }
+      : {}),
   });
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
   // The agent now holds everything up to this batch; the next run catches up
@@ -1517,6 +1591,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     initiators: new Set(batch.map((m) => m.senderId)),
   };
   handle.supplement = supplementTarget;
+  handle.onLedger = (ledger) => runs?.annotate(execution.runId, { ledger });
   const eventStream = execution.subscribe();
   if (flow.resumeFrom) {
     log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd });
@@ -1598,9 +1673,19 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // So is a trailing `[[NEW_SESSION…]]`, read from `lastRawState` (the answer as
   // the agent wrote it) once the run is over.
   let lastRawState: RunState | undefined;
+  // A task the plan quota stops is resumed by the bridge once the quota resets
+  // (see AutoResumer) — unless resuming already failed MAX_AUTO_RESUMES times
+  // in a row. The paused card says which of the two will happen.
+  const resumedRun = batch.some((m) => m.rawContentType === AUTO_RESUME_CONTENT_TYPE);
+  const resumeAttempt = autoResumer?.nextAttempt(scope, resumedRun) ?? 1;
+  const canAutoResume = Boolean(autoResumer) && resumeAttempt <= MAX_AUTO_RESUMES;
+  const withAutoResume = (state: RunState): RunState =>
+    canAutoResume && state.terminal === 'paused' && state.limit
+      ? { ...state, limit: { ...state.limit, autoResumeAt: resumeAtFor(state.limit) } }
+      : state;
   const filterForPrefs = (raw: RunState): RunState => {
     lastRawState = raw;
-    const state = stripControlMarkers(raw);
+    const state = withAutoResume(stripControlMarkers(raw));
     if (getShowToolCalls(controls.cfg)) return state;
     return {
       ...state,
@@ -1674,6 +1759,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Whether the answer went out as a message of its own (which pushes), as
   // opposed to landing in the progress card that was created at the start.
   let answerIsNewMessage = false;
+  // The paused card, for the auto-resume to note that the task went on.
+  let pausedCard: { messageId: string; card: object } | undefined;
 
   try {
     if (cotEnabled) {
@@ -1736,6 +1823,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         | undefined;
       // Whether the last card rendered had to cut the answer to fit.
       let cardTrimmed = false;
+      let lastLiveCard: object | undefined;
       const cardHealth = new CardPatchHealth((code) => {
         void channel
           .send(chatId, { markdown: cardBrokenNotice(code) }, sendOpts)
@@ -1750,6 +1838,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             : cardRenderOptions;
         const fitted = fitCardToBudget(filterForPrefs(state), (s) => renderCard(s, options));
         cardTrimmed = fitted.trimmed;
+        lastLiveCard = fitted.card;
         return fitted.card;
       };
       const progress = createLazyProgressStream(scope, replyMode, () =>
@@ -1900,6 +1989,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         else void streamSettled.then(checkCardDelivery);
       }
       runTerminal = latestState.terminal;
+      if (runTerminal === 'paused' && cardCtrl?.messageId && lastLiveCard) {
+        pausedCard = { messageId: cardCtrl.messageId, card: lastLiveCard };
+      }
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
       let producerStarted = false;
@@ -2019,6 +2111,25 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       requesters: humanRequesters(batch),
     });
     if (longRunNotice) void sendLongRunNotice(channel, chatId, longRunNotice, sendOpts, scope);
+    if (autoResumer) {
+      scheduleAutoResume({
+        autoResumer,
+        channel,
+        scope,
+        chatId,
+        mode,
+        ...(threadId ? { threadId } : {}),
+        sendOpts,
+        lastMsg,
+        handle,
+        terminal: runTerminal,
+        finalState: lastRawState,
+        pausedCard,
+        canAutoResume,
+        resumeAttempt,
+        ownerRun,
+      });
+    }
     if (smartSession && runTerminal === 'done') {
       const request = newSessionRequest(answerTextOf(lastRawState));
       if (request) {
@@ -2027,6 +2138,177 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       }
     }
   }
+}
+
+/**
+ * After a run: plan its auto-resume, or drop one that is no longer wanted.
+ *
+ * - Paused for quota: resume once the quota resets (until MAX_AUTO_RESUMES).
+ * - Killed from outside, or cut by a shutdown, halfway through an owner's
+ *   task that keeps a ledger: pick it up again from the ledger.
+ * - Finished normally: the quota is back and someone is steering this chat
+ *   again; resuming on top of that would repeat work.
+ */
+function scheduleAutoResume(input: {
+  autoResumer: AutoResumer;
+  channel: LarkChannel;
+  scope: string;
+  chatId: string;
+  mode: ChatMode;
+  threadId?: string;
+  sendOpts: { replyTo: string; replyInThread?: boolean };
+  lastMsg: NormalizedMessage;
+  handle: RunHandle;
+  terminal: Terminal | undefined;
+  finalState: RunState | undefined;
+  pausedCard: { messageId: string; card: object } | undefined;
+  canAutoResume: boolean;
+  resumeAttempt: number;
+  ownerRun: boolean;
+}): void {
+  const { autoResumer, scope, lastMsg, terminal, resumeAttempt } = input;
+  const base = {
+    scope,
+    chatId: input.chatId,
+    chatType: resumeChatType(lastMsg, input.mode),
+    ...(input.threadId ? { threadId: input.threadId } : {}),
+    senderId: lastMsg.senderId,
+    ...(lastMsg.senderName ? { senderName: lastMsg.senderName } : {}),
+    originMessageId: lastMsg.messageId,
+    attempt: resumeAttempt,
+    createdAt: Date.now(),
+  };
+  const limit = input.finalState?.limit;
+  if (terminal === 'paused') {
+    if (!limit || !input.canAutoResume) {
+      log.warn('auto-resume', 'gave-up', { scope, attempts: resumeAttempt - 1 });
+      return;
+    }
+    void autoResumer.schedule({
+      ...base,
+      ...(input.pausedCard
+        ? { cardMessageId: input.pausedCard.messageId, card: input.pausedCard.card }
+        : {}),
+      resumeAt: resumeAtFor(limit),
+      ...(limit.limitType ? { limitType: limit.limitType } : {}),
+      kind: 'quota',
+    });
+    return;
+  }
+  if (terminal === 'done') {
+    void autoResumer.cancel(scope, 'run-completed');
+    return;
+  }
+  const killed = terminal === 'error' && isKilledExit(input.finalState?.errorMsg);
+  const shutdown = terminal === 'interrupted' && input.handle.stopCause === 'shutdown';
+  if (!input.ownerRun || !input.handle.ledger || !(killed || shutdown)) return;
+  if (resumeAttempt > MAX_INTERRUPT_RESUMES) {
+    log.warn('auto-resume', 'interrupt-gave-up', { scope, attempts: resumeAttempt - 1 });
+    return;
+  }
+  const resumeAt = Date.now() + INTERRUPT_RESUME_DELAY_MS;
+  const reason = killed ? 'killed' : 'shutdown';
+  void autoResumer.schedule({
+    ...base,
+    resumeAt,
+    kind: 'interrupted',
+    ledger: input.handle.ledger,
+    reason,
+  });
+  if (killed) {
+    const text =
+      `⏯ 任务意外中断（${INTERRUPT_REASONS[reason]}）。将在 **${formatMoment(resumeAt)}** ` +
+      '按任务台账自动继续，届时新开一张卡片接着做；发 `/stop` 可以取消。';
+    void input.channel
+      .send(input.chatId, { markdown: text }, input.sendOpts)
+      .catch((err) => log.fail('auto-resume', err, { step: 'interrupt-notice' }));
+  }
+}
+
+/** Chat type for access checks on resume — the same rule intake applies. */
+function resumeChatType(msg: NormalizedMessage, mode: ChatMode): 'p2p' | 'group' | 'topic' {
+  return msg.chatType === 'p2p' ? 'p2p' : mode === 'topic' ? 'topic' : 'group';
+}
+
+/**
+ * A resume for a run record left behind by a shutdown or crash, when it was
+ * the owner's and announced a task ledger; otherwise nothing to resume.
+ */
+function interruptedResumeFor(
+  rec: RunRecord,
+  reason: 'restart' | 'shutdown',
+  now: number = Date.now(),
+): PendingResume | undefined {
+  if (!rec.ledger || !rec.resumeAs) return undefined;
+  return {
+    scope: rec.scope,
+    chatId: rec.chatId,
+    chatType: rec.resumeAs.chatType,
+    ...(rec.threadId ? { threadId: rec.threadId } : {}),
+    senderId: rec.resumeAs.senderId,
+    ...(rec.resumeAs.senderName ? { senderName: rec.resumeAs.senderName } : {}),
+    originMessageId: rec.originMessageId,
+    resumeAt: now + INTERRUPT_RESUME_DELAY_MS,
+    kind: 'interrupted',
+    ledger: rec.ledger,
+    reason,
+    attempt: 1,
+    createdAt: now,
+  };
+}
+
+/** Schedule resumes for the records that qualify; the rest just get the notice. */
+async function resumeInterruptedRecords(
+  autoResumer: AutoResumer,
+  records: RunRecord[],
+  reason: 'restart' | 'shutdown',
+): Promise<Set<string>> {
+  const resumed = new Set<string>();
+  for (const rec of records) {
+    const resume = interruptedResumeFor(rec, reason);
+    if (!resume) continue;
+    await autoResumer.schedule(resume);
+    resumed.add(rec.runId);
+  }
+  return resumed;
+}
+
+/** The message an auto-resume feeds into the scope, as if the starter sent it. */
+function autoResumeMessage(resume: PendingResume): NormalizedMessage {
+  return {
+    // Reply to the message the stopped task answered, so the new card sits
+    // under the same question.
+    messageId: resume.originMessageId,
+    chatId: resume.chatId,
+    chatType: resume.chatType === 'p2p' ? 'p2p' : 'group',
+    ...(resume.threadId ? { threadId: resume.threadId } : {}),
+    senderId: resume.senderId,
+    ...(resume.senderName ? { senderName: resume.senderName } : {}),
+    content: resumePromptFor(resume),
+    rawContentType: AUTO_RESUME_CONTENT_TYPE,
+    resources: [],
+    mentions: [],
+    mentionAll: false,
+    mentionedBot: true,
+    createTime: Date.now(),
+  } as NormalizedMessage;
+}
+
+const AUTO_RESUME_CONTENT_TYPE = 'auto_resume';
+
+/** The paused card, with a line saying the task went on in a new card. */
+function withResumedNote(card: object, at: number): object {
+  const c = card as { body?: { elements?: object[] } };
+  const elements = [...(c.body?.elements ?? [])];
+  const note = {
+    tag: 'markdown',
+    content: `▶️ **已于 ${formatMoment(at)} 自动继续**，见下方新卡片。`,
+  };
+  // Above the byline (`hr` + grey agent line) when there is one.
+  const hr = elements.findIndex((e) => (e as { tag?: string }).tag === 'hr');
+  if (hr === -1) elements.push(note);
+  else elements.splice(hr, 0, note);
+  return { ...c, body: { ...c.body, elements } };
 }
 
 /** The answer text of a run state: its final text, else its last text block. */

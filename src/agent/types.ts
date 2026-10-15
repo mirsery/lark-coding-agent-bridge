@@ -12,6 +12,23 @@ export type AgentEvent =
   | { type: 'tool_result'; id: string; output: string; isError: boolean }
   /** A message added mid-run through `AgentRun.inject` was read by the agent. */
   | { type: 'supplement'; preview: string }
+  /**
+   * Subscription quota status. `blocked` means a request was refused because
+   * the plan's quota ran out: the run can't make progress until `resetsAt`.
+   * Non-blocking reports only carry the quota window's details.
+   */
+  | {
+      type: 'rate_limit';
+      blocked: boolean;
+      /** Which window: `five_hour`, `seven_day`, `seven_day_opus`, … */
+      limitType?: string;
+      /** Epoch ms when the window resets, when the agent said. */
+      resetsAt?: number;
+      /** The agent's own wording, e.g. "You've hit your limit · resets 11pm". */
+      message?: string;
+      /** Epoch ms the event was seen. */
+      at: number;
+    }
   | {
       /**
        * One turn's consumption. `inputTokens` is the whole prompt, the cached

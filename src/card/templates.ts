@@ -89,6 +89,8 @@ export interface StatusInfo {
   activeRun: boolean;
   /** What this scope's run is doing right now, when one is running. */
   activeRunDetail?: string;
+  /** A stopped task waiting to be resumed in this scope. */
+  autoResume?: string;
   /** The scope's process is still running background tasks after its last turn. */
   backgroundRun?: boolean;
   activeScopes?: string[];
@@ -141,6 +143,7 @@ export function statusCard(info: StatusInfo): object {
     `🛡 **${escapeMd(info.runtimeAccess.label)}**: ${escapeMd(info.runtimeAccess.value)}`,
     ...(info.larkCliStatus ? [`🔐 **lark-cli**: ${info.larkCliStatus}`] : []),
     `🏃 **active run**: ${info.activeRun ? (info.activeRunDetail ? escapeMd(info.activeRunDetail) : 'yes') : 'no'}`,
+    ...(info.autoResume ? [`⏸ **auto resume**: ${escapeMd(info.autoResume)}`] : []),
     ...(info.backgroundRun ? ['🧵 **background tasks**: running（`/stop` 可停止）'] : []),
     ...(info.activeScopes && info.activeScopes.length > 0
       ? [
@@ -285,7 +288,7 @@ export function helpCard(agentName = 'Agent'): object {
           '`/new` `/reset` — 清空当前会话',
           '`/new chat [名字]` — 新建群 + 新会话，自动拉你进群',
           '`/resume [N]` — 列出并恢复历史会话',
-          '`/stop` — 结束正在跑的任务（也可点卡片上的 ⏹ 终止）',
+          '`/stop` — 结束正在跑的任务（也可点卡片上的 ⏹ 终止）；任务等待自动续跑时，取消续跑',
           '`/timeout [N|off|default]` — 本会话的探活分钟数',
         ]),
         helpSection('turquoise-50', '📂 工作目录与 Git', [
