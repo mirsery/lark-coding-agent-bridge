@@ -297,6 +297,8 @@ describe('markdown stream startup failures', () => {
         [{ type: 'done', terminationReason: 'normal' }],
         [{ type: 'done', terminationReason: 'normal' }],
       ],
+      // Claude opens its progress stream at once; let it finish with the run.
+      stream: async () => {},
     });
     h.profileConfig.approvals.enabled = true;
     await startTestBridge(h, testAppPaths(h.tmp));
@@ -350,6 +352,33 @@ describe('markdown stream startup failures', () => {
     expect(streamCalls).toHaveLength(0);
     expect(h.channel.sent).toHaveLength(1);
     expect(lastMarkdown(h.channel)).toContain('FINAL_ONLY_SENTINEL');
+  });
+
+  it('opens the Claude progress stream before any visible output', async () => {
+    // Claude runs often start with tool calls, hidden when showToolCalls is
+    // off. The progress message (with its stop button) must appear right away
+    // instead of after the first sentence.
+    const streamCalls: unknown[] = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [
+        { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'sleep 1' } },
+        { type: 'tool_result', id: 'toolu_1', output: '', isError: false },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        streamCalls.push(input);
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void>; messageId: string }) => Promise<void>;
+        }).markdown;
+        await producer?.({ setContent: vi.fn(async () => {}), messageId: 'om_stream' });
+      },
+    });
+    h.profileConfig.preferences.showToolCalls = false;
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_eager', 'run'));
+    await waitFor(() => streamCalls.length === 1);
   });
 
   it('does not repeat streamed text as the final reply when Codex held nothing back', async () => {

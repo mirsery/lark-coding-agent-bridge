@@ -1335,6 +1335,14 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Agents that post the answer as its own reply (see AgentDescriptor.finalReply)
   // treat the progress stream as best-effort: its failures are logged, not fatal.
   const separateFinalReply = capability.descriptor.finalReply === 'separate';
+  // An agent that streams its whole answer into the progress message opens it
+  // as soon as the run starts. Waiting for visible text left runs that go
+  // straight to tool calls (hidden when showToolCalls is off) with no card and
+  // no stop button for a minute or more. Agents with a separate final reply
+  // keep the lazy open: their final-only rounds would leave an empty
+  // placeholder behind (see createLazyProgressStream). An eagerly opened
+  // stream that ends with nothing to show is still recalled.
+  const opensProgressEagerly = !separateFinalReply;
   // Assigned once the reply surface below is set up. A background turn only
   // arrives after this run's own reply, so it is always ready by then.
   let deliverBackgroundTurn: BackgroundTurnHandler | undefined;
@@ -1672,6 +1680,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           sendOpts,
         ),
       );
+      if (opensProgressEagerly) progress.ensureOpen();
       const renderDone = processAgentStream(
         handle,
         eventStream,
@@ -1751,6 +1760,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           sendOpts,
         ),
       );
+      if (opensProgressEagerly) progress.ensureOpen();
       const renderDone = processAgentStream(
         handle,
         eventStream,
