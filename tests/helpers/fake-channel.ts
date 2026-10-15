@@ -40,6 +40,9 @@ export interface FakeChannel {
     };
     readonly im: {
       readonly v1: {
+        readonly image: {
+          create(params: unknown): Promise<unknown>;
+        };
         readonly message: {
           create(params: unknown): Promise<unknown>;
           reply(params: unknown): Promise<unknown>;
@@ -106,6 +109,12 @@ export function createFakeChannel(): FakeChannel {
       },
       im: {
         v1: {
+          image: {
+            async create(params: unknown): Promise<unknown> {
+              requests.push({ method: 'im.v1.image.create', params });
+              return { image_key: `img_fake_${requests.length}` };
+            },
+          },
           message: {
             async create(params: unknown): Promise<unknown> {
               return { data: pushManagedCardMessage(params, '') };

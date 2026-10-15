@@ -28,6 +28,7 @@
   "files": [
     "dist",
     "bin",
+    "assets/coffee",
     "README.md",
     "README.zh.md",
     "CHANGELOG.md",

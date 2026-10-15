@@ -1,4 +1,5 @@
-import { isPlainCoffeeRequest } from './coffee-intent';
+import { coffeeRecipients, parseCoffeeRequest, type CoffeeRecipient } from './coffee-intent';
+import { coffeeLogoKey } from '../card/coffee-logo';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -59,6 +60,7 @@ import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import {
   coffeeCard,
+  pickCoffeeBrand,
   cronCard,
   diffCard,
   helpCard,
@@ -355,8 +357,9 @@ function isAdminCommand(cmd: string): boolean {
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const trimmed = ctx.msg.content.trim();
   if (!trimmed.startsWith('/')) {
-    if (isPlainCoffeeRequest(trimmed, ctx.msg.mentions, ctx.channel.botIdentity?.openId)) {
-      await handleCoffee('', ctx);
+    const coffee = parseCoffeeRequest(trimmed, ctx.msg.mentions, ctx.channel.botIdentity?.openId);
+    if (coffee) {
+      await sendCoffee(ctx, coffee.recipients);
       return true;
     }
     return false;
@@ -1813,7 +1816,18 @@ async function handleAudit(args: string, ctx: CommandContext): Promise<void> {
 }
 
 async function handleCoffee(_args: string, ctx: CommandContext): Promise<void> {
-  await ctx.channel.send(ctx.msg.chatId, { card: coffeeCard() }, commandReplyOptions(ctx));
+  await sendCoffee(ctx, coffeeRecipients(ctx.msg.mentions, ctx.channel.botIdentity?.openId));
+}
+
+async function sendCoffee(ctx: CommandContext, recipients: CoffeeRecipient[]): Promise<void> {
+  const brand = pickCoffeeBrand();
+  const logoKey = await coffeeLogoKey(ctx.channel, brand.slug);
+  const card = coffeeCard(brand, {
+    recipients,
+    ...(ctx.msg.senderName ? { payer: ctx.msg.senderName } : {}),
+    ...(logoKey ? { logoKey } : {}),
+  });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
 // ─── git: /diff, /worktree, /pr ───────────────────────────────────────────

@@ -355,37 +355,85 @@ export function helpCard(agentName = 'Agent'): object {
 }
 
 export interface CoffeeBrand {
+  /** File stem of the brand's logo under `assets/coffee/`. */
+  slug: string;
+  /** English brand name — the card carries no Chinese brand names. */
   name: string;
-  /** Latin wordmark shown under the cup. */
-  mark: string;
   /** Header template — the closest Feishu palette to the brand colour. */
   template: string;
-  /** Column background behind the cup. */
-  background: string;
 }
 
 /** Head-of-market coffee brands the `/coffee` easter egg rotates through,
  * each tinted with the nearest Feishu palette to its brand colour (Feishu has
  * no black header, so black brands use grey). */
 export const COFFEE_BRANDS: readonly CoffeeBrand[] = [
-  { name: '星巴克', mark: 'Starbucks', template: 'green', background: 'green-50' },
-  { name: '瑞幸', mark: 'luckin coffee', template: 'blue', background: 'blue-50' },
-  { name: 'M Stand', mark: 'M Stand', template: 'grey', background: 'grey-100' },
-  { name: 'Manner', mark: 'MANNER COFFEE', template: 'default', background: 'grey-50' },
-  { name: '代数学家', mark: 'Algebraist', template: 'red', background: 'red-50' },
-  { name: '库迪', mark: 'COTTI COFFEE', template: 'orange', background: 'orange-50' },
-  { name: 'Tims 天好', mark: 'Tims', template: 'carmine', background: 'carmine-50' },
-  { name: 'Costa', mark: 'COSTA COFFEE', template: 'carmine', background: 'carmine-50' },
-  { name: '蓝瓶', mark: 'Blue Bottle', template: 'wathet', background: 'wathet-50' },
-  { name: '% Arabica', mark: '% Arabica', template: 'grey', background: 'grey-100' },
+  { slug: 'starbucks', name: 'Starbucks', template: 'green' },
+  { slug: 'luckin', name: 'Luckin Coffee', template: 'blue' },
+  { slug: 'mstand', name: 'M Stand', template: 'grey' },
+  { slug: 'manner', name: 'Manner Coffee', template: 'default' },
+  { slug: 'algebraist', name: 'Algebraist', template: 'red' },
+  { slug: 'peets', name: "Peet's Coffee", template: 'orange' },
+  { slug: 'tims', name: 'Tims', template: 'carmine' },
+  { slug: 'costa', name: 'Costa Coffee', template: 'carmine' },
+  { slug: 'bluebottle', name: 'Blue Bottle Coffee', template: 'wathet' },
+  { slug: 'arabica', name: '% Arabica', template: 'grey' },
 ];
+
+export function pickCoffeeBrand(random: () => number = Math.random): CoffeeBrand {
+  return COFFEE_BRANDS[Math.floor(random() * COFFEE_BRANDS.length)] ?? COFFEE_BRANDS[0]!;
+}
+
+export interface CoffeeCardOptions {
+  /** People the coffee is for; the card @-mentions each of them. */
+  recipients?: readonly { openId: string }[];
+  /** Who is treating — the requester's display name. */
+  payer?: string;
+  /** Uploaded `image_key` of the brand logo; the card goes without one. */
+  logoKey?: string;
+}
 
 /** Fixed schema-2.0 card — same layout everywhere `/coffee` is sent, unlike
  * the ad-hoc cards an agent session would otherwise improvise per-chat; only
- * the brand (name + colour) is picked at random per cup. */
-export function coffeeCard(random: () => number = Math.random): object {
-  const brand = COFFEE_BRANDS[Math.floor(random() * COFFEE_BRANDS.length)] ?? COFFEE_BRANDS[0]!;
-  const title = `☕ ${brand.name} 电子咖啡`;
+ * the brand (name, colour, logo) changes per cup. */
+export function coffeeCard(brand: CoffeeBrand, opts: CoffeeCardOptions = {}): object {
+  const title = `${brand.name} 电子咖啡`;
+  const elements: object[] = [];
+  const recipients = opts.recipients ?? [];
+  if (recipients.length > 0) {
+    const ats = recipients.map((r) => `<at id=${r.openId}></at>`).join(' ');
+    const you = recipients.length > 1 ? '你们' : '你';
+    elements.push({ tag: 'markdown', content: `${ats} ${opts.payer ?? ''}请${you}喝一杯` });
+  }
+  if (opts.logoKey) {
+    // `img` has no alignment of its own; a single centered column carries it.
+    elements.push({
+      tag: 'column_set',
+      columns: [
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 1,
+          horizontal_align: 'center',
+          elements: [
+            {
+              tag: 'img',
+              img_key: opts.logoKey,
+              alt: { tag: 'plain_text', content: brand.name },
+              scale_type: 'crop_center',
+              size: '64px 64px',
+              corner_radius: '8px',
+            },
+          ],
+        },
+      ],
+    });
+  }
+  elements.push(
+    { tag: 'markdown', content: `**${brand.name} 电子咖啡一杯**` },
+    { tag: 'markdown', content: `<font color='grey'>${brand.name} Roast · 现磨现发</font>` },
+    HR,
+    { tag: 'markdown', content: "<font color='grey'>零卡路里 · 零等待 · 续杯免费 · 熬夜专用</font>" },
+  );
   return {
     schema: '2.0',
     config: { width_mode: 'default', summary: { content: title } },
@@ -399,35 +447,7 @@ export function coffeeCard(random: () => number = Math.random): object {
       direction: 'vertical',
       padding: '16px 16px 20px 16px',
       vertical_spacing: '10px',
-      elements: [
-        {
-          tag: 'column_set',
-          columns: [
-            {
-              tag: 'column',
-              width: 'weighted',
-              weight: 1,
-              padding: '24px',
-              background_style: brand.background,
-              elements: [
-                { tag: 'markdown', content: '# ☕', text_align: 'center' },
-                { tag: 'markdown', content: `**${brand.name} 电子咖啡一杯**`, text_align: 'center' },
-                {
-                  tag: 'markdown',
-                  content: `<font color='grey'>${brand.mark} · 现磨现发</font>`,
-                  text_align: 'center',
-                  text_size: 'notation',
-                },
-              ],
-            },
-          ],
-        },
-        HR,
-        {
-          tag: 'markdown',
-          content: "<font color='grey'>零卡路里 · 零等待 · 续杯免费 · 熬夜专用</font>",
-        },
-      ],
+      elements,
     },
   };
 }
