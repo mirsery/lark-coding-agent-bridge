@@ -354,16 +354,45 @@ export function helpCard(agentName = 'Agent'): object {
   };
 }
 
-/** Fixed schema-2.0 card — same output everywhere `/coffee` is sent, unlike
- * the ad-hoc cards an agent session would otherwise improvise per-chat. */
-export function coffeeCard(): object {
+export interface CoffeeBrand {
+  name: string;
+  /** Latin wordmark shown under the cup. */
+  mark: string;
+  /** Header template — the closest Feishu palette to the brand colour. */
+  template: string;
+  /** Column background behind the cup. */
+  background: string;
+}
+
+/** Head-of-market coffee brands the `/coffee` easter egg rotates through,
+ * each tinted with the nearest Feishu palette to its brand colour (Feishu has
+ * no black header, so black brands use grey). */
+export const COFFEE_BRANDS: readonly CoffeeBrand[] = [
+  { name: '星巴克', mark: 'Starbucks', template: 'green', background: 'green-50' },
+  { name: '瑞幸', mark: 'luckin coffee', template: 'blue', background: 'blue-50' },
+  { name: 'M Stand', mark: 'M Stand', template: 'grey', background: 'grey-100' },
+  { name: 'Manner', mark: 'MANNER COFFEE', template: 'default', background: 'grey-50' },
+  { name: '代数学家', mark: 'Algebraist', template: 'red', background: 'red-50' },
+  { name: '库迪', mark: 'COTTI COFFEE', template: 'orange', background: 'orange-50' },
+  { name: 'Tims 天好', mark: 'Tims', template: 'carmine', background: 'carmine-50' },
+  { name: 'Costa', mark: 'COSTA COFFEE', template: 'carmine', background: 'carmine-50' },
+  { name: '蓝瓶', mark: 'Blue Bottle', template: 'wathet', background: 'wathet-50' },
+  { name: '% Arabica', mark: '% Arabica', template: 'grey', background: 'grey-100' },
+];
+
+/** Fixed schema-2.0 card — same layout everywhere `/coffee` is sent, unlike
+ * the ad-hoc cards an agent session would otherwise improvise per-chat; only
+ * the brand (name + colour) is picked at random per cup. */
+export function coffeeCard(random: () => number = Math.random): object {
+  const brand = COFFEE_BRANDS[Math.floor(random() * COFFEE_BRANDS.length)] ?? COFFEE_BRANDS[0]!;
+  const title = `☕ ${brand.name} 电子咖啡`;
   return {
     schema: '2.0',
-    config: { width_mode: 'default', summary: { content: '☕ Antelope 电子咖啡' } },
+    config: { width_mode: 'default', summary: { content: title } },
     header: {
-      title: { tag: 'plain_text', content: '☕ Antelope 电子咖啡' },
-      subtitle: { tag: 'plain_text', content: 'Antelope · 不含咖啡因,但管用' },
-      template: 'orange',
+      title: { tag: 'plain_text', content: title },
+      subtitle: { tag: 'plain_text', content: '不含咖啡因,但管用' },
+      template: brand.template,
       icon: { tag: 'standard_icon', token: 'gift_outlined' },
     },
     body: {
@@ -379,13 +408,13 @@ export function coffeeCard(): object {
               width: 'weighted',
               weight: 1,
               padding: '24px',
-              background_style: 'orange-50',
+              background_style: brand.background,
               elements: [
                 { tag: 'markdown', content: '# ☕', text_align: 'center' },
-                { tag: 'markdown', content: '**Antelope 电子咖啡一杯**', text_align: 'center' },
+                { tag: 'markdown', content: `**${brand.name} 电子咖啡一杯**`, text_align: 'center' },
                 {
                   tag: 'markdown',
-                  content: "<font color='grey'>🦌 Antelope Roast · 现磨现发</font>",
+                  content: `<font color='grey'>${brand.mark} · 现磨现发</font>`,
                   text_align: 'center',
                   text_size: 'notation',
                 },
