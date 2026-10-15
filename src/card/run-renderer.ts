@@ -1,3 +1,4 @@
+import { runningToolLabel } from './run-activity';
 import { deepMaskEmails } from './mask-email';
 import type { Block, FooterStatus, RunState, Terminal, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
@@ -69,7 +70,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   }
 
   if (state.terminal === 'running') {
-    if (state.footer) elements.push(footerStatus(state.footer));
+    if (state.footer) elements.push(footerStatus(state.footer, runningToolLabel(state)));
     elements.push(stopButton(options));
   } else {
     elements.push(...byline(options.meta));
@@ -250,12 +251,12 @@ function stopButton(options: RunCardRenderOptions): object {
   };
 }
 
-function footerStatus(status: Exclude<FooterStatus, null>): object {
+function footerStatus(status: Exclude<FooterStatus, null>, toolLabel?: string): object {
   const text =
     status === 'thinking'
       ? '🧠 正在思考'
       : status === 'tool_running'
-        ? '🧰 正在调用工具'
+        ? `🧰 ${toolLabel ?? '正在调用工具'}`
         : '✍️ 正在输出';
   return noteMd(text);
 }

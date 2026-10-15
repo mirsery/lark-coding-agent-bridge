@@ -81,6 +81,8 @@
 - **测试隔离**：`tests/setup/clear-bridge-env.ts` 会清掉 `LARK_CHANNEL*` / `LARKSUITE_CLI_CONFIG_DIR`。在 bridge 会话里跑测试时别依赖真实 profile；读宿主配置的代码要显式置空这些变量，不要继承父进程。
 - **共享 bot / card / commands 代码不 import `agent/codex` 内部**（契约测试），需要 agent 相关能力走 `src/agent/` 的中立出口。
 
+- **子任务输出隔离**（#13）：Claude 带 `parent_tool_use_id` 的消息不进入主回复，只转成 `subagent_activity`。卡片底部显示当前子任务步骤，`/status` 的「上次动静」随事件刷新；`subagent-activity` 日志每轮每分钟最多一条。
+
 ## 新增一种 agent
 
 注册表 `src/agent/registry.ts` 是唯一名单。步骤：

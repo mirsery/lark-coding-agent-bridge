@@ -12,6 +12,8 @@ export type AgentEvent =
   | { type: 'tool_result'; id: string; output: string; isError: boolean }
   /** A message added mid-run through `AgentRun.inject` was read by the agent. */
   | { type: 'supplement'; preview: string }
+  /** 子任务只提供活动摘要，正文不进入主回复。 */
+  | { type: 'subagent_activity'; parentToolUseId: string; tool?: string; description?: string; at: number }
   | {
       /**
        * One turn's consumption. `inputTokens` is the whole prompt, the cached

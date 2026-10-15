@@ -21,6 +21,8 @@ export interface RunHandle {
   /** When the run was registered — the in-memory fallback for elapsed-time
    * display when no durable RunRecord exists (e.g. comment runs). */
   startedAt: number;
+  lastActivityAt?: number;
+  toolLabel?: string;
 }
 
 export class ActiveRuns {

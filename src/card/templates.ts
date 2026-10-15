@@ -87,6 +87,7 @@ export interface StatusInfo {
   /** One-line knowledge summary (memory counts, skills, sync state). */
   knowledge?: string;
   activeRun: boolean;
+  activeRunDetail?: string;
   /** The scope's process is still running background tasks after its last turn. */
   backgroundRun?: boolean;
   activeScopes?: string[];
@@ -138,7 +139,7 @@ export function statusCard(info: StatusInfo): object {
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
     `🛡 **${escapeMd(info.runtimeAccess.label)}**: ${escapeMd(info.runtimeAccess.value)}`,
     ...(info.larkCliStatus ? [`🔐 **lark-cli**: ${info.larkCliStatus}`] : []),
-    `🏃 **active run**: ${info.activeRun ? 'yes' : 'no'}`,
+    `🏃 **active run**: ${info.activeRun ? (info.activeRunDetail ? escapeMd(info.activeRunDetail) : 'yes') : 'no'}`,
     ...(info.backgroundRun ? ['🧵 **background tasks**: running（`/stop` 可停止）'] : []),
     ...(info.activeScopes && info.activeScopes.length > 0
       ? [

@@ -20,6 +20,7 @@ export type Terminal = 'running' | 'done' | 'interrupted' | 'error' | 'idle_time
 
 export interface RunState {
   blocks: Block[];
+  subagent?: { parentToolUseId: string; tool?: string; description?: string; at: number };
   finalText?: string;
   reasoning: { content: string; active: boolean };
   footer: FooterStatus;
@@ -104,6 +105,9 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       });
       return { ...state, blocks };
     }
+
+    case 'subagent_activity':
+      return { ...state, subagent: evt };
 
     case 'supplement': {
       // Mark where the user's mid-run supplement was read, so the reply shows

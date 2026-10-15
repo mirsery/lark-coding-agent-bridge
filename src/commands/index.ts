@@ -979,6 +979,12 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     ...(await gitStatusLine(cwd)),
     ...(await knowledgeStatusLine(ctx)),
     activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
+    activeRunDetail: (() => {
+      const h = ctx.activeRuns.get(ctx.scope);
+      if (!h) return undefined;
+      const idle = Math.max(0, Math.floor((Date.now() - (h.lastActivityAt ?? h.startedAt)) / 1000));
+      return `${h.toolLabel ?? '正在运行'} · 上次动静 ${idle} 秒前`;
+    })(),
     backgroundRun: ctx.activeRuns.isLingering(ctx.scope),
     activeScopes: ctx.activeRuns.scopes().filter((scope) => !scope.startsWith('comment:')),
     activeCommentScopes: ctx.activeRuns.scopes().filter((scope) => scope.startsWith('comment:')),

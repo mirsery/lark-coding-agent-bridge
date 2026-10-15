@@ -1,3 +1,4 @@
+import { runningToolLabel } from '../card/run-activity';
 import type { AgentEvent } from '../agent/types';
 import {
   finalizeIfRunning,
@@ -27,6 +28,7 @@ export async function processAgentStream(
 ): Promise<RunState> {
   const runStart = Date.now();
   let state: RunState = initialState;
+  let lastSubagentLogAt: number | undefined;
 
   // Idle watchdog: claude going silent for `idleTimeoutMs` is treated as
   // "presumed hung", we stop() and surface a timeout marker on the card.
@@ -64,6 +66,17 @@ export async function processAgentStream(
   try {
     for await (const evt of events) {
       if (handle.interrupted) break;
+
+      handle.lastActivityAt = Date.now();
+      if (evt.type === 'subagent_activity' &&
+          (lastSubagentLogAt === undefined || handle.lastActivityAt - lastSubagentLogAt >= 60_000)) {
+        lastSubagentLogAt = handle.lastActivityAt;
+        log.info('agent', 'subagent-activity', {
+          scope,
+          ...(evt.tool ? { tool: evt.tool } : {}),
+          ...(evt.description ? { description: evt.description.replace(/\s+/g, ' ').slice(0, 80) } : {}),
+        });
+      }
 
       // Track tool flight before re-arming the idle timer so the arm step
       // sees the correct set size. tool_use opens a window; tool_result
@@ -103,6 +116,7 @@ export async function processAgentStream(
       const prevTerminal = state.terminal;
       const prevFooter = state.footer;
       state = reduce(state, evt);
+      handle.toolLabel = runningToolLabel(state);
       if (state.footer !== prevFooter || state.terminal !== prevTerminal) {
         log.info('card', 'transition', { footer: state.footer, terminal: state.terminal });
       }
