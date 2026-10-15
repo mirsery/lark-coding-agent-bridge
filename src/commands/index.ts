@@ -118,6 +118,7 @@ import type {
 } from '../config/profile-schema';
 import { effectiveLarkCliIdentity } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
+import { describeActiveRun } from '../bot/run-status';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import {
   canRunAdminCommand,
@@ -958,6 +959,7 @@ async function larkCliStatus(ctx: CommandContext): Promise<'app' | 'user-ready' 
 }
 
 async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
+  const activeHandle = ctx.activeRuns.get(ctx.scope);
   const cwd = effectiveWorkspaceCwd(ctx);
   const sess = ctx.sessions.getRaw(ctx.scope);
   // Scope-store agents report the scope's session (and whether its cwd went
@@ -983,7 +985,8 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     larkCliStatus: await larkCliStatus(ctx),
     ...(await gitStatusLine(cwd)),
     ...(await knowledgeStatusLine(ctx)),
-    activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
+    activeRun: Boolean(activeHandle),
+    ...(activeHandle ? { activeRunDetail: describeActiveRun(activeHandle) } : {}),
     backgroundRun: ctx.activeRuns.isLingering(ctx.scope),
     activeScopes: ctx.activeRuns.scopes().filter((scope) => !scope.startsWith('comment:')),
     activeCommentScopes: ctx.activeRuns.scopes().filter((scope) => scope.startsWith('comment:')),

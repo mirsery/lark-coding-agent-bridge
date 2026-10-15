@@ -28,8 +28,10 @@ import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
+import { fitCardToBudget, fullText } from '../card/card-budget';
+import { runningToolLabel } from '../card/run-activity';
 import { renderCard } from '../card/run-renderer';
-import type { RunCardRenderOptions } from '../card/run-renderer';
+import type { RunActivity, RunCardRenderOptions } from '../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
@@ -87,7 +89,8 @@ import {
 } from '../session/smart-session';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
-import { ActiveRuns } from './active-runs';
+import { ActiveRuns, type RunHandle } from './active-runs';
+import { CardPatchHealth, instrumentCardPatches } from './card-patch-health';
 import { processAgentStream } from './agent-stream';
 import { createRunsMonitor } from './runs-monitor';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
@@ -1731,6 +1734,24 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       let cardCtrl:
         | { update(next: object | ((current: object) => object)): Promise<void>; readonly messageId?: string }
         | undefined;
+      // Whether the last card rendered had to cut the answer to fit.
+      let cardTrimmed = false;
+      const cardHealth = new CardPatchHealth((code) => {
+        void channel
+          .send(chatId, { markdown: cardBrokenNotice(code) }, sendOpts)
+          .catch((err) => log.fail('stream', err, { step: 'card-broken-notice' }));
+      });
+      // The card as the user should see it now: live clock while running,
+      // shrunk to fit Feishu's size limit (see fitCardToBudget).
+      const renderLiveCard = (state: RunState): object => {
+        const options: RunCardRenderOptions =
+          state.terminal === 'running'
+            ? { ...cardRenderOptions, activity: runActivity(handle, state) }
+            : cardRenderOptions;
+        const fitted = fitCardToBudget(filterForPrefs(state), (s) => renderCard(s, options));
+        cardTrimmed = fitted.trimmed;
+        return fitted.card;
+      };
       const progress = createLazyProgressStream(scope, replyMode, () =>
         channel.stream(
           chatId,
@@ -1741,8 +1762,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
                 producerStarted = true;
                 if (progress.abandoned()) return;
                 cardCtrl = ctrl;
+                instrumentCardPatches(ctrl, cardHealth);
                 if (ctrl.messageId) supplementTarget.replyIds.add(ctrl.messageId);
-                await ctrl.update(renderCard(filterForPrefs(latestState), cardRenderOptions));
+                await ctrl.update(renderLiveCard(latestState));
                 await renderDone;
               },
             },
@@ -1761,10 +1783,18 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (cardCtrl) {
-            await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
+            await cardCtrl.update(renderLiveCard(state));
           }
         },
       );
+      // Keep the clock ticking while the agent is quiet. Only touches a card
+      // that is still running, so it can never overwrite the final one.
+      const heartbeat = setInterval(() => {
+        if (cardCtrl && latestState.terminal === 'running') {
+          void cardCtrl.update(renderLiveCard(latestState));
+        }
+      }, CARD_HEARTBEAT_MS);
+      heartbeat.unref?.();
       try {
         await awaitRenderAwareStream({
           mode: replyMode,
@@ -1774,11 +1804,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           fallback: async (state) => {
             if (separateFinalReply) return;
             if (renderText(filterForPrefs(state)).trim() === '') return;
-            await channel.send(
-              chatId,
-              { card: renderCard(filterForPrefs(state), cardRenderOptions) },
-              sendOpts,
+            const fitted = fitCardToBudget(filterForPrefs(state), (s) =>
+              renderCard(s, cardRenderOptions),
             );
+            await channel.send(chatId, { card: fitted.card }, sendOpts);
+            if (fitted.trimmed) {
+              await sendAnswerOutsideCard({
+                channel,
+                chatId,
+                scope,
+                sendOpts,
+                reason: 'too-long',
+                state: filterForPrefs(state),
+              });
+            }
           },
           rescue: separateFinalReply
             ? undefined
@@ -1796,6 +1835,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       } catch (err) {
         if (!separateFinalReply) throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
+      } finally {
+        clearInterval(heartbeat);
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (separateFinalReply) {
@@ -1809,6 +1850,54 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           sendOpts,
           cardRenderOptions,
         });
+      } else if (progress.opened() && !progress.abandoned()) {
+        // The card is the reply. If it doesn't hold the whole answer — its
+        // last update was rejected, or the answer outgrew it — get the answer
+        // out some other way so it is never lost. A stream still finishing
+        // past the terminal grace window is checked once it settles.
+        const checkCardDelivery = async (): Promise<void> => {
+          const finalState = filterForPrefs(latestState);
+          if (cardHealth.lastFailed) {
+            log.warn('stream', 'card-final-update-failed', {
+              scope,
+              code: cardHealth.lastErrorCode ?? null,
+            });
+            await runFallbackReply(
+              replyMode,
+              finalState,
+              (state) =>
+                rescueCardReply({
+                  channel,
+                  chatId,
+                  scope,
+                  sendOpts,
+                  cardRenderOptions,
+                  streamedMessageId: cardCtrl?.messageId,
+                  state,
+                }),
+              'rescue',
+            );
+          } else if (cardTrimmed) {
+            await sendAnswerOutsideCard({
+              channel,
+              chatId,
+              scope,
+              sendOpts,
+              reason: 'too-long',
+              state: finalState,
+            });
+          }
+        };
+        const streamSettled = progress.settled.then(
+          () => true,
+          () => true,
+        );
+        const settledInTime = await Promise.race([
+          streamSettled,
+          delay(STREAM_TERMINAL_GRACE_MS).then(() => false),
+        ]);
+        if (settledInTime) await checkCardDelivery();
+        else void streamSettled.then(checkCardDelivery);
       }
       runTerminal = latestState.terminal;
     } else if (replyMode === 'markdown') {
@@ -1949,6 +2038,49 @@ function answerTextOf(state: RunState | undefined): string | undefined {
     if (block?.kind === 'text') return block.content;
   }
   return undefined;
+}
+
+/** How often a running card re-renders its clock when nothing else changes. */
+const CARD_HEARTBEAT_MS = 15_000;
+
+function runActivity(handle: RunHandle, state: RunState): RunActivity {
+  const now = Date.now();
+  const toolLabel = runningToolLabel(state);
+  return {
+    elapsedMs: now - handle.startedAt,
+    idleMs: now - handle.lastActivityAt,
+    ...(toolLabel ? { toolLabel } : {}),
+  };
+}
+
+function cardBrokenNotice(code: number | undefined): string {
+  return (
+    `⚠️ 进度卡片更新不了了（飞书错误 ${code ?? '未知'}），任务还在继续。` +
+    '卡片恢复不了的话，结束后结果会另发一条消息。'
+  );
+}
+
+/**
+ * Post the whole answer as ordinary messages, for a card that had to cut it
+ * to fit Feishu's size limit. The SDK splits long markdown across several
+ * messages.
+ */
+async function sendAnswerOutsideCard(input: {
+  channel: LarkChannel;
+  chatId: string;
+  scope: string;
+  sendOpts: { replyTo: string; replyInThread?: boolean };
+  reason: 'too-long';
+  state: RunState;
+}): Promise<void> {
+  const text = fullText(input.state);
+  log.info('outbound', 'answer-outside-card', { scope: input.scope, reason: input.reason, chars: text.length });
+  if (!text) return;
+  try {
+    await input.channel.send(input.chatId, { markdown: text }, input.sendOpts);
+  } catch (err) {
+    log.fail('stream', err, { step: 'answer-outside-card', reason: input.reason });
+  }
 }
 
 interface LazyProgressStream {

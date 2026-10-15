@@ -7,6 +7,7 @@ import {
   reduce,
   type RunState,
 } from '../card/run-state';
+import { runningToolLabel } from '../card/run-activity';
 import { log, reportMetric } from '../core/logger';
 import type { RunHandle } from './active-runs';
 
@@ -64,6 +65,7 @@ export async function processAgentStream(
   try {
     for await (const evt of events) {
       if (handle.interrupted) break;
+      handle.lastActivityAt = Date.now();
 
       // Track tool flight before re-arming the idle timer so the arm step
       // sees the correct set size. tool_use opens a window; tool_result
@@ -103,6 +105,7 @@ export async function processAgentStream(
       const prevTerminal = state.terminal;
       const prevFooter = state.footer;
       state = reduce(state, evt);
+      handle.toolLabel = runningToolLabel(state);
       if (state.footer !== prevFooter || state.terminal !== prevTerminal) {
         log.info('card', 'transition', { footer: state.footer, terminal: state.terminal });
       }
