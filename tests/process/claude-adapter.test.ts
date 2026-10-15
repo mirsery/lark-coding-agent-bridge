@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ClaudeAdapter } from '../../src/agent/claude/adapter.js';
 import type { AgentEvent } from '../../src/agent/types.js';
+import { ownerOnlyGuard } from '../../src/policy/owner-guard.js';
 
 interface FakeBinary {
   path: string;
@@ -329,6 +330,34 @@ describe('ClaudeAdapter process contract', () => {
       hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: "node /opt/hook.mjs '/tmp/s.sock' tok", timeout: 330 }] }] },
     });
     expect(gated.argv[gated.argv.indexOf('--permission-mode') + 1]).toBe('bypassPermissions');
+  });
+
+  it('puts the owner guard and the approval hook in one settings file', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-both' }] });
+    cleanup.push(fake.dir);
+    const guard = ownerOnlyGuard({
+      larkChannelHome: join(fake.dir, '.lark-channel'),
+      guestRoots: [],
+      workspace: fake.dir,
+      home: fake.dir,
+    });
+
+    await collect(
+      new ClaudeAdapter({ binary: fake.path }).run({
+        runId: 'run-both',
+        prompt: 'x',
+        cwd: fake.dir,
+        guard,
+        approvals: { hookCommand: 'node /opt/hook.mjs tok', hookTimeoutSec: 330, decide: async () => ({ decision: 'deny', reason: 'n/a' }) },
+      }).events,
+    );
+    const record = await readRecord(fake.recordPath);
+    // Claude takes a single `--settings`: both hooks must live in it.
+    expect(record.argv.filter((a) => a === '--settings')).toHaveLength(1);
+    const hooks = (record.settings as { hooks: { PreToolUse: Array<{ matcher: string }> } }).hooks.PreToolUse;
+    expect(hooks.map((h) => h.matcher)).toEqual(['Bash|Read|Edit|MultiEdit|Write|NotebookEdit|Glob|Grep', '*']);
+    // The guard's other flags still reach argv.
+    expect(record.argv).toContain('--disallowedTools');
   });
 
   it('keeps a gated run read-only when no approval hook could be set up', async () => {

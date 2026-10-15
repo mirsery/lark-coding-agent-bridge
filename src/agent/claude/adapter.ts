@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
+import { claudeGuardArgs, type ClaudeHookSettings } from '../../policy/owner-guard';
 import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
@@ -92,12 +93,19 @@ export class ClaudeAdapter implements AgentAdapter {
       '--append-system-prompt-file',
       systemPromptFile.path,
     ];
-    // Gated runs: every tool call first goes through the bridge's approval
-    // hook. A settings *file* rather than inline JSON keeps quotes off argv
-    // (cmd.exe on Windows).
-    const settingsFile = opts.approvals?.hookCommand
-      ? writeSettingsFile(approvalHookSettings(opts.approvals.hookCommand, opts.approvals.hookTimeoutSec ?? 330))
-      : undefined;
+    // The owner guard (runs the owner didn't start) and the approval hook
+    // (gated runs) are both PreToolUse hooks. Claude takes one `--settings`,
+    // so they share a single settings *file* — which also keeps quotes off
+    // argv (cmd.exe on Windows).
+    const guard = opts.guard ? claudeGuardArgs(opts.guard) : undefined;
+    if (guard) args.push(...guard.args);
+    const settings = mergeHookSettings(
+      guard?.settings,
+      opts.approvals?.hookCommand
+        ? approvalHookSettings(opts.approvals.hookCommand, opts.approvals.hookTimeoutSec ?? 330)
+        : undefined,
+    );
+    const settingsFile = settings ? writeSettingsFile(settings) : undefined;
     if (settingsFile) args.push('--settings', settingsFile.path);
     if (opts.sessionId) args.push('--resume', opts.sessionId);
     if (opts.model) args.push('--model', opts.model);
@@ -109,6 +117,7 @@ export class ClaudeAdapter implements AgentAdapter {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, {
         ...buildLarkChannelEnv(this.larkChannel),
+        ...(guard?.env ?? {}),
         // 会话智能压缩: Claude Code auto-compacts against this window instead
         // of the model's full (up to 1M-token) one.
         ...(opts.compactWindowTokens ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(opts.compactWindowTokens) } : {}),
@@ -508,12 +517,19 @@ function gatedPermissionMode(opts: AgentRunOptions): string {
 }
 
 /** Claude Code settings that route every tool call through the approval hook. */
-export function approvalHookSettings(command: string, timeoutSec: number): object {
+export function approvalHookSettings(command: string, timeoutSec: number): ClaudeHookSettings {
   return {
     hooks: {
       PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command, timeout: timeoutSec }] }],
     },
   };
+}
+
+/** One settings object carrying every PreToolUse hook given, in order. */
+export function mergeHookSettings(...parts: (ClaudeHookSettings | undefined)[]): ClaudeHookSettings | undefined {
+  const present = parts.filter((p): p is ClaudeHookSettings => Boolean(p));
+  if (present.length === 0) return undefined;
+  return { hooks: { PreToolUse: present.flatMap((p) => p.hooks.PreToolUse) } };
 }
 
 function writeSettingsFile(settings: object): { path: string; cleanup: () => void } {

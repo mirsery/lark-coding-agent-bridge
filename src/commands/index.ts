@@ -69,6 +69,7 @@ import {
   skillLibrariesCard,
   skillsCard,
   statusCard,
+  taskStatusCard,
   type StatusInfo,
   worktreeCard,
   workspacesCard,
@@ -705,14 +706,17 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  await RESUME_LISTS[ctx.controls.profileConfig.agentKind](ctx, cwd, limit);
+  await RESUME_LISTS[ctx.controls.profileConfig.agentKind](ctx, cwd, limit, sub === 'all');
 }
 
 /**
  * `/resume` listing per agent: each reads its own CLI's history and issues
  * resume candidates keyed by that agent's session handle.
  */
-const RESUME_LISTS: Record<AgentKind, (ctx: CommandContext, cwd: string, limit: number) => Promise<void>> = {
+const RESUME_LISTS: Record<
+  AgentKind,
+  (ctx: CommandContext, cwd: string, limit: number, all: boolean) => Promise<void>
+> = {
   claude: sendClaudeResumeList,
   codex: sendCodexResumeList,
 };
@@ -751,8 +755,14 @@ async function sendCodexResumeList(ctx: CommandContext, cwd: string, limit: numb
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
-async function sendClaudeResumeList(ctx: CommandContext, cwd: string, limit: number): Promise<void> {
-  const sessions = await listClaudeResumeHistory(ctx, cwd, limit);
+async function sendClaudeResumeList(ctx: CommandContext, cwd: string, limit: number, all: boolean): Promise<void> {
+  // Only this chat's own conversations: every chat shares the workspace, so
+  // the unfiltered list would let anyone resume (and read back) someone
+  // else's session. Admins can still see everything with `/resume all`.
+  const showAll = all && canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok;
+  const recent = await listClaudeResumeHistory(ctx, cwd, RESUME_SCAN_LIMIT);
+  const own = scopeSessionIds(ctx);
+  const sessions = showAll ? recent.slice(0, 20) : recent.filter((s) => own.has(s.sessionId)).slice(0, limit);
   const currentSession = ctx.sessions.getRaw(ctx.scope);
   const identity = ctx.sessionCatalogIdentity;
   const entries = sessions.map((s) => ({
@@ -865,6 +875,20 @@ function pruneResumeCandidates(now = Date.now()): void {
   }
 }
 
+/** How far back `/resume` looks before keeping only this chat's sessions. */
+const RESUME_SCAN_LIMIT = 200;
+
+/** Claude sessions this chat has used: its current one and any it moved on from. */
+function scopeSessionIds(ctx: CommandContext): Set<string> {
+  const ids = new Set<string>();
+  const current = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+  if (current) ids.add(current);
+  for (const entry of ctx.sessionCatalog?.entries() ?? []) {
+    if (entry.scopeId === ctx.scope && entry.agentId === ctx.controls.profileConfig.agentKind && entry.sessionId) ids.add(entry.sessionId);
+  }
+  return ids;
+}
+
 async function listClaudeResumeHistory(
   ctx: CommandContext,
   cwd: string,
@@ -964,6 +988,21 @@ async function larkCliStatus(ctx: CommandContext): Promise<'app' | 'user-ready' 
 async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   const activeHandle = ctx.activeRuns.get(ctx.scope);
   const pendingResume = ctx.controls.autoResumer?.get(ctx.scope);
+  const autoResume = pendingResume
+    ? pendingResume.kind === 'interrupted'
+      ? `任务意外中断，${formatMoment(pendingResume.resumeAt)} 按任务台账自动继续（发 /stop 取消）`
+      : `${limitLabel(pendingResume.limitType)}用完暂停，${formatMoment(pendingResume.resumeAt)} 自动继续（发 /stop 取消）`
+    : undefined;
+  // Workspace paths, session ids, git and account state are the admins'
+  // business; everyone else only needs to know how their task is doing.
+  if (!canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) {
+    const card = taskStatusCard({
+      ...(activeHandle ? { activeRun: describeActiveRun(activeHandle) } : {}),
+      ...(autoResume ? { autoResume } : {}),
+    });
+    await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+    return;
+  }
   const cwd = effectiveWorkspaceCwd(ctx);
   const sess = ctx.sessions.getRaw(ctx.scope);
   // Scope-store agents report the scope's session (and whether its cwd went
@@ -991,14 +1030,7 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     ...(await knowledgeStatusLine(ctx)),
     activeRun: Boolean(activeHandle),
     ...(activeHandle ? { activeRunDetail: describeActiveRun(activeHandle) } : {}),
-    ...(pendingResume
-      ? {
-          autoResume:
-            pendingResume.kind === 'interrupted'
-              ? `任务意外中断，${formatMoment(pendingResume.resumeAt)} 按任务台账自动继续（发 /stop 取消）`
-              : `${limitLabel(pendingResume.limitType)}用完暂停，${formatMoment(pendingResume.resumeAt)} 自动继续（发 /stop 取消）`,
-        }
-      : {}),
+    ...(autoResume ? { autoResume } : {}),
     backgroundRun: ctx.activeRuns.isLingering(ctx.scope),
     activeScopes: ctx.activeRuns.scopes().filter((scope) => !scope.startsWith('comment:')),
     activeCommentScopes: ctx.activeRuns.scopes().filter((scope) => scope.startsWith('comment:')),

@@ -6,6 +6,7 @@ import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 import { RunExecutor, type BackgroundTurn, type RunApprovalGates } from '../../../src/runtime/run-executor';
 import type { GateContext } from '../../../src/runtime/approvals';
 import type { UsageEntry } from '../../../src/runtime/usage-ledger';
+import { ownerOnlyGuard } from '../../../src/policy/owner-guard';
 
 /**
  * A process the test drives by hand, shaped like `claude --input-format
@@ -287,6 +288,31 @@ describe('RunExecutor background tasks', () => {
     expect(live.stopped).toBe(true);
     expect(live.sent).toEqual([]);
     expect(h.agent.runs).toHaveLength(2);
+  });
+
+  it("never hands a guest's message to a process the owner started, nor the other way round", async () => {
+    const h = harness();
+    const first = await h.executor.submit({ scopeId: 'chat-1', policy: policy() });
+    const ownerProcess = h.agent.runs[0]!;
+    ownerProcess.emit({ type: 'system', sessionId: 'sess-1' }, { type: 'background', count: 1 }, done());
+    await collect(first.subscribe());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+
+    const guard = ownerOnlyGuard({ larkChannelHome: '/home/o/.lark-channel', home: '/home/o', root: '/opt/bridge' });
+    const second = await h.executor.submit({ scopeId: 'chat-1', policy: policy(), sessionId: 'sess-1', guard });
+    expect(ownerProcess.stopped).toBe(true);
+    expect(ownerProcess.sent).toEqual([]);
+    const guestProcess = h.agent.runs[1]!;
+    expect(guestProcess.opts.guard).toBe(guard);
+    guestProcess.emit({ type: 'system', sessionId: 'sess-1' }, { type: 'background', count: 1 }, done());
+    await collect(second.subscribe());
+    await until(() => h.activeRuns.isLingering('chat-1'));
+
+    await h.executor.submit({ scopeId: 'chat-1', policy: policy(), sessionId: 'sess-1' });
+    expect(guestProcess.stopped).toBe(true);
+    expect(guestProcess.sent).toEqual([]);
+    expect(h.agent.runs).toHaveLength(3);
+    expect(h.agent.runs[2]!.opts.guard).toBeUndefined();
   });
 
   it('spawns a fresh process when the next message resumes a different session', async () => {

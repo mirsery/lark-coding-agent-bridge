@@ -659,6 +659,32 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 - `allowTools`：免审批的工具名，`*` 匹配任意字符。写 `Bash` 等于放开所有命令，慎用。
 - 免审批放行的操作同样记审计，`/audit` 里显示为「免审批清单」。
 
+### 非主人发起的任务：工具层限制（始终开启）
+
+改动 bridge 和 agent 自身只接受 bot 主人本人的请求。一批消息里只要有一条不是主人本人发的（包括其他 bot 转交、引用或转述主人的话），这一轮就按访客任务运行，Claude Code 在工具层面拦截（与上面的审批同时生效，审批放行的操作照样拦）：
+
+- **不能改**：bridge 源码、`~/.lark-channel`（配置、密钥、日志都读不到，用户发来的附件除外）、`~/.claude` 下的 CLAUDE.md / settings / skills / agents / 记忆、`~/.local/bin`、`~/Library/LaunchAgents`；也不能运行启停 bridge 或 `launchctl` 的命令。
+- **只能看主人开放的目录**：主目录下只能读写 `guestRoots`、当前工作目录、skill 和附件；`guestReadOnlyRoots` 只读（可以读文件、搜索、用只读 git 查历史）。主目录以外（系统目录、`/tmp`）不受限。
+- `/resume` 只列本会话用过的历史会话，管理员发 `/resume all` 看全部；非管理员发 `/status` 只看到当前任务进度和待续跑时间。
+
+开放范围在 profile 的 `access` 段配置（`~` 可用，改完重启该 profile 生效）：
+
+```json
+"access": {
+  "guestRoots": ["~/workspace/shared-project"],
+  "guestReadOnlyRoots": ["~/workspace/reference-repo"],
+  "guestDeniedTools": ["mcp__github", "mcp__jira__jira_create_issue"],
+  "guestDeniedCommands": ["^\\s*gh\\b", "git\\s+push"],
+  "guestToolGrants": { "ou_xxxxxxxx": ["mcp__jira__jira_create_issue"] }
+}
+```
+
+- `guestDeniedTools`：访客任务额外禁用的 Claude 权限规则（整个 MCP server 或单个工具）。
+- `guestDeniedCommands`：访客任务拒绝的命令正则。
+- `guestToolGrants`：按人放开上面两项里的条目（命令写原样的正则字符串）；一批消息里每个人都有这一项才放开，有 bot 参与则不放开。
+
+这是字符串匹配，不是沙箱：拦得住常规写法，agent 的系统提示里也写明了同样的规则。Codex 暂不支持这层拦截。
+
 ### 会话智能压缩（默认关闭）
 
 bridge 默认一直续用同一个会话。会话越聊越长，每一轮（以及每一次工具调用）都要把整段上下文重读一遍；空闲超过 1 小时缓存过期后，再说话还要按写缓存的价格把整段上下文重写一次。在飞书里发 `/config`，打开「运行与权限」里的「会话智能压缩」（提交后立即生效），也可在 Web 控制台的「配置 → 回复与运行」中打开同名开关并保存。bridge 会：

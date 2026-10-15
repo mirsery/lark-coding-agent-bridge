@@ -117,6 +117,15 @@ function contextLine(context: NonNullable<StatusInfo['context']>): string {
   return parts.join(' · ');
 }
 
+/** `/status` for people other than admins: only how this chat's task is doing. */
+export function taskStatusCard(info: { activeRun?: string; autoResume?: string }): object {
+  const lines = [
+    `🏃 **当前任务**: ${info.activeRun ? escapeMd(info.activeRun) : '没有正在运行的任务'}`,
+    ...(info.autoResume ? [`⏸ **自动续跑**: ${escapeMd(info.autoResume)}`] : []),
+  ];
+  return shell('📊 当前状态', [divMd(lines.join('\n'))]);
+}
+
 export function statusCard(info: StatusInfo): object {
   const sessionLine = info.sessionId
     ? `\`${info.sessionId.slice(0, 8)}…\`${info.sessionStale ? ' ⚠️ 旧 cwd，下一条会新建' : ''}`
@@ -287,7 +296,7 @@ export function helpCard(agentName = 'Agent'): object {
         helpSection('blue-50', '🗣 会话', [
           '`/new` `/reset` — 清空当前会话',
           '`/new chat [名字]` — 新建群 + 新会话，自动拉你进群',
-          '`/resume [N]` — 列出并恢复历史会话',
+          '`/resume [N]` — 列出并恢复本会话用过的历史会话（管理员 `/resume all` 看全部）',
           '`/stop` — 结束正在跑的任务（也可点卡片上的 ⏹ 终止）；任务等待自动续跑时，取消续跑',
           '`/timeout [N|off|default]` — 本会话的探活分钟数',
         ]),

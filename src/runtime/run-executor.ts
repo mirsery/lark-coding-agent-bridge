@@ -6,6 +6,7 @@ import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
 import { agentDescriptor, isAgentKind } from '../agent/registry';
 import { RunRejected, SpawnFailed } from './errors';
+import type { RunGuard } from '../policy/owner-guard';
 import { isTerminalEvent, ProcessSession } from './process-session';
 import type { UsageEntry } from './usage-ledger';
 import { needsApproval, summarizeToolCall, type AuditSink, type GateContext } from './approvals';
@@ -60,6 +61,7 @@ export interface SubmitRunInput {
   effort?: string;
   images?: readonly string[];
   stopGraceMs?: number;
+  guard?: RunGuard;
   /** See AgentRunOptions.compactWindowTokens. */
   compactWindowTokens?: number;
   nowait?: boolean;
@@ -192,6 +194,7 @@ export class RunExecutor {
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
+      ...(input.guard ? { guard: input.guard } : {}),
       ...(input.compactWindowTokens ? { compactWindowTokens: input.compactWindowTokens } : {}),
     };
     const compatKey = runCompatKey({ ...runOptions, gated: Boolean(input.gate) });
@@ -600,6 +603,7 @@ function runCompatKey(opts: {
   permissionMode?: string;
   images?: readonly string[];
   compactWindowTokens?: number;
+  guard?: RunGuard;
 }): string {
   return JSON.stringify([
     opts.gated ?? false,
@@ -612,6 +616,9 @@ function runCompatKey(opts: {
     opts.images?.length ? opts.images : null,
     // The compaction window rides on the process environment.
     opts.compactWindowTokens ?? null,
+    // The guard rides on argv, settings and env: a warm process started for
+    // the owner must never take a guest's turn, nor one guest's another's.
+    opts.guard ?? null,
   ]);
 }
 

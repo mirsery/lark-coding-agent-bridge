@@ -29,6 +29,7 @@ import {
 } from '../session/smart-session';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
+import type { RunGuard } from '../policy/owner-guard';
 
 export interface StartRunFlowInput {
   scopeId: string;
@@ -50,6 +51,8 @@ export interface StartRunFlowInput {
   /** Passed to the executor as `SubmitRunInput.onBackgroundTurn`. */
   onBackgroundTurn?: BackgroundTurnHandler;
   stopGraceMs?: number;
+  /** Limits for a run the bot owner didn't start (see ownerOnlyGuard). */
+  guard?: RunGuard;
   /** 会话智能压缩: see AgentRunOptions.compactWindowTokens. */
   compactWindowTokens?: number;
   /**
@@ -208,6 +211,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
               .filter((path): path is string => Boolean(path))
           : undefined,
       stopGraceMs: input.stopGraceMs,
+      ...(input.guard ? { guard: input.guard } : {}),
       ...(input.compactWindowTokens ? { compactWindowTokens: input.compactWindowTokens } : {}),
       actor: { id: input.scope.actorId, ...(input.actorName ? { name: input.actorName } : {}) },
       ...(input.scope.chatId ? { chatId: input.scope.chatId } : {}),

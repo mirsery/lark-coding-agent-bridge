@@ -658,6 +658,32 @@ It lives in the profile config's `approvals` section (restart the profile to app
 - `allowTools`: tool names that run without asking; `*` matches anything. Listing `Bash` waives every command.
 - Steps waived this way are still audited (shown as "allowlisted" in `/audit`).
 
+### Runs the owner didn't start: tool-level limits (always on)
+
+Changes to the bridge and to the agent itself are taken only from the bot owner in person. If any message of a batch isn't the owner's own (including requests handed over by another bot, or quoting / relaying the owner), the turn runs as a guest run, which Claude Code fences at the tool level (alongside approvals above — an approved step is still fenced):
+
+- **Off limits**: the bridge's source, `~/.lark-channel` (config, secrets and logs are unreadable; attachments users sent stay readable), CLAUDE.md / settings / skills / agents / memory under `~/.claude`, `~/.local/bin`, `~/Library/LaunchAgents`; commands that start, stop or restart the bridge or call `launchctl` are refused.
+- **Only what the owner opened**: inside the home directory, only `guestRoots`, the run's workspace, skills and attachments can be read or written; `guestReadOnlyRoots` are read-only (read files, search, read-only git). Paths outside home (system dirs, `/tmp`) aren't fenced.
+- `/resume` lists only the sessions this chat has used (admins see all with `/resume all`); non-admins' `/status` shows just the current task and any pending auto-resume.
+
+Configure what's open in the profile's `access` section (`~` allowed; restart the profile to apply):
+
+```json
+"access": {
+  "guestRoots": ["~/workspace/shared-project"],
+  "guestReadOnlyRoots": ["~/workspace/reference-repo"],
+  "guestDeniedTools": ["mcp__github", "mcp__jira__jira_create_issue"],
+  "guestDeniedCommands": ["^\\s*gh\\b", "git\\s+push"],
+  "guestToolGrants": { "ou_xxxxxxxx": ["mcp__jira__jira_create_issue"] }
+}
+```
+
+- `guestDeniedTools`: extra Claude permission rules denied to guest runs (a whole MCP server or one tool).
+- `guestDeniedCommands`: regexes for shell commands refused to guest runs.
+- `guestToolGrants`: per person, entries of the two lists above lifted for their runs (commands by their exact regex string); a run gets an entry back only when every sender in its batch has it, and never when a bot is in the batch.
+
+This is string matching, not a sandbox: it stops the plain ways of doing it, and the agent's system prompt states the same rules. Codex runs aren't fenced this way yet.
+
 ### Smart session compaction (off by default)
 
 By default the bridge keeps resuming the same conversation. The longer it gets, the more every turn (and every tool call) re-reads; and once it has sat idle past the prompt cache's lifetime (1 hour), the next message first re-writes the whole context at cache-write price. Send `/config` in Feishu and switch on 「会话智能压缩」 under 运行与权限 (applies on submit) or enable the same switch under Configuration → Replies & runs in the Web console and save. The bridge will:

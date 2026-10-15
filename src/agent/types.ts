@@ -1,5 +1,6 @@
 import type { AgentAvailability } from './preflight';
 import type { ClaudePermissionMode, CodexSandboxMode } from '../config/permissions';
+import type { RunGuard } from '../policy/owner-guard';
 
 export type { ClaudePermissionMode } from '../config/permissions';
 
@@ -102,6 +103,9 @@ export interface AgentRunOptions {
    * are adapter-specific.
   */
   stopGraceMs?: number;
+  /** Set when someone other than the bot owner started the run: what it may
+   * not touch. Adapters that can't enforce it ignore it. */
+  guard?: RunGuard;
   approvals?: RunApprovals;
   /**
    * 会话智能压缩: auto-compact the conversation against a context window of

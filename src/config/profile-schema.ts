@@ -41,6 +41,33 @@ export interface ProfileAccess {
    * zero members and never pass through an "open to everyone" window.
    */
   chatAllowedUsers?: Record<string, string[]>;
+  /**
+   * Directories a run started by someone other than the owner may read and
+   * change (`~` allowed). Everything else under the owner's home is off
+   * limits to them. Omitted when empty.
+   */
+  guestRoots?: string[];
+  /**
+   * Directories a run started by someone other than the owner may read but
+   * not change (`~` allowed): file tools may not edit them and shell commands
+   * may not write into them; read-only git (log, show, diff, grep, blame…)
+   * still works. Omitted when empty.
+   */
+  guestReadOnlyRoots?: string[];
+  /**
+   * Claude permission rules denied to runs the owner didn't start, e.g.
+   * `mcp__github` (a whole MCP server) or `mcp__jira__jira_create_issue`.
+   */
+  guestDeniedTools?: string[];
+  /** Regexes for shell commands refused to runs the owner didn't start. */
+  guestDeniedCommands?: string[];
+  /**
+   * open_id → entries of `guestDeniedTools`, or of `guestDeniedCommands` (the
+   * exact regex string), lifted for that person's runs, e.g.
+   * `{ "ou_x": ["mcp__jira__jira_create_issue"] }`. A run gets an entry back
+   * only when every sender in its batch has it. Omitted when empty.
+   */
+  guestToolGrants?: Record<string, string[]>;
 }
 
 export interface SandboxConfig {
@@ -452,6 +479,11 @@ function normalizeAccess(
 ): ProfileAccess {
   const chatRequireMention = normalizeChatMentionMap(access?.chatRequireMention);
   const chatAllowedUsers = normalizeChatUserMap(access?.chatAllowedUsers);
+  const guestRoots = stringArray(access?.guestRoots);
+  const guestReadOnlyRoots = stringArray(access?.guestReadOnlyRoots);
+  const guestDeniedTools = stringArray(access?.guestDeniedTools);
+  const guestDeniedCommands = stringArray(access?.guestDeniedCommands);
+  const guestToolGrants = normalizeChatUserMap(access?.guestToolGrants);
   return {
     allowedUsers: stringArray(access?.allowedUsers),
     allowedChats: stringArray(access?.allowedChats),
@@ -460,6 +492,11 @@ function normalizeAccess(
     // Omit when empty so configs without per-chat overrides stay clean.
     ...(Object.keys(chatRequireMention).length > 0 ? { chatRequireMention } : {}),
     ...(Object.keys(chatAllowedUsers).length > 0 ? { chatAllowedUsers } : {}),
+    ...(guestRoots.length > 0 ? { guestRoots } : {}),
+    ...(guestReadOnlyRoots.length > 0 ? { guestReadOnlyRoots } : {}),
+    ...(guestDeniedTools.length > 0 ? { guestDeniedTools } : {}),
+    ...(guestDeniedCommands.length > 0 ? { guestDeniedCommands } : {}),
+    ...(Object.keys(guestToolGrants).length > 0 ? { guestToolGrants } : {}),
   };
 }
 

@@ -328,6 +328,30 @@ describe('markdown stream startup failures', () => {
     expect(h.agent.runOptions[0]?.approvals).toBeUndefined();
   });
 
+  it("fences runs the owner didn't start and leaves the owner's own runs alone", async () => {
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [[{ type: 'done', terminationReason: 'normal' }], [{ type: 'done', terminationReason: 'normal' }]],
+      stream: async () => {},
+    });
+    h.profileConfig.access.guestRoots = ['/srv/shared-project'];
+    Object.assign(h.controls, { botOwnerId: 'ou_owner', ownerRefreshState: 'ok' });
+    await startTestBridge(h, testAppPaths(h.tmp));
+
+    await h.channel.handlers.message?.(message('om_guest', '改一下 bridge 配置'));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    const guest = h.agent.runOptions[0]!;
+    expect(guest.guard?.allowedRoots).toContain('/srv/shared-project');
+    expect(guest.prompt).toContain('"senderIsOwner":false');
+
+    Object.assign(h.controls, { botOwnerId: 'ou_user' });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await h.channel.handlers.message?.(message('om_owner', '那我自己来改'));
+    await waitFor(() => h.agent.runOptions.length === 2);
+    expect(h.agent.runOptions[1]!.guard).toBeUndefined();
+    expect(h.agent.runOptions[1]!.prompt).toContain('"senderIsOwner":true');
+  });
+
   it('opens no progress stream for a final-only round', async () => {
     // The regression this guards: Codex answering without any commentary. The
     // SDK sends its streaming card as soon as `stream()` is called and finishes

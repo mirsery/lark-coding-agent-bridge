@@ -100,7 +100,8 @@ import {
   type PendingResume,
 } from './auto-resume';
 import { INTERRUPT_RESUME_DELAY_MS, MAX_INTERRUPT_RESUMES, isKilledExit } from './task-ledger';
-import { isOwnerBatch } from '../policy/owner-guard';
+import { grantedToolsFor, isOwnerBatch, ownerOnlyGuard } from '../policy/owner-guard';
+import { paths } from '../config/paths';
 import type { RunRecord } from '../runtime/run-registry';
 import { CardPatchHealth, instrumentCardPatches } from './card-patch-health';
 import { processAgentStream } from './agent-stream';
@@ -1235,9 +1236,16 @@ async function tryInjectSupplement(deps: {
   // A prefixed supplement may quote something else to look at; quoting the
   // run itself adds nothing the agent does not already have.
   const quote = quoted && !quotesRun(quoted, target) ? await fetchQuotedContext(channel, quoted) : undefined;
-  const prompt = buildPrompt([msg], attachments, quote ? [quote] : [], undefined, channel.botIdentity, [
-    SUPPLEMENT_INSTRUCTION,
-  ]);
+  const prompt = buildPrompt(
+    [msg],
+    attachments,
+    quote ? [quote] : [],
+    undefined,
+    channel.botIdentity,
+    [SUPPLEMENT_INSTRUCTION],
+    undefined,
+    isOwnerBatch(controls, [msg], (m) => senderTypeOf(m) === 'bot'),
+  );
   // The run may have wrapped up while attachments were downloading.
   const injected =
     activeRuns.get(scope) === handle && handle.run.inject(prompt, supplementPreview(msg.content, attachments.length));
@@ -1418,6 +1426,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       })
     : undefined;
 
+  // Changes to the bridge and the agent itself are the owner's alone: other
+  // people's runs are told so and fenced off at the tool level.
+  const ownerRun = isOwnerBatch(controls, batch, (m) => senderTypeOf(m) === 'bot');
   const prompt = buildPrompt(
     batch,
     attachments,
@@ -1426,6 +1437,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     channel.botIdentity,
     extraInstructions,
     knowledgeContext,
+    ownerRun,
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
@@ -1503,6 +1515,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // 长任务完成提醒 measures from here: queueing behind the concurrency cap is
   // waiting the requester does too.
   const runSubmittedAt = Date.now();
+  // Someone else's run may only touch what the owner opened to others.
+  const access = controls.profileConfig.access;
+  const guestWorkspace = workspaces.cwdFor(scope) ?? controls.profileConfig.workspaces.default;
+  const guestGuard = ownerRun
+    ? undefined
+    : ownerOnlyGuard({
+        larkChannelHome: paths.appDir,
+        guestRoots: access.guestRoots ?? [],
+        guestReadOnlyRoots: access.guestReadOnlyRoots ?? [],
+        deniedTools: access.guestDeniedTools ?? [],
+        grantedTools: grantedToolsFor(access.guestToolGrants, batch, (m) => senderTypeOf(m) === 'bot'),
+        deniedCommands: access.guestDeniedCommands ?? [],
+        ...(guestWorkspace ? { workspace: guestWorkspace } : {}),
+      });
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -1517,6 +1543,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     executor,
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
+    ...(guestGuard ? { guard: guestGuard } : {}),
     ...(smartSession
       ? {
           compactWindowTokens: smartSession.compactWindowTokens,
@@ -1556,7 +1583,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Written before the first token so a hard kill at any point after this
   // leaves a trace the next process can act on.
   const chatName = mode === 'p2p' ? undefined : controls.knownChats?.find(c => c.id === chatId)?.name;
-  const ownerRun = isOwnerBatch(controls, batch, (m) => senderTypeOf(m) === 'bot');
   runs?.start({
     runId: execution.runId,
     scope,
@@ -2829,6 +2855,7 @@ function buildPrompt(
   botIdentity?: { openId: string; name?: string },
   extraInstructions?: string[],
   knowledge?: BridgePromptKnowledge,
+  senderIsOwner = false,
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -2863,6 +2890,7 @@ function buildPrompt(
       ...(first.senderName ? { senderName: first.senderName } : {}),
       ...(senderType ? { senderType } : {}),
       ...(botIdentity?.openId ? { botOpenId: botIdentity.openId } : {}),
+      senderIsOwner,
       ...(mentions.length > 0 ? { mentions } : {}),
       ...(first.threadId ? { threadId: first.threadId } : {}),
       messageIds: batch.map((m) => m.messageId),
