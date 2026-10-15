@@ -317,6 +317,7 @@ export class RunExecutor {
     let handle: RunHandle;
     try {
       handle = this.activeRuns.register(input.scopeId, run);
+      if (input.actor) handle.initiators?.add(input.actor.id);
     } catch (err) {
       releaseScope();
       release();

@@ -1,3 +1,4 @@
+import { runningToolLabel } from './run-activity';
 import { deepMaskEmails } from './mask-email';
 import { pauseNotice } from './pause-notice';
 import type { Block, FooterStatus, RunState, Terminal, ToolEntry } from './run-state';
@@ -91,7 +92,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   }
 
   if (state.terminal === 'running') {
-    if (state.footer) elements.push(footerStatus(state.footer, options.activity));
+    if (state.footer) elements.push(footerStatus(state.footer, options.activity, runningToolLabel(state)));
     elements.push(stopButton(options));
   } else {
     elements.push(...byline(options.meta));
@@ -275,18 +276,18 @@ function stopButton(options: RunCardRenderOptions): object {
     tag: 'button',
     text: { tag: 'plain_text', content: '⏹ 终止' },
     type: 'danger',
+    confirm: { title: { tag: 'plain_text', content: '终止任务？' }, text: { tag: 'plain_text', content: '将终止当前任务及其子进程。' } },
     behaviors: [{ type: 'callback', value }],
   };
 }
 
-function footerStatus(status: Exclude<FooterStatus, null>, activity?: RunActivity): object {
+function footerStatus(status: Exclude<FooterStatus, null>, activity?: RunActivity, toolLabel?: string): object {
+  const label = activity?.toolLabel ?? toolLabel;
   const base =
     status === 'thinking'
       ? '🧠 正在思考'
       : status === 'tool_running'
-        ? activity?.toolLabel
-          ? `🧰 ${activity.toolLabel}`
-          : '🧰 正在调用工具'
+        ? `🧰 ${label ?? '正在调用工具'}`
         : '✍️ 正在输出';
   if (!activity) return noteMd(base);
   const clock = `已运行 ${formatClock(activity.elapsedMs)}`;

@@ -29,6 +29,7 @@ export async function processAgentStream(
 ): Promise<RunState> {
   const runStart = Date.now();
   let state: RunState = initialState;
+  let lastSubagentLogAt: number | undefined;
 
   // Idle watchdog: claude going silent for `idleTimeoutMs` is treated as
   // "presumed hung", we stop() and surface a timeout marker on the card.
@@ -55,6 +56,7 @@ export async function processAgentStream(
     timer = setTimeout(() => {
       idleFired = true;
       handle.interrupted = true;
+      handle.stopCause = 'timeout';
       log.warn('agent', 'idle-timeout', { scope, idleTimeoutMs });
       void handle.run.stop().catch(() => {
         /* stop errors are non-fatal */
@@ -67,6 +69,15 @@ export async function processAgentStream(
     for await (const evt of events) {
       if (handle.interrupted) break;
       handle.lastActivityAt = Date.now();
+      if (evt.type === 'subagent_activity' &&
+          (lastSubagentLogAt === undefined || handle.lastActivityAt - lastSubagentLogAt >= 60_000)) {
+        lastSubagentLogAt = handle.lastActivityAt;
+        log.info('agent', 'subagent-activity', {
+          scope,
+          ...(evt.tool ? { tool: evt.tool } : {}),
+          ...(evt.description ? { description: evt.description.replace(/\s+/g, ' ').slice(0, 80) } : {}),
+        });
+      }
 
       // Track tool flight before re-arming the idle timer so the arm step
       // sees the correct set size. tool_use opens a window; tool_result
@@ -142,7 +153,7 @@ export async function processAgentStream(
       state = finalizeIfRunning(state);
     }
   }
-  log.info('card', 'final', { scope, terminal: state.terminal, interrupted: handle.interrupted });
+  log.info('card', 'final', { scope, terminal: state.terminal, interrupted: handle.interrupted, ...(handle.stopCause ? { stopCause: handle.stopCause } : {}) });
   reportMetric('run_e2e_ms', Date.now() - runStart, { terminal: state.terminal });
   await flush(state);
   if (handle.interrupted) {

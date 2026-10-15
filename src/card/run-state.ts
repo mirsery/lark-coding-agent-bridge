@@ -33,6 +33,7 @@ export interface RunLimit {
 
 export interface RunState {
   blocks: Block[];
+  subagent?: { parentToolUseId: string; tool?: string; description?: string; at: number };
   finalText?: string;
   reasoning: { content: string; active: boolean };
   footer: FooterStatus;
@@ -141,6 +142,8 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       };
       return { ...state, quota, limit };
     }
+    case 'subagent_activity':
+      return { ...state, subagent: evt };
 
     case 'supplement': {
       // Mark where the user's mid-run supplement was read, so the reply shows

@@ -1,35 +1,28 @@
 import type { RunState, ToolEntry } from './run-state';
 
-const LABEL_MAX = 40;
-const HAN_RE = /\p{Script=Han}/u;
-
-/**
- * Short label for the tool the agent is waiting on, for the running footer.
- *
- * Uses the agent's own one-line `description` (Bash and Agent take one) and
- * never the raw command: commands carry hosts, tokens and passwords, and the
- * footer shows even when tool calls are hidden. The description is shown only
- * when it is Chinese — the agent is told to write it in Chinese but doesn't
- * always, and an English line on a Chinese card is exactly what the caller
- * should not see. Otherwise the tool name alone still says which kind of wait
- * this is.
- */
+/** 进度只展示简短说明，不展示可能包含凭据的命令正文。 */
 export function runningToolLabel(state: RunState): string | undefined {
+  const sub = state.subagent;
   let latest: ToolEntry | undefined;
+  let parent: ToolEntry | undefined;
   for (const block of state.blocks) {
-    if (block.kind === 'tool' && block.tool.status === 'running') latest = block.tool;
+    if (block.kind !== 'tool' || block.tool.status !== 'running') continue;
+    latest = block.tool;
+    if (block.tool.id === sub?.parentToolUseId) parent = block.tool;
   }
-  if (!latest) return undefined;
-  const description = toolDescription(latest.input);
-  if (description && HAN_RE.test(description)) return `${description}（${latest.name}）`;
-  return `正在调用 ${latest.name}`;
+  const tool = parent ?? latest;
+  if (!tool) return undefined;
+  const description = oneLine((tool.input as { description?: unknown } | undefined)?.description);
+  const label = description ? `${description}（${tool.name}）` : `正在调用 ${tool.name}`;
+  if (!parent || !sub) return label;
+  const step = oneLine(sub.description) ?? (sub.tool ? `正在调用 ${sub.tool}` : undefined);
+  return step ? `${label} › 子任务：${step}` : label;
 }
 
-function toolDescription(input: unknown): string | undefined {
-  if (!input || typeof input !== 'object') return undefined;
-  const raw = (input as { description?: unknown }).description;
+function oneLine(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
-  const oneLine = raw.replace(/\s+/g, ' ').trim();
-  if (!oneLine) return undefined;
-  return oneLine.length > LABEL_MAX ? `${oneLine.slice(0, LABEL_MAX)}…` : oneLine;
+  const line = raw.replace(/\s+/g, ' ').trim();
+  // 中文回复只显示中文说明，英文说明退回工具名。
+  if (!/[\u3400-\u9fff]/.test(line)) return undefined;
+  return line.length > 40 ? `${line.slice(0, 40)}…` : line;
 }

@@ -30,6 +30,8 @@ export type AgentEvent =
       /** Epoch ms the event was seen. */
       at: number;
     }
+  /** 子任务只提供活动摘要，正文不进入主回复。 */
+  | { type: 'subagent_activity'; parentToolUseId: string; tool?: string; description?: string; at: number }
   | {
       /**
        * One turn's consumption. `inputTokens` is the whole prompt, the cached
@@ -117,6 +119,7 @@ export interface AgentRunOptions {
 
 export interface AgentRun {
   readonly runId: string;
+  readonly pid?: number;
   readonly events: AsyncIterable<AgentEvent>;
   stop(): Promise<void>;
   /**

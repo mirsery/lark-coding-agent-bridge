@@ -1,6 +1,7 @@
 import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AutoResumer } from '../../../src/bot/auto-resume';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index.js';
@@ -39,6 +40,68 @@ const cleanups: Array<() => Promise<void>> = [];
 describe('Bridge command contracts', () => {
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  });
+
+  it('leaves coffee requests with recipients or groups to the agent', async () => {
+    const h = await createHarness();
+    expect(await h.run('给 @同事 发杯咖啡', { mentions: [mention('ou-colleague', '同事')] })).toBe(false);
+    expect(await h.run('在研发群发杯咖啡')).toBe(false);
+    expect(h.channel.sent).toHaveLength(0);
+    expect(await h.run('来杯咖啡')).toBe(true);
+    expect(h.channel.sent).toHaveLength(1);
+  });
+
+  it.each(['ou-admin', 'ou-owner', 'ou-initiator', 'ou-stopper'])('allows %s to stop active and background tasks', async (senderId) => {
+    const h = await createHarness();
+    h.controls.profileConfig.access.stoppers = ['ou-stopper'];
+    const run = h.agent.run({ runId: 'stop-active', prompt: 'x' });
+    h.activeRuns.register('chat-1', run).initiators?.add('ou-initiator');
+    await h.run('/stop', { senderId });
+    expect(h.activeRuns.get('chat-1')).toBeUndefined();
+    const background = h.agent.run({ runId: 'stop-background', prompt: 'x' });
+    h.activeRuns.register('chat-1', background).initiators?.add('ou-initiator');
+    h.activeRuns.unregister('chat-1', background);
+    h.activeRuns.setLingering('chat-1', background);
+    await h.run('/stop', { senderId });
+    expect(h.activeRuns.hasKeptProcess('chat-1')).toBe(false);
+  });
+
+  it('prevents other group users from stopping active or background work', async () => {
+    const h = await createHarness();
+    const run = h.agent.run({ runId: 'stop-deny', prompt: 'x' });
+    const handle = h.activeRuns.register('chat-1', run);
+    handle.initiators?.add('ou-initiator');
+    await h.run('/stop', { senderId: 'ou-other' });
+    expect(handle.interrupted).toBe(false);
+    expect(lastMarkdown(h.channel)).toContain('只有任务的发起人');
+    h.activeRuns.unregister('chat-1', run);
+    h.activeRuns.setLingering('chat-1', run);
+    await h.run('/stop', { senderId: 'ou-other' });
+    expect(h.activeRuns.hasKeptProcess('chat-1')).toBe(true);
+  });
+
+  it('lets the starter of a paused task cancel its auto-resume, but no one else', async () => {
+    const h = await createHarness();
+    const resumer = new AutoResumer({ fire: async () => {} });
+    (h.controls as Controls).autoResumer = resumer;
+    await resumer.schedule({
+      scope: 'chat-1',
+      chatId: 'chat-1',
+      chatType: 'group',
+      senderId: 'ou-initiator',
+      originMessageId: 'om-paused',
+      resumeAt: Date.now() + 60_000,
+      attempt: 1,
+      createdAt: Date.now(),
+    });
+
+    await h.run('/stop', { senderId: 'ou-other' });
+    expect(resumer.get('chat-1')).toBeDefined();
+    expect(lastMarkdown(h.channel)).toContain('只有任务的发起人');
+
+    await h.run('/stop', { senderId: 'ou-initiator' });
+    expect(resumer.get('chat-1')).toBeUndefined();
+    expect(lastMarkdown(h.channel)).toContain('已取消自动续跑');
   });
 
   it('switches /cd to any existing non-risk working directory', async () => {

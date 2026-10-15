@@ -17,6 +17,8 @@ export interface SupplementTarget {
 export interface RunHandle {
   run: AgentRun;
   interrupted: boolean;
+  stopCause?: 'user' | 'shutdown' | 'timeout';
+  initiators?: Set<string>;
   supplement?: SupplementTarget;
   /** When the run was registered — the in-memory fallback for elapsed-time
    * display when no durable RunRecord exists (e.g. comment runs). */
@@ -30,8 +32,6 @@ export interface RunHandle {
   ledger?: string;
   /** Called once, when the agent first announces its ledger. */
   onLedger?: (path: string) => void;
-  /** Why the run was stopped, when it was: a person, or the bridge shutting down. */
-  stopCause?: 'user' | 'shutdown';
 }
 
 export class ActiveRuns {
@@ -43,6 +43,7 @@ export class ActiveRuns {
    * the scope are handed to them rather than queued. Interrupts stop them.
    */
   private readonly lingering = new Map<string, { run: AgentRun; kind: 'background' | 'idle' }>();
+  private readonly runInitiators = new WeakMap<AgentRun, Set<string>>();
   private pauseDepth = 0;
   private pauseReason: string | undefined;
 
@@ -63,6 +64,8 @@ export class ActiveRuns {
     }
     this.reservations.delete(chatId);
     const handle: RunHandle = { run, interrupted: false, startedAt, lastActivityAt: startedAt };
+    handle.initiators = new Set();
+    this.runInitiators.set(run, handle.initiators);
     this.handles.set(chatId, handle);
     return handle;
   }
@@ -89,6 +92,13 @@ export class ActiveRuns {
 
   get(chatId: string): RunHandle | undefined {
     return this.handles.get(chatId);
+  }
+
+  initiatorsForScope(chatId: string): ReadonlySet<string> | undefined {
+    const h = this.handles.get(chatId);
+    if (h) return h.supplement?.initiators ?? h.initiators;
+    const kept = this.lingering.get(chatId);
+    return kept ? this.runInitiators.get(kept.run) : undefined;
   }
 
   unregister(chatId: string, run: AgentRun): void {

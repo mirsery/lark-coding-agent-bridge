@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
-import { CallbackAuth } from '../../../src/card/callback-auth.js';
+import { CallbackAuth, operatorForAction } from '../../../src/card/callback-auth.js';
 import { CallbackNonceStore } from '../../../src/card/callback-store.js';
 import { handleCardAction } from '../../../src/card/dispatcher.js';
 import type { Controls } from '../../../src/commands/index.js';
@@ -24,7 +24,7 @@ describe('signed card callback dispatch', () => {
   it('runs built-in command callbacks only when the bridge token verifies', async () => {
     const h = await createHarness();
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
-    h.activeRuns.register('oc_group', activeRun);
+    h.activeRuns.register('oc_group', activeRun).initiators?.add('ou_operator');
 
     await h.dispatch({
       cmd: 'stop',
@@ -35,7 +35,7 @@ describe('signed card callback dispatch', () => {
     expect(activeRun.stopped).toBe(true);
 
     const deniedRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
-    h.activeRuns.register('oc_group', deniedRun);
+    h.activeRuns.register('oc_group', deniedRun).initiators?.add('ou_operator');
     await h.dispatch({
       cmd: 'stop',
       __bridge_cb: true,
@@ -45,10 +45,33 @@ describe('signed card callback dispatch', () => {
     expect(deniedRun.stopped).toBe(false);
   });
 
+  it.each(['ou_owner', 'ou_admin', 'ou_stopper', 'ou_operator'])('lets %s stop via the same shared button', async (operatorId) => {
+    const h = await createHarness({ operatorId });
+    h.controls.profileConfig.access.admins = ['ou_admin'];
+    h.controls.profileConfig.access.stoppers = ['ou_stopper'];
+    const run = h.agent.run({ runId: 'run-active', prompt: 'x' }) as FakeAgentRun;
+    h.activeRuns.register('oc_group', run).initiators?.add('ou_operator');
+    await h.dispatch({ cmd: 'stop', __bridge_cb: true, bridge_token: h.token('stop') });
+    expect(run.stopped).toBe(true);
+  });
+
+  it('refuses unauthorized clicks without spending the nonce, allowing an authorized retry', async () => {
+    const h = await createHarness();
+    const run = h.agent.run({ runId: 'run-active', prompt: 'x' }) as FakeAgentRun;
+    h.activeRuns.register('oc_group', run).initiators?.add('ou_other');
+    const payload = { cmd: 'stop', __bridge_cb: true, bridge_token: h.token('stop') };
+    await h.dispatch(payload);
+    expect(run.stopped).toBe(false);
+    expect(JSON.stringify(h.channel.sent)).toContain('只有任务的发起人');
+    h.controls.profileConfig.access.stoppers = ['ou_operator'];
+    await h.dispatch(payload);
+    expect(run.stopped).toBe(true);
+  });
+
   it('forwards signed bridge callbacks without leaking auth fields into the agent payload', async () => {
     const h = await createHarness();
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' });
-    h.activeRuns.register('oc_group', activeRun);
+    h.activeRuns.register('oc_group', activeRun).initiators?.add('ou_operator');
 
     await h.dispatch(
       {
@@ -68,7 +91,7 @@ describe('signed card callback dispatch', () => {
   it('drops legacy Claude callback markers before command dispatch', async () => {
     const h = await createHarness();
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
-    h.activeRuns.register('oc_group', activeRun);
+    h.activeRuns.register('oc_group', activeRun).initiators?.add('ou_operator');
 
     await h.dispatch({
       __claude_cb: true,
@@ -106,7 +129,7 @@ describe('signed card callback dispatch', () => {
     const target = h.agent.run({ runId: 'run-active', prompt: 'target' }) as FakeAgentRun;
     const chatRun = h.agent.run({ runId: 'run-chat', prompt: 'chat' }) as FakeAgentRun;
     const sibling = h.agent.run({ runId: 'run-sibling', prompt: 'sibling' }) as FakeAgentRun;
-    h.activeRuns.register('oc_group:th_topic', target);
+    h.activeRuns.register('oc_group:th_topic', target).initiators?.add('ou_operator');
     h.activeRuns.register('oc_group', chatRun);
     h.activeRuns.register('oc_group:th_other', sibling);
 
@@ -141,7 +164,7 @@ describe('signed card callback dispatch', () => {
   it('rejects bridge callbacks when callback auth is unavailable', async () => {
     const h = await createHarness({ callbackAuth: false });
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
-    h.activeRuns.register('oc_group', activeRun);
+    h.activeRuns.register('oc_group', activeRun).initiators?.add('ou_operator');
 
     await h.dispatch({
       __bridge_cb: true,
@@ -171,7 +194,7 @@ type Harness = {
 };
 
 async function createHarness(
-  opts: { callbackAuth?: boolean; chatMode?: 'p2p' | 'group' | 'topic' } = {},
+  opts: { callbackAuth?: boolean; chatMode?: 'p2p' | 'group' | 'topic'; operatorId?: string } = {},
 ): Promise<Harness> {
   const tmp = await createTmpProfile('callback-dispatch-test-');
   const channel = createFakeChannel();
@@ -233,7 +256,7 @@ async function createHarness(
         runId: 'run-active',
         scope: overrides.scope ?? 'oc_group',
         chatId: 'oc_group',
-        operatorOpenId: overrides.operatorOpenId ?? 'ou_operator',
+        operatorOpenId: overrides.operatorOpenId ?? operatorForAction(action, 'ou_operator'),
         action,
         policyFingerprint: 'fp-1',
         ttlMs: 60_000,
@@ -242,7 +265,7 @@ async function createHarness(
     dispatch: (value, formValue) =>
       handleCardAction({
         channel: channel as unknown as Parameters<typeof handleCardAction>[0]['channel'],
-        evt: cardEvent(value, formValue),
+        evt: cardEvent(value, formValue, opts.operatorId),
         sessions,
         workspaces,
         activeRuns,
@@ -259,13 +282,14 @@ async function createHarness(
 function cardEvent(
   value: Record<string, unknown>,
   formValue?: Record<string, unknown>,
+  operatorId = 'ou_operator',
 ): CardActionEvent {
   return {
     action: { value },
     chatId: 'oc_group',
     messageId: 'om_card',
     operator: {
-      openId: 'ou_operator',
+      openId: operatorId,
       name: 'Operator',
     },
     raw: formValue ? { action: { form_value: formValue } } : undefined,

@@ -27,6 +27,54 @@ describe('Claude stream-json translator', () => {
     expect([...translateEvent({ type: 'system', subtype: 'init', session_id: 'sess-1' })][0]).not.toHaveProperty('threadId');
   });
 
+  it('keeps subagent content off the card, passing on only that it is active', () => {
+    const sub = { parent_tool_use_id: 'toolu_agent_1' };
+    expect([
+      ...translateEvent({
+        type: 'assistant',
+        ...sub,
+        message: {
+          content: [
+            { type: 'text', text: 'subagent report' },
+            {
+              type: 'tool_use',
+              id: 'tool-sub',
+              name: 'Bash',
+              input: { command: 'mvn verify', description: '运行全量构建' },
+            },
+          ],
+        },
+      }),
+      ...translateEvent({
+        type: 'user',
+        ...sub,
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-sub', content: 'x' }] },
+      }),
+    ]).toEqual([
+      {
+        type: 'subagent_activity',
+        parentToolUseId: 'toolu_agent_1',
+        tool: 'Bash',
+        description: '运行全量构建',
+        at: expect.any(Number),
+      },
+    ]);
+    expect([
+      ...translateEvent({
+        type: 'assistant',
+        ...sub,
+        message: { content: [{ type: 'text', text: 'thinking out loud' }] },
+      }),
+    ]).toEqual([{ type: 'subagent_activity', parentToolUseId: 'toolu_agent_1', at: expect.any(Number) }]);
+    expect([
+      ...translateEvent({
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: { content: [{ type: 'text', text: 'main answer' }] },
+      }),
+    ]).toEqual([{ type: 'text', delta: 'main answer' }]);
+  });
+
   it('translates assistant text, thinking, and tool_use blocks in order', () => {
     expect([
       ...translateEvent({

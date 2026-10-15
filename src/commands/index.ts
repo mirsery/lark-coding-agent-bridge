@@ -1,3 +1,4 @@
+import { isPlainCoffeeRequest } from './coffee-intent';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -124,6 +125,7 @@ import { formatMoment, limitLabel, type AutoResumer } from '../bot/auto-resume';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import {
   canRunAdminCommand,
+  canStopRun,
   canUseDm,
   canUseGroup,
   type OwnerRefreshState,
@@ -350,16 +352,10 @@ function isAdminCommand(cmd: string): boolean {
   return ADMIN_COMMANDS.has(cmd.startsWith('/') ? cmd : `/${cmd}`);
 }
 
-// Natural-language phrasing for the `/coffee` easter egg — "给xxx发一杯咖啡",
-// "来一杯咖啡", "整杯咖啡" — so the card isn't gated behind knowing the exact
-// slash command. Deliberately narrow (verb + 杯咖啡) to avoid firing on
-// unrelated chat that merely mentions coffee (e.g. "喝咖啡", "咖啡因").
-const COFFEE_NL_INTENT_RE = /(给\S{0,12})?(发|来|整|要)(一)?杯咖啡/;
-
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const trimmed = ctx.msg.content.trim();
   if (!trimmed.startsWith('/')) {
-    if (COFFEE_NL_INTENT_RE.test(trimmed)) {
+    if (isPlainCoffeeRequest(trimmed, ctx.msg.mentions, ctx.channel.botIdentity?.openId)) {
       await handleCoffee('', ctx);
       return true;
     }
@@ -1089,18 +1085,18 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const scope = targetScope || ctx.scope;
+  // A stopped task waiting to be resumed counts as its starter's run too.
+  const waiting = targetScope ? undefined : ctx.controls.autoResumer?.get(scope);
+  const initiators =
+    ctx.activeRuns.initiatorsForScope(scope) ?? (waiting ? new Set([waiting.senderId]) : undefined);
+  if (!canStopRun(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId, initiators).ok) {
+    await reply(ctx, '❌ 只有任务的发起人、bot 主人、管理员或终止白名单里的人可以终止这个任务。');
+    return;
+  }
   const stopped = ctx.activeRuns.interruptDetailed(scope);
   const ok = stopped.active || stopped.background;
   // Nothing running, but a stopped task may be waiting to be resumed.
-  const waiting = !targetScope && !ok ? ctx.controls.autoResumer?.get(scope) : undefined;
-  if (waiting) {
-    const mayCancel =
-      waiting.senderId === ctx.msg.senderId ||
-      canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok;
-    if (!mayCancel) {
-      await reply(ctx, '❌ 只有任务的发起人、bot 主人或管理员可以取消自动续跑。');
-      return;
-    }
+  if (!ok && waiting) {
     await ctx.controls.autoResumer?.cancel(scope, 'stop-command');
     log.info('command', 'stop-auto-resume', { scope });
     await reply(ctx, `已取消自动续跑（原定 ${formatMoment(waiting.resumeAt)}）。需要时发「继续」即可接着做。`);

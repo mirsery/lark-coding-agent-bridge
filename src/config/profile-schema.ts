@@ -41,6 +41,8 @@ export interface ProfileAccess {
    * zero members and never pass through an "open to everyone" window.
    */
   chatAllowedUsers?: Record<string, string[]>;
+  /** 允许终止其他人任务的 open_id 白名单。 */
+  stoppers?: string[];
   /**
    * Directories a run started by someone other than the owner may read and
    * change (`~` allowed). Everything else under the owner's home is off
@@ -479,6 +481,7 @@ function normalizeAccess(
 ): ProfileAccess {
   const chatRequireMention = normalizeChatMentionMap(access?.chatRequireMention);
   const chatAllowedUsers = normalizeChatUserMap(access?.chatAllowedUsers);
+  const stoppers = stringArray(access?.stoppers);
   const guestRoots = stringArray(access?.guestRoots);
   const guestReadOnlyRoots = stringArray(access?.guestReadOnlyRoots);
   const guestDeniedTools = stringArray(access?.guestDeniedTools);
@@ -492,6 +495,7 @@ function normalizeAccess(
     // Omit when empty so configs without per-chat overrides stay clean.
     ...(Object.keys(chatRequireMention).length > 0 ? { chatRequireMention } : {}),
     ...(Object.keys(chatAllowedUsers).length > 0 ? { chatAllowedUsers } : {}),
+    ...(stoppers.length > 0 ? { stoppers } : {}),
     ...(guestRoots.length > 0 ? { guestRoots } : {}),
     ...(guestReadOnlyRoots.length > 0 ? { guestReadOnlyRoots } : {}),
     ...(guestDeniedTools.length > 0 ? { guestDeniedTools } : {}),

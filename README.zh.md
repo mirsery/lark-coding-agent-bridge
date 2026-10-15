@@ -809,3 +809,9 @@ export default createAdapter;
 [MIT](./LICENSE)
 
 <img src="./assets/feedback-group-qr.png" alt="飞书反馈群二维码" width="360">
+
+### 终止任务权限
+
+`/stop` 和进度卡「终止」按钮仅允许当前任务的发起人、机器人主人、管理员及 `access.stoppers` 白名单成员使用。按钮会先要求确认；无权点击不会使按钮失效。后台任务沿用最后一轮的发起人。指定其他 scope 的 `/stop <scope>` 仍仅管理员可用。
+
+Claude 任务终止时会一起结束其子进程，宽限期后强制清理残留进程；主动终止显示「已中断」。
