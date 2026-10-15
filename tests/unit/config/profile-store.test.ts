@@ -53,6 +53,7 @@ describe('profile store canonical serialization', () => {
           allowedUsers: ['ou_user'],
           allowedChats: ['oc_chat'],
           admins: ['ou_admin'],
+          stoppers: ['ou_stopper'],
           requireMentionInGroup: false,
         },
         codex: {

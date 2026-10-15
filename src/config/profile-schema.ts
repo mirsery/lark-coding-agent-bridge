@@ -41,6 +41,8 @@ export interface ProfileAccess {
    * zero members and never pass through an "open to everyone" window.
    */
   chatAllowedUsers?: Record<string, string[]>;
+  /** 允许终止其他人任务的 open_id 白名单。 */
+  stoppers?: string[];
 }
 
 export interface SandboxConfig {
@@ -452,6 +454,7 @@ function normalizeAccess(
 ): ProfileAccess {
   const chatRequireMention = normalizeChatMentionMap(access?.chatRequireMention);
   const chatAllowedUsers = normalizeChatUserMap(access?.chatAllowedUsers);
+  const stoppers = stringArray(access?.stoppers);
   return {
     allowedUsers: stringArray(access?.allowedUsers),
     allowedChats: stringArray(access?.allowedChats),
@@ -460,6 +463,7 @@ function normalizeAccess(
     // Omit when empty so configs without per-chat overrides stay clean.
     ...(Object.keys(chatRequireMention).length > 0 ? { chatRequireMention } : {}),
     ...(Object.keys(chatAllowedUsers).length > 0 ? { chatAllowedUsers } : {}),
+    ...(stoppers.length > 0 ? { stoppers } : {}),
   };
 }
 

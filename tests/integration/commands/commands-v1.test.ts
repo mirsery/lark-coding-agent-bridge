@@ -50,6 +50,35 @@ describe('Bridge command contracts', () => {
     expect(h.channel.sent).toHaveLength(1);
   });
 
+  it.each(['ou-admin', 'ou-owner', 'ou-initiator', 'ou-stopper'])('allows %s to stop active and background tasks', async (senderId) => {
+    const h = await createHarness();
+    h.controls.profileConfig.access.stoppers = ['ou-stopper'];
+    const run = h.agent.run({ runId: 'stop-active', prompt: 'x' });
+    h.activeRuns.register('chat-1', run).initiators?.add('ou-initiator');
+    await h.run('/stop', { senderId });
+    expect(h.activeRuns.get('chat-1')).toBeUndefined();
+    const background = h.agent.run({ runId: 'stop-background', prompt: 'x' });
+    h.activeRuns.register('chat-1', background).initiators?.add('ou-initiator');
+    h.activeRuns.unregister('chat-1', background);
+    h.activeRuns.setLingering('chat-1', background);
+    await h.run('/stop', { senderId });
+    expect(h.activeRuns.hasKeptProcess('chat-1')).toBe(false);
+  });
+
+  it('prevents other group users from stopping active or background work', async () => {
+    const h = await createHarness();
+    const run = h.agent.run({ runId: 'stop-deny', prompt: 'x' });
+    const handle = h.activeRuns.register('chat-1', run);
+    handle.initiators?.add('ou-initiator');
+    await h.run('/stop', { senderId: 'ou-other' });
+    expect(handle.interrupted).toBe(false);
+    expect(lastMarkdown(h.channel)).toContain('只有任务的发起人');
+    h.activeRuns.unregister('chat-1', run);
+    h.activeRuns.setLingering('chat-1', run);
+    await h.run('/stop', { senderId: 'ou-other' });
+    expect(h.activeRuns.hasKeptProcess('chat-1')).toBe(true);
+  });
+
   it('switches /cd to any existing non-risk working directory', async () => {
     const h = await createHarness();
     const target = join(h.tmp.root, 'plain-workdir');

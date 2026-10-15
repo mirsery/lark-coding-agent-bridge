@@ -61,6 +61,11 @@ export type CallbackVerifyResult =
 
 const PREFIX = 'bridge_cb.v1';
 
+/** 终止按钮在点击时校验权限，其余回调仍绑定具体操作者。 */
+export function operatorForAction(action: string, operatorOpenId: string): string {
+  return action === 'stop' ? '*' : operatorOpenId;
+}
+
 export class CallbackAuth {
   private readonly keys: CallbackKey[];
   private readonly nonceStore: CallbackNonceStore;

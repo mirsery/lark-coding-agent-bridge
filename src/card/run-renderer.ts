@@ -247,6 +247,7 @@ function stopButton(options: RunCardRenderOptions): object {
     tag: 'button',
     text: { tag: 'plain_text', content: '⏹ 终止' },
     type: 'danger',
+    confirm: { title: { tag: 'plain_text', content: '终止任务？' }, text: { tag: 'plain_text', content: '将终止当前任务及其子进程。' } },
     behaviors: [{ type: 'callback', value }],
   };
 }

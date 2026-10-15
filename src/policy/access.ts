@@ -24,7 +24,10 @@ export interface AccessDecision {
     | 'denied-user'
     | 'denied-chat'
     | 'denied-chat-user'
-    | 'denied-admin';
+    | 'denied-admin'
+    | 'run-initiator'
+    | 'allowed-stopper'
+    | 'denied-stop';
 }
 
 export function isCreator(controls: RuntimeControls, senderId: string): boolean {
@@ -96,6 +99,19 @@ export function canRunAdminCommand(
  */
 export function runNeedsApproval(profile: ProfileConfig, controls: RuntimeControls, senderId: string): boolean {
   return profile.approvals.enabled && !canRunAdminCommand(profile, controls, senderId).ok;
+}
+
+export function canStopRun(
+  profile: ProfileConfig,
+  controls: RuntimeControls,
+  senderId: string,
+  initiators: ReadonlySet<string> | undefined,
+): AccessDecision {
+  const admin = canRunAdminCommand(profile, controls, senderId);
+  if (admin.ok) return admin;
+  if (initiators?.has(senderId)) return allow('run-initiator');
+  if (profile.access.stoppers?.includes(senderId)) return allow('allowed-stopper');
+  return deny('denied-stop');
 }
 
 function allow(reason: AccessDecision['reason']): AccessDecision {

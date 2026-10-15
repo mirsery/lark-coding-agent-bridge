@@ -83,6 +83,8 @@
 
 - **子任务输出隔离**（#13）：Claude 带 `parent_tool_use_id` 的消息不进入主回复，只转成 `subagent_activity`。卡片底部显示当前子任务步骤，`/status` 的「上次动静」随事件刷新；`subagent-activity` 日志每轮每分钟最多一条。
 
+- **终止任务**（#15）：`/stop` 与卡片按钮共用 `canStopRun`：发起人、owner、管理员与 `access.stoppers` 可终止；后台任务保留最后一轮发起人。按钮确认后执行，无权点击不消耗令牌。Claude stop 先快照子进程树（ps 最多 5 秒），SIGTERM 后宽限期仍存活则 SIGKILL；重复 stop 复用同一次清理。主动停止报告 interrupted，外部信号报告 failed。卡片 final 日志记录 user / shutdown / timeout 的 `stopCause`。
+
 ## 新增一种 agent
 
 注册表 `src/agent/registry.ts` 是唯一名单。步骤：

@@ -4,10 +4,10 @@ import type { ActiveRuns } from '../bot/active-runs';
 import type { ChatModeCache } from '../bot/chat-mode-cache';
 import type { PendingQueue } from '../bot/pending-queue';
 import type { ProcessPool } from '../bot/process-pool';
-import type { CallbackAuth } from './callback-auth';
+import { operatorForAction, type CallbackAuth } from './callback-auth';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
 import { log } from '../core/logger';
-import { canUseDm, canUseGroup } from '../policy/access';
+import { canStopRun, canUseDm, canUseGroup } from '../policy/access';
 import type { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
@@ -84,7 +84,12 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
   if (cmd) {
-    if (isSignedBridgeCallback(payload) && !verifyBridgeToken(deps, payload, scope, cmd)) {
+    // 无权点击不能消耗一次性令牌；交给统一的 /stop 处理器回复原因。
+    const refusedStop = cmd === 'stop' && !canStopRun(
+      deps.controls.profileConfig, deps.controls, operatorId,
+      deps.activeRuns.initiatorsForScope(scope),
+    ).ok;
+    if (!refusedStop && isSignedBridgeCallback(payload) && !verifyBridgeToken(deps, payload, scope, cmd)) {
       return;
     }
     log.info('cardAction', 'cmd', { cmd, scope });
@@ -215,7 +220,7 @@ function verifyBridgeToken(
     runId: active.run.runId,
     scope,
     chatId: deps.evt.chatId,
-    operatorOpenId: deps.evt.operator.openId,
+    operatorOpenId: operatorForAction(action, deps.evt.operator.openId),
     action,
     policyFingerprint:
       deps.callbackPolicyFingerprintForScope?.(scope) ??

@@ -98,6 +98,7 @@ export interface AgentRunOptions {
 
 export interface AgentRun {
   readonly runId: string;
+  readonly pid?: number;
   readonly events: AsyncIterable<AgentEvent>;
   stop(): Promise<void>;
   /**

@@ -55,6 +55,7 @@ export async function processAgentStream(
     timer = setTimeout(() => {
       idleFired = true;
       handle.interrupted = true;
+      handle.stopCause = 'timeout';
       log.warn('agent', 'idle-timeout', { scope, idleTimeoutMs });
       void handle.run.stop().catch(() => {
         /* stop errors are non-fatal */
@@ -143,7 +144,7 @@ export async function processAgentStream(
       state = finalizeIfRunning(state);
     }
   }
-  log.info('card', 'final', { scope, terminal: state.terminal, interrupted: handle.interrupted });
+  log.info('card', 'final', { scope, terminal: state.terminal, interrupted: handle.interrupted, ...(handle.stopCause ? { stopCause: handle.stopCause } : {}) });
   reportMetric('run_e2e_ms', Date.now() - runStart, { terminal: state.terminal });
   await flush(state);
   if (handle.interrupted) {

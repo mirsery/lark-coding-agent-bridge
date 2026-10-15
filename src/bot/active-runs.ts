@@ -17,6 +17,8 @@ export interface SupplementTarget {
 export interface RunHandle {
   run: AgentRun;
   interrupted: boolean;
+  stopCause?: 'user' | 'shutdown' | 'timeout';
+  initiators?: Set<string>;
   supplement?: SupplementTarget;
   /** When the run was registered — the in-memory fallback for elapsed-time
    * display when no durable RunRecord exists (e.g. comment runs). */
@@ -34,6 +36,7 @@ export class ActiveRuns {
    * the scope are handed to them rather than queued. Interrupts stop them.
    */
   private readonly lingering = new Map<string, { run: AgentRun; kind: 'background' | 'idle' }>();
+  private readonly runInitiators = new WeakMap<AgentRun, Set<string>>();
   private pauseDepth = 0;
   private pauseReason: string | undefined;
 
@@ -54,6 +57,8 @@ export class ActiveRuns {
     }
     this.reservations.delete(chatId);
     const handle: RunHandle = { run, interrupted: false, startedAt };
+    handle.initiators = new Set();
+    this.runInitiators.set(run, handle.initiators);
     this.handles.set(chatId, handle);
     return handle;
   }
@@ -80,6 +85,13 @@ export class ActiveRuns {
 
   get(chatId: string): RunHandle | undefined {
     return this.handles.get(chatId);
+  }
+
+  initiatorsForScope(chatId: string): ReadonlySet<string> | undefined {
+    const h = this.handles.get(chatId);
+    if (h) return h.supplement?.initiators ?? h.initiators;
+    const kept = this.lingering.get(chatId);
+    return kept ? this.runInitiators.get(kept.run) : undefined;
   }
 
   unregister(chatId: string, run: AgentRun): void {
@@ -157,6 +169,7 @@ export class ActiveRuns {
     if (!h) return { active: false, background };
     this.reservations.delete(chatId);
     h.interrupted = true;
+    h.stopCause = 'user';
     this.handles.delete(chatId);
     void h.run.stop().catch(() => {
       /* stop errors are non-fatal */
@@ -170,7 +183,10 @@ export class ActiveRuns {
     this.handles.clear();
     this.reservations.clear();
     this.lingering.clear();
-    for (const h of all) h.interrupted = true;
+    for (const h of all) {
+      h.interrupted = true;
+      h.stopCause = 'shutdown';
+    }
     await Promise.allSettled([...all.map((h) => h.run.stop()), ...lingering.map((run) => run.stop())]);
   }
 

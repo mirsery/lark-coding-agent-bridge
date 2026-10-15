@@ -1,3 +1,4 @@
+import { isAlive, listDescendants, signalAll } from '../process-tree';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -183,10 +184,13 @@ export class ClaudeAdapter implements AgentAdapter {
     // SIGKILL cascade. Callers (channel.ts, /doctor) override per-run with
     // a value derived from preferences.
     const stopGraceMs = opts.stopGraceMs ?? 5000;
+    let stopRequested = false;
+    let stopping: Promise<void> | undefined;
 
     return {
       runId: opts.runId,
-      events: createEventStream(child, stderrChunks, () => runtimeError, onEvent, costBaseline, input),
+      pid: child.pid,
+      events: createEventStream(child, stderrChunks, () => runtimeError, onEvent, costBaseline, input, () => stopRequested),
       send: (prompt) => input.write(prompt),
       inject(prompt: string, preview: string): boolean {
         const ok = input.inject(prompt, preview);
@@ -194,27 +198,37 @@ export class ClaudeAdapter implements AgentAdapter {
         return ok;
       },
       endInput: closeInput,
-      async stop() {
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs });
-        child.kill('SIGTERM');
-        await new Promise<void>((resolve) => {
+      stop() {
+        if (stopping) return stopping;
+        if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+        stopRequested = true;
+        input.turnOver();
+        const descendants = child.pid ? listDescendants(child.pid) : [];
+        log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs, descendants: descendants.length });
+        stopping = new Promise<void>((resolve) => {
+          const finish = (): void => {
+            clearTimeout(timer);
+            child.removeListener('exit', onExit);
+            resolve();
+          };
+          const onExit = (): void => {
+            if (!descendants.some(isAlive)) finish();
+          };
           const timer = setTimeout(() => {
+            const survivors = new Set(descendants.filter(isAlive));
             if (child.exitCode === null && child.signalCode === null) {
-              log.warn('agent', 'stop-sigkill', {
-                pid: child.pid ?? null,
-                graceMs: stopGraceMs,
-                reason: 'grace-period-expired',
-              });
+              if (child.pid) for (const pid of listDescendants(child.pid)) survivors.add(pid);
+              log.warn('agent', 'stop-sigkill', { pid: child.pid ?? null, graceMs: stopGraceMs });
               child.kill('SIGKILL');
             }
-            resolve();
+            signalAll([...survivors], 'SIGKILL');
+            finish();
           }, stopGraceMs);
-          child.once('exit', () => {
-            clearTimeout(timer);
-            resolve();
-          });
+          child.once('exit', onExit);
+          child.kill('SIGTERM');
+          signalAll(descendants, 'SIGTERM');
         });
+        return stopping;
       },
       waitForExit(timeoutMs: number): Promise<boolean> {
         if (child.exitCode !== null || child.signalCode !== null) {
@@ -319,6 +333,7 @@ async function* createEventStream(
   onEvent: (evt: AgentEvent) => void,
   costBaseline: number,
   input: ClaudeInput,
+  wasStopped: () => boolean,
 ): AsyncGenerator<AgentEvent> {
   // If fork itself failed synchronously, child.pid is undefined. The 'error'
   // event (ENOENT etc.) fires in the next tick, so also check getError().
@@ -334,6 +349,7 @@ async function* createEventStream(
 
   const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
   let sawStdout = false;
+  let turnTerminal = false;
   let silentExitTimer: ReturnType<typeof setTimeout> | undefined;
   const closeSilentStdout = (): void => {
     silentExitTimer = setTimeout(() => {
@@ -384,8 +400,9 @@ async function* createEventStream(
       clearGuard();
       if (next === 'guard') {
         log.warn('agent', 'next-turn-guard-expired', { pid: child.pid ?? null, unread: input.unreadCount });
-        const done = deferredDone!;
+        const done = wasStopped() ? { type: 'done' as const, terminationReason: 'interrupted' as const } : deferredDone!;
         deferredDone = undefined;
+        turnTerminal = true;
         onEvent(done);
         yield done;
         continue;
@@ -403,6 +420,7 @@ async function* createEventStream(
       }
       const replayed = replayedUuid(parsed);
       if (replayed !== undefined) {
+        turnTerminal = false;
         const preview = input.ack(replayed);
         if (preview !== undefined) {
           const evt: AgentEvent = { type: 'supplement', preview };
@@ -417,16 +435,19 @@ async function* createEventStream(
       }
       const moreInput = input.unreadCount > 0 && !isFailedResult(parsed);
       for (const raw of translateEvent(parsed)) {
-        const evt = raw.type === 'usage' ? perTurnCost(raw) : raw;
+        const evt = raw.type === 'usage' ? perTurnCost(raw)
+          : raw.type === 'done' && wasStopped() ? { ...raw, terminationReason: 'interrupted' as const } : raw;
         if (evt.type === 'done') {
           heldResult = undefined;
-          if (moreInput) {
+          if (moreInput && !wasStopped()) {
             log.info('agent', 'turn-result-more-input', { pid: child.pid ?? null, unread: input.unreadCount });
             deferredDone = evt;
             continue;
           }
           deferredDone = undefined;
         }
+        if (evt.type === 'done' || evt.type === 'error') turnTerminal = true;
+        else if (evt.type === 'text' || evt.type === 'thinking' || evt.type === 'tool_use') turnTerminal = false;
         onEvent(evt);
         yield evt;
       }
@@ -436,6 +457,10 @@ async function* createEventStream(
     if (silentExitTimer) clearTimeout(silentExitTimer);
     child.removeListener('exit', closeSilentStdout);
     rl.close();
+  }
+  if (wasStopped()) {
+    if (!turnTerminal) yield { type: 'done', terminationReason: 'interrupted' };
+    return;
   }
   if (heldResult) yield* heldResult;
   // The process ended before the turn its unread input was queued for.
@@ -463,12 +488,16 @@ async function* createEventStream(
   });
 
   const runtimeError = getError();
-  if (exitCode !== 0 && exitCode !== null) {
+  if (wasStopped()) {
+    if (!turnTerminal) yield { type: 'done', terminationReason: 'interrupted' };
+    return;
+  }
+  if ((exitCode !== 0 && exitCode !== null) || child.signalCode !== null) {
     const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
     const detail = stderr ? `: ${stderr.slice(0, 500)}` : '';
     yield {
       type: 'error',
-      message: `claude exited with code ${exitCode}${detail}`,
+      message: `claude exited with ${child.signalCode ? `signal ${child.signalCode}` : `code ${exitCode}`}${detail}`,
       terminationReason: 'failed',
     };
   } else if (runtimeError) {

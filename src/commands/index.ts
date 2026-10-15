@@ -122,6 +122,7 @@ import { resolveAppPaths } from '../config/app-paths';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import {
   canRunAdminCommand,
+  canStopRun,
   canUseDm,
   canUseGroup,
   type OwnerRefreshState,
@@ -1043,6 +1044,11 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const scope = targetScope || ctx.scope;
+  if (!canStopRun(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId,
+      ctx.activeRuns.initiatorsForScope(scope)).ok) {
+    await reply(ctx, '❌ 只有任务的发起人、bot 主人、管理员或终止白名单里的人可以终止这个任务。');
+    return;
+  }
   const stopped = ctx.activeRuns.interruptDetailed(scope);
   const ok = stopped.active || stopped.background;
   log.info('command', 'stop', {

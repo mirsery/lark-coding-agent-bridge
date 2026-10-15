@@ -26,7 +26,7 @@ import {
 } from '../agent/prompt';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
-import { CallbackAuth } from '../card/callback-auth';
+import { CallbackAuth, operatorForAction } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { renderCard } from '../card/run-renderer';
 import type { RunCardRenderOptions } from '../card/run-renderer';
@@ -1514,6 +1514,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     initiators: new Set(batch.map((m) => m.senderId)),
   };
   handle.supplement = supplementTarget;
+  for (const id of supplementTarget.initiators) handle.initiators?.add(id);
   const eventStream = execution.subscribe();
   if (flow.resumeFrom) {
     log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd });
@@ -1621,7 +1622,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
               runId: execution.runId,
               scope,
               chatId,
-              operatorOpenId: firstMsg.senderId,
+              operatorOpenId: operatorForAction(action, firstMsg.senderId),
               action,
               policyFingerprint: flow.policy.policyFingerprint,
               ttlMs: 24 * 60 * 60 * 1000,
