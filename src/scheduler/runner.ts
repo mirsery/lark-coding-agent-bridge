@@ -12,7 +12,7 @@ import { promptSection } from '../agent/prompt';
 import { buildKnowledgeContext, withoutSkillWrite } from '../knowledge/inject';
 import { armSkillReadHook } from '../knowledge/knowledge-libraries';
 import type { Controls } from '../commands';
-import { getMessageReplyMode, getRunIdleTimeoutMs, getShowToolCalls } from '../config/schema';
+import { effortPrefForChat, getMessageReplyMode, getRunIdleTimeoutMs, getShowToolCalls } from '../config/schema';
 import { log } from '../core/logger';
 import { canUseDm, canUseGroup, isCreator } from '../policy/access';
 import type { RunExecutor } from '../runtime/run-executor';
@@ -199,7 +199,7 @@ async function deliver(deps: JobRunnerDeps, job: ScheduledJob, state: RunState):
   const header = `⏰ 定时任务 \`${job.id}\` · ${scheduleLabel(job)}`;
   const payload =
     replyMode === 'card'
-      ? { card: renderCard(headedState(state, header), await cardOptions(deps)) }
+      ? { card: renderCard(headedState(state, header), await cardOptions(deps, job.chatId)) }
       : { markdown: `${header}\n\n${body}` };
   await sendToJobChat(deps, job, payload);
 }
@@ -237,14 +237,14 @@ async function sendToJobChat(
   await deps.channel.send(job.chatId, payload);
 }
 
-async function cardOptions(deps: JobRunnerDeps): Promise<RunCardRenderOptions> {
+async function cardOptions(deps: JobRunnerDeps, chatId: string): Promise<RunCardRenderOptions> {
   const { profileConfig } = deps.controls;
   return {
     meta: {
       title: deps.channel.botIdentity?.name ?? deps.controls.profile,
       agent: profileConfig.agentKind,
       model: modelLabel(profileConfig.agentKind, profileConfig.preferences.model),
-      effort: resolveEffortArg(profileConfig.agentKind, profileConfig.preferences.effort),
+      effort: resolveEffortArg(profileConfig.agentKind, effortPrefForChat(profileConfig.preferences, chatId)),
       provider: agentDescriptor(profileConfig.agentKind).provider,
       sponsor: await agentAccountName(profileConfig),
     },
