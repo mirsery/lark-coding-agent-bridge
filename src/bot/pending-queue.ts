@@ -58,6 +58,11 @@ export class PendingQueue {
     return this.map.get(scope)?.messages.length ?? 0;
   }
 
+  /** Whether a scope is queued or is still in the flush-to-run handoff. */
+  hasScope(scope: string): boolean {
+    return this.map.has(scope) || this.blocked.has(scope);
+  }
+
   /** Messages queued across every scope. */
   totalDepth(): number {
     let total = 0;

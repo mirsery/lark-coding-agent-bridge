@@ -120,6 +120,8 @@ export interface AutoResumerOptions {
  */
 export class AutoResumer {
   private resumes = new Map<string, PendingResume>();
+  /** Scopes whose due callback has started but has not handed off the run yet. */
+  private readonly firing = new Set<string>();
   /** Attempt number of the resume that last fired per scope, to chain retries. */
   private readonly fired = new Map<string, number>();
   private timer: NodeJS.Timeout | undefined;
@@ -165,6 +167,11 @@ export class AutoResumer {
     return this.resumes.get(scope);
   }
 
+  /** Whether a resume is waiting or is currently handing off to the run queue. */
+  hasScope(scope: string): boolean {
+    return this.resumes.has(scope) || this.firing.has(scope);
+  }
+
   /** Attempt number the next stop in `scope` should carry. */
   nextAttempt(scope: string, resumedRun: boolean): number {
     return resumedRun ? (this.fired.get(scope) ?? 0) + 1 : 1;
@@ -195,9 +202,12 @@ export class AutoResumer {
 
   /** Fire every resume due by `now`. Exposed for tests. */
   async tick(now: number = this.now()): Promise<void> {
-    const due = [...this.resumes.values()].filter((r) => r.resumeAt <= now);
+    const due = [...this.resumes.values()].filter(
+      (r) => r.resumeAt <= now && !this.firing.has(r.scope),
+    );
     if (due.length === 0) return;
     for (const r of due) {
+      this.firing.add(r.scope);
       this.resumes.delete(r.scope);
       this.fired.set(r.scope, r.attempt);
     }
@@ -208,6 +218,8 @@ export class AutoResumer {
         await this.opts.fire(r);
       } catch (err) {
         log.fail('auto-resume', err, { scope: r.scope, step: 'fire' });
+      } finally {
+        this.firing.delete(r.scope);
       }
     }
   }

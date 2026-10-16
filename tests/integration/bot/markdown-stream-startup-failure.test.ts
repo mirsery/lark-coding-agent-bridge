@@ -795,6 +795,40 @@ describe('markdown stream startup failures', () => {
     expect(h.agent.runs[1]?.opts.prompt).toContain('进程被终止');
   });
 
+  it('registers every startup orphan before the topic-retention sweep', async () => {
+    const h = await createHarness();
+    const appPaths = testAppPaths(h.tmp);
+    const scopes = ['oc_chat:omt_first', 'oc_chat:omt_second'];
+    const records = Object.fromEntries(
+      scopes.map((scope, index) => [
+        `run-${index}`,
+        {
+          runId: `run-${index}`,
+          scope,
+          chatId: 'oc_chat',
+          threadId: scope.split(':')[1],
+          originMessageId: `om-${index}`,
+          promptPreview: `orphan ${index}`,
+          startedAt: Date.now(),
+          ownerPid: 2_147_483_647,
+          resumeAs: { senderId: 'ou_user', chatType: 'topic' },
+          ledger: `/tmp/ledger-${index}.md`,
+        },
+      ]),
+    );
+    await writeFile(appPaths.runsFile, `${JSON.stringify(records)}\n`);
+    for (const [index, scope] of scopes.entries()) {
+      h.sessions.set(scope, `session-${index}`, h.tmp.workspace, Date.UTC(2020, 0, 1));
+    }
+
+    await startTestBridge(h, appPaths);
+
+    for (const scope of scopes) {
+      expect(h.controls.autoResumer?.hasScope(scope)).toBe(true);
+      expect(h.sessions.getRaw(scope)).toBeDefined();
+    }
+  });
+
   it("does not resume someone else's killed task on its own", async () => {
     const h = await createHarness({
       agentKind: 'claude',

@@ -192,4 +192,39 @@ describe('AutoResumer', () => {
     await r.schedule(pending({ resumeAt: 2 }));
     expect(r.get('oc_dm')?.resumeAt).toBe(2);
   });
+
+  it('keeps a scope protected until an asynchronous fire callback finishes', async () => {
+    let fireStarted!: () => void;
+    let releaseFire!: () => void;
+    const started = new Promise<void>((resolve) => {
+      fireStarted = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      releaseFire = resolve;
+    });
+    const fire = vi.fn(async () => {
+      fireStarted();
+      await released;
+    });
+    const r = new AutoResumer({ fire });
+    await r.schedule(pending());
+
+    const ticking = r.tick(5_000);
+    await started;
+    expect(r.get('oc_dm')).toBeUndefined();
+    expect(r.hasScope('oc_dm')).toBe(true);
+
+    // A newer due resume for the same scope waits instead of overlapping the
+    // callback whose handoff is still in progress.
+    await r.schedule(pending({ attempt: 2 }));
+    await r.tick(5_000);
+    expect(fire).toHaveBeenCalledTimes(1);
+
+    releaseFire();
+    await ticking;
+    expect(r.hasScope('oc_dm')).toBe(true);
+    await r.tick(5_000);
+    expect(fire).toHaveBeenCalledTimes(2);
+    expect(r.hasScope('oc_dm')).toBe(false);
+  });
 });

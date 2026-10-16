@@ -728,17 +728,16 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   await channel.connect();
 
-  // Runs owned by a daemon that is gone — SIGKILL, crash, power loss. Their
-  // cards are frozen mid-stream with nobody left to finish them, so tell the
-  // chat instead. Fire-and-forget: a slow Feishu call must not delay startup.
+  // Runs owned by a daemon that is gone — SIGKILL, crash, power loss. Register
+  // every resumable scope locally before retention's startup sweep; the later
+  // Feishu notice remains fire-and-forget so a slow API call cannot delay boot.
   if (runs) {
     const orphans = runs.takeOrphans();
     if (orphans.length > 0) {
-      void resumeInterruptedRecords(autoResumer, orphans, 'restart')
-        .then((resumed) => reportInterruptedRuns(channel, orphans, 'restart', Date.now(), resumed))
-        .catch((err: unknown) =>
-          log.warn('interrupted-notice', 'sweep-failed', { err: String(err) }),
-        );
+      const resumed = await resumeInterruptedRecords(autoResumer, orphans, 'restart');
+      void reportInterruptedRuns(channel, orphans, 'restart', Date.now(), resumed).catch(
+        (err: unknown) => log.warn('interrupted-notice', 'sweep-failed', { err: String(err) }),
+      );
     }
   }
   // Messages that were waiting behind a run when the previous process went
@@ -763,7 +762,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     contextCursors,
     retentionMonths: () => getTopicSessionRetentionMonths(controls.cfg),
     isProtected: (scope) =>
-      activeRuns.hasScope(scope) || pending.depth(scope) > 0 || autoResumer.get(scope) !== undefined,
+      activeRuns.hasScope(scope) || pending.hasScope(scope) || autoResumer.hasScope(scope),
     onExpire: (scope) => {
       activePolicyFingerprints.delete(scope);
       lastRunModelByScope.delete(scope);
@@ -2324,14 +2323,16 @@ async function resumeInterruptedRecords(
   records: RunRecord[],
   reason: 'restart' | 'shutdown',
 ): Promise<Set<string>> {
-  const resumed = new Set<string>();
+  const scheduled: Array<{ runId: string; resume: PendingResume }> = [];
   for (const rec of records) {
     const resume = interruptedResumeFor(rec, reason);
     if (!resume) continue;
-    await autoResumer.schedule(resume);
-    resumed.add(rec.runId);
+    scheduled.push({ runId: rec.runId, resume });
   }
-  return resumed;
+  // Calling every schedule before awaiting pre-registers all scopes in memory;
+  // waiting for the batch keeps the startup sweep behind durable registration.
+  await Promise.all(scheduled.map(({ resume }) => autoResumer.schedule(resume)));
+  return new Set(scheduled.map(({ runId }) => runId));
 }
 
 /** The message an auto-resume feeds into the scope, as if the starter sent it. */

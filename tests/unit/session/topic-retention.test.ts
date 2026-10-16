@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs';
+import { AutoResumer, type PendingResume } from '../../../src/bot/auto-resume';
 import { ChatContextCursorStore } from '../../../src/bot/chat-context';
 import { PendingQueue } from '../../../src/bot/pending-queue';
 import { SessionCatalog } from '../../../src/session/catalog';
@@ -110,12 +111,68 @@ describe('topic session retention', () => {
     }
 
     await expect(
-      h.expire(1, Date.UTC(2026, 0, 1), (scope) => activeRuns.hasScope(scope) || pending.depth(scope) > 0),
+      h.expire(1, Date.UTC(2026, 0, 1), (scope) => activeRuns.hasScope(scope) || pending.hasScope(scope)),
     ).resolves.toEqual(['oc_chat:omt_expired']);
     for (const suffix of ['active', 'preparing', 'lingering', 'queued']) {
       expect(h.sessions.getRaw(`oc_chat:omt_${suffix}`)).toBeDefined();
     }
     pending.stop();
+  });
+
+  it('protects a flushed scope throughout asynchronous run preparation', async () => {
+    vi.useFakeTimers();
+    const h = await harness();
+    const scope = 'oc_chat:omt_preparing';
+    const preparation = deferred<void>();
+    let pending!: PendingQueue;
+    pending = new PendingQueue(1, (flushedScope) => {
+      pending.block(flushedScope);
+      void preparation.promise.finally(() => pending.unblock(flushedScope));
+    });
+    pending.push(scope, message());
+    h.sessions.set(scope, 'session-preparing', '/repo', Date.UTC(2020, 0, 1));
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pending.depth(scope)).toBe(0);
+    expect(pending.hasScope(scope)).toBe(true);
+    await expect(h.expire(1, Date.UTC(2026, 0, 1), (candidate) => pending.hasScope(candidate)))
+      .resolves.toEqual([]);
+
+    preparation.resolve();
+    await preparation.promise;
+    await Promise.resolve();
+    expect(pending.hasScope(scope)).toBe(false);
+    await expect(h.expire(1, Date.UTC(2026, 0, 1), (candidate) => pending.hasScope(candidate)))
+      .resolves.toEqual([scope]);
+    pending.stop();
+  });
+
+  it('protects a due auto-resume while its asynchronous queue handoff is firing', async () => {
+    const h = await harness();
+    const scope = 'oc_chat:omt_resuming';
+    const fireStarted = deferred<void>();
+    const releaseFire = deferred<void>();
+    const autoResumer = new AutoResumer({
+      fire: async () => {
+        fireStarted.resolve();
+        await releaseFire.promise;
+      },
+    });
+    h.sessions.set(scope, 'session-resuming', '/repo', Date.UTC(2020, 0, 1));
+    await autoResumer.schedule(resume(scope));
+
+    const firing = autoResumer.tick(5_000);
+    await fireStarted.promise;
+    expect(autoResumer.get(scope)).toBeUndefined();
+    expect(autoResumer.hasScope(scope)).toBe(true);
+    await expect(h.expire(1, Date.UTC(2026, 0, 1), (candidate) => autoResumer.hasScope(candidate)))
+      .resolves.toEqual([]);
+
+    releaseFire.resolve();
+    await firing;
+    expect(autoResumer.hasScope(scope)).toBe(false);
+    await expect(h.expire(1, Date.UTC(2026, 0, 1), (candidate) => autoResumer.hasScope(candidate)))
+      .resolves.toEqual([scope]);
   });
 
   it('reads runtime retention changes on each scheduled pass and stops cleanly', async () => {
@@ -203,4 +260,29 @@ function message(): NormalizedMessage {
     messageType: 'text',
     createTime: String(Date.now()),
   } as unknown as NormalizedMessage;
+}
+
+function resume(scope: string): PendingResume {
+  return {
+    scope,
+    chatId: 'oc_chat',
+    chatType: 'topic',
+    threadId: 'omt_resuming',
+    senderId: 'ou_user',
+    originMessageId: 'om_origin',
+    resumeAt: 5_000,
+    attempt: 1,
+    createdAt: 0,
+  };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
