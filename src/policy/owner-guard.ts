@@ -92,6 +92,8 @@ export function ownerOnlyGuard(opts: {
   const claude = join(home, '.claude');
   const expand = (p: string): string => (p === '~' ? home : p.startsWith('~/') ? join(home, p.slice(2)) : p);
   const readOnlyRoots = (opts.guestReadOnlyRoots ?? []).map(expand);
+  const media = `${escapeRe(lc)}/profiles/[^/]+/media/`;
+  const libraries = `${escapeRe(lc)}/profiles/[^/]+/skill-libraries/`;
   return {
     home,
     allowedRoots: [
@@ -106,11 +108,14 @@ export function ownerOnlyGuard(opts: {
       ...skillTargets(join(claude, 'skills')),
       join(home, '.local', 'bin'),
     ],
-    allowPatterns: [`${escapeRe(lc)}/profiles/[^/]+/media/`],
+    allowPatterns: [media, libraries],
     rules: [
       { path: root, bash: 'any' },
-      // Attachments the user sent land under media/ and must stay readable.
-      { path: lc, bash: 'any', allow: [`${escapeRe(lc)}/profiles/[^/]+/media/`] },
+      // Attachments the user sent land under media/ and must stay readable;
+      // shared skill libraries (`/skills lib`) are read and run like skills.
+      { path: lc, bash: 'any', allow: [media, libraries] },
+      // …but nothing may write into a library mirror.
+      { path: lc, bash: 'write', allow: [media] },
       ...['CLAUDE.md', 'settings.json', 'settings.local.json', 'skills', 'agents', 'scripts', 'projects'].map(
         (name): GuardRule => ({ path: join(claude, name), bash: 'write' }),
       ),

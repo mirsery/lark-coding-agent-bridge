@@ -60,6 +60,9 @@ describe('guest runs: owner-only areas', () => {
     ['writing a skill', 'tee ~/.claude/skills/x/SKILL.md < /tmp/a'],
     ['deleting memory', 'rm -rf ~/.claude/projects/p/memory'],
     ['cd then write', 'cd ~/.claude/skills/x && echo hi > SKILL.md'],
+    ['writing into a skill library', 'echo x >> ~/.lark-channel/profiles/claude/skill-libraries/lib/skills/x/SKILL.md'],
+    ['deleting a skill library', 'rm -rf ~/.lark-channel/profiles/claude/skill-libraries/lib'],
+    ['reading other bridge data', 'cat ~/.lark-channel/profiles/claude/sessions.json'],
   ])('refuses %s', (_label, command) => {
     const res = bash(command);
     expect(res.code).toBe(2);
@@ -68,6 +71,8 @@ describe('guest runs: owner-only areas', () => {
 
   it('refuses editing a skill with a file tool', () => {
     expect(hook('Edit', { file_path: `${HOME}/.claude/skills/x/SKILL.md` }).code).toBe(2);
+    expect(hook('Write', { file_path: `${LC}/profiles/claude/skill-libraries/lib/skills/x/SKILL.md` }).code).toBe(2);
+    expect(hook('Read', { file_path: `${LC}/profiles/claude/skill-libraries/lib/skills/x/SKILL.md` }).code).toBe(0);
   });
 });
 
@@ -92,6 +97,9 @@ describe('guest runs: file scope', () => {
     ['working in an opened project', `cd ${OPEN}/antelope && git status && mvn -q test`],
     ['running a skill script', 'python3 ~/.claude/skills/alphaess-tcpdump/scripts/capture.py --sn AL1 > /tmp/out.txt'],
     ['reading an attachment', 'file ~/.lark-channel/profiles/claude/media/abc.jpg'],
+    ['reading a shared skill library', 'cat ~/.lark-channel/profiles/claude/skill-libraries/lib/skills/x/SKILL.md'],
+    ['running a library skill script', 'python3 ~/.lark-channel/profiles/claude/skill-libraries/lib/skills/x/scripts/run.py AL1 > /tmp/out.json'],
+    ['copying an attachment out', 'cp ~/.lark-channel/profiles/claude/media/abc.jpg /tmp/abc.jpg'],
     ['a tool on PATH dir', '~/.local/bin/alphaq-tool diagnose AL1'],
     ['ordinary work in tmp', 'grep -r foo /tmp/repo > /tmp/hits.txt && wc -l /tmp/hits.txt'],
     ['relative paths in the workspace', 'mkdir -p out/logs && ls ./out'],
