@@ -32,7 +32,7 @@
 
 - 通过标准只有一个：`pnpm ci:local` 全绿。迭代中可以先跑 `npx vitest run <文件或目录>` 缩小范围，但交付前必须跑全量。
 - 已知噪声：机器负载高时，spawn 真实子进程的用例（`tests/process/`、`tests/unit/agent/*` 里的 fake binary 读流测试）可能撞 vitest 默认 5s 超时。（`tests/integration/ui/server.test.ts` 曾经偶发的 `4999 >= 5000` 是测试自身的时钟先后问题，已修。）处理方式：单独重跑该文件；必要时在未改动的 main 上跑同一文件对照，确认与本次改动无关，并在汇报里写明。不许把失败说成通过。
-- CI（`.github/workflows/ci.yml`）在 macOS / Ubuntu / Windows 三平台跑 test + typecheck + build。Windows 不维护、不阻断（`continue-on-error`，boss 2026-10-13 决定不修）：Windows 上约 40 个存量失败（文件权限位、路径分隔符、本地 git 远端）是已知的，不要去修，新改动也不要求 Windows 通过，Windows 那一列红了不算门禁失败。Windows 上 `claude` 是 `.cmd` shim、经 `cmd.exe` 启动：prompt 和系统提示词不能走 argv（`<` `>` 会被当重定向吃掉），一律走 stdin / 临时文件。
+- CI（`.github/workflows/ci.yml`）在 macOS / Ubuntu 两个平台跑 test + typecheck + build。本 fork 不支持 Windows（boss 2026-10-13 决定不修，2026-10-16 从 CI 里移除）：不要加回 Windows 任务，也不要去修 Windows 上的存量失败（文件权限位、路径分隔符、本地 git 远端）。Windows 上 `claude` 是 `.cmd` shim、经 `cmd.exe` 启动：prompt 和系统提示词不能走 argv（`<` `>` 会被当重定向吃掉），一律走 stdin / 临时文件。
 - 发版推 `vX.Y.Z` tag，由 `.github/workflows/release.yml` 复用同一套 CI，过了才建 GitHub Release（正文取 `CHANGELOG.md` 对应段落）；步骤见 [`docs/dev/release.md`](docs/dev/release.md)。改了 `package.json` 的 `version` 就要在 `CHANGELOG.md` 补同版本段落，否则 `tests/unit/docs/release-notes.test.ts` 不过。
 
 ## 架构地图

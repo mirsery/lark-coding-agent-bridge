@@ -11,14 +11,12 @@ jobs:
   test:
     name: Node 20 on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # Windows is not maintained on this fork (decided 2026-10-13; it only runs
-    # on macOS): its ~40 Windows-only failures (file modes, path separators,
-    # local git remotes) are known and won't be fixed, so the job never blocks.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    # No Windows: this fork only runs on macOS and does not support Windows
+    # (decided 2026-10-13, job removed 2026-10-16).
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        os: [macos-latest, ubuntu-latest]
 
     steps:
       - name: Checkout
