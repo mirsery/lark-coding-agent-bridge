@@ -34,9 +34,14 @@ import {
 } from '../knowledge/auto-sync';
 import {
   buildLibraryConfig,
+  byPrecedence,
   getSkillSyncIntervalMinutes,
   maskUrlCredentials,
   shadowedSkills,
+  updateLibrary,
+  withPin,
+  type LibraryPending,
+  type LibrarySyncResult,
   type SkillLibraries,
 } from '../knowledge/libraries';
 import type { KnowledgeStore, MemoryScope } from '../knowledge/store';
@@ -2288,7 +2293,12 @@ async function handleSkills(args: string, ctx: CommandContext): Promise<void> {
     ctx.msg.chatId,
     {
       card: skillsCard(
-        skills.map(({ name, description, source }) => ({ name, description, ...(source ? { source } : {}) })),
+        skills.map(({ name, description, source, external }) => ({
+          name,
+          description,
+          ...(source ? { source } : {}),
+          ...(external ? { external } : {}),
+        })),
         store.skillsDir,
       ),
     },
@@ -2302,11 +2312,12 @@ const SKILL_LIB_HELP = [
   '**Skill 库**（管理员）',
   '',
   '`/skills lib` — 已配置的库、同步状态、各自载入的 skill',
-  '`/skills lib add <git 地址> [名字] [--ref 分支/标签/提交] [--path 子目录] [--only a,b] [--exclude a,b]` — 加一个库并立即拉取',
-  '`/skills lib sync [名字]` — 立即同步（不写名字就是全部）',
+  '`/skills lib add <git 地址> [名字] [--external] [--ref 分支/标签/提交] [--path 子目录] [--only a,b] [--exclude a,b]` — 加一个库并立即拉取；`--external` 表示第三方库',
+  '`/skills lib sync [名字]` — 立即同步（不写名字就是全部）；第三方库只拉取并列出差异，不切换',
+  '`/skills lib update <名字>` — 第三方库切到上游最新提交（看过 sync 列出的差异再切）',
   '`/skills lib rm <名字>` — 移除，本地镜像一起删掉',
   '',
-  '库是 git 仓库的只读镜像：skill 放在 `skills/<名字>/SKILL.md`（没有 `skills/` 就在仓库根目录找），同名时本 profile 自己的 skill 优先、先加的库优先。私有仓库用本机已配好的 SSH key 访问，不要把 token 写进地址。',
+  '库是 git 仓库的只读镜像：skill 放在 `skills/<名字>/SKILL.md`（没有 `skills/` 就在仓库根目录找）。自己的库自动跟随远端，梦境整理往这里提交；第三方库（可以有多个）固定在添加时的提交，不作为梦境整理的提交目标。同名时本 profile 自己的 skill 优先，其次自己的库，最后第三方库，同类里先加的优先。私有仓库用本机已配好的 SSH key 访问，不要把 token 写进地址。',
 ].join('\n');
 
 async function handleSkillLibraries(args: string, ctx: CommandContext, store: KnowledgeStore): Promise<void> {
@@ -2332,6 +2343,9 @@ async function handleSkillLibraries(args: string, ctx: CommandContext, store: Kn
     case 'sync':
     case 'pull':
       return skillLibrarySync(rest[0], ctx, libraries);
+    case 'update':
+    case 'upgrade':
+      return skillLibraryUpdate(rest[0] ?? '', ctx, libraries);
     case 'rm':
     case 'remove':
       return skillLibraryRemove(rest[0] ?? '', ctx, libraries);
@@ -2355,8 +2369,9 @@ async function skillLibraryList(
     ctx.msg.chatId,
     {
       card: skillLibrariesCard(
-        statuses.map((status) => ({
+        byPrecedence(statuses.map((status) => ({ ...status, owner: status.config.owner }))).map((status) => ({
           name: status.config.name,
+          external: status.config.owner === 'external',
           url: maskUrlCredentials(status.config.url),
           ...(status.config.ref ? { ref: status.config.ref } : {}),
           ...(status.config.path ? { path: status.config.path } : {}),
@@ -2367,6 +2382,7 @@ async function skillLibraryList(
           ...(status.commitAt ? { commitAgo: formatAgo(now - status.commitAt) } : {}),
           ...(status.lastSyncAt ? { lastSyncAgo: formatAgo(now - status.lastSyncAt) } : {}),
           ...(status.lastError ? { lastError: status.lastError } : {}),
+          ...(status.pending ? { pending: status.pending } : {}),
           skills: status.skills.map((skill) => skill.name),
           shadowed: shadowedSkills(status, merged),
         })),
@@ -2379,12 +2395,17 @@ async function skillLibraryList(
 
 type ParsedLibraryAdd = { library: SkillLibraryConfig } | { error: string };
 
-/** `<url> [name] [--ref x] [--path x] [--only a,b] [--exclude a,b] [--name x]`. */
+/** `<url> [name] [--external] [--ref x] [--path x] [--only a,b] [--exclude a,b] [--name x]`. */
 function parseLibraryAdd(tokens: string[], taken: Set<string>): ParsedLibraryAdd {
   const positional: string[] = [];
   const flags: Record<string, string> = {};
+  let external = false;
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i]!;
+    if (token === '--external') {
+      external = true;
+      continue;
+    }
     const flag = /^--(ref|path|only|include|exclude|name)(?:=(.*))?$/.exec(token);
     if (flag) {
       const value = flag[2] ?? tokens[i + 1];
@@ -2403,6 +2424,7 @@ function parseLibraryAdd(tokens: string[], taken: Set<string>): ParsedLibraryAdd
     {
       url,
       name: flags.name ?? positional[1],
+      ...(external ? { owner: 'external' as const } : {}),
       ref: flags.ref,
       path: flags.path,
       include: list(flags.only),
@@ -2423,15 +2445,16 @@ async function skillLibraryAdd(
     await reply(ctx, `❌ ${parsed.error}\n\n${SKILL_LIB_HELP}`);
     return;
   }
-  const library = parsed.library;
-
   // Fetch first and only then save: a library that cannot be pulled never
-  // lands in the configuration.
-  const result = await libraries.syncLibrary(library);
+  // lands in the configuration. An external one is saved pinned at what was
+  // fetched.
+  const result = await libraries.syncLibrary(parsed.library);
   if (!result.ok) {
-    await reply(ctx, `❌ 拉取 \`${library.name}\` 失败：${result.error ?? '未知错误'}`);
+    await reply(ctx, `❌ 拉取 \`${parsed.library.name}\` 失败：${result.error ?? '未知错误'}`);
     return;
   }
+  const library = withPin(parsed.library, result);
+  const external = library.owner === 'external';
   try {
     await configOps.saveSkillsConfig(ctx.controls, (skills) => ({
       ...skills,
@@ -2450,7 +2473,7 @@ async function skillLibraryAdd(
   const shadowed = status ? shadowedSkills(status, merged) : [];
   const interval = getSkillSyncIntervalMinutes(ctx.controls.profileConfig.skills);
   const lines = [
-    `📚 已添加 skill 库 \`${library.name}\`（\`${result.commit ?? '?'}\`），载入 ${found - shadowed.length} 个 skill。`,
+    `📚 已添加${external ? '第三方' : ''} skill 库 \`${library.name}\`（\`${result.commit ?? '?'}\`），载入 ${found - shadowed.length} 个 skill。`,
   ];
   if (found === 0) {
     lines.push('⚠️ 没找到 `SKILL.md`：skill 要放在 `<目录>/<名字>/SKILL.md`，不在 `skills/` 下就用 `--path` 指定目录。');
@@ -2460,7 +2483,9 @@ async function skillLibraryAdd(
   }
   lines.push(
     '',
-    `下一条消息起生效。${interval > 0 ? `每 ${interval} 分钟自动同步，` : ''}\`/skills lib sync ${library.name}\` 立即同步。`,
+    external
+      ? `下一条消息起生效。固定在 \`${result.commit ?? '?'}\`，不会自动更新：\`/skills lib sync ${library.name}\` 查看上游差异，\`/skills lib update ${library.name}\` 切到上游最新。`
+      : `下一条消息起生效。${interval > 0 ? `每 ${interval} 分钟自动同步，` : ''}\`/skills lib sync ${library.name}\` 立即同步。`,
   );
   await reply(ctx, lines.join('\n'));
 }
@@ -2476,12 +2501,69 @@ async function skillLibrarySync(name: string | undefined, ctx: CommandContext, l
     return;
   }
   const results = await libraries.sync(name);
-  const lines = results.map((result) =>
-    result.ok
-      ? `✓ \`${result.name}\`：${result.changed ? '已更新到' : '已是最新'} \`${result.commit ?? '?'}\``
-      : `❌ \`${result.name}\`：${result.error ?? '同步失败'}`,
+  await reply(ctx, `🔄 skill 库同步完成\n${results.map(describeSyncResult).join('\n')}`);
+}
+
+function describeSyncResult(result: LibrarySyncResult): string {
+  if (!result.ok) return `❌ \`${result.name}\`：${result.error ?? '同步失败'}`;
+  if (!result.pending) {
+    return `✓ \`${result.name}\`：${result.changed ? '已更新到' : '已是最新'} \`${result.commit ?? '?'}\``;
+  }
+  return `✓ \`${result.name}\`（第三方）：${describePending(result.name, result.commit, result.pending)}`;
+}
+
+/** One line on how an external library's upstream differs from its pin. */
+function describePending(name: string, commit: string | undefined, pending: LibraryPending): string {
+  const pinned = `固定在 \`${commit ?? '?'}\``;
+  if (pending.upstream === commit) return `${pinned}，与上游一致`;
+  const ahead = pending.ahead !== undefined ? `领先 ${pending.ahead} 个提交` : '与固定提交不在同一条历史上';
+  const names = (items: string[]) => items.map((item) => `\`${item}\``).join('、');
+  const parts = [
+    ...(pending.added.length ? [`新增 ${names(pending.added)}`] : []),
+    ...(pending.changed.length ? [`改动 ${names(pending.changed)}`] : []),
+    ...(pending.removed.length ? [`删除 ${names(pending.removed)}`] : []),
+  ];
+  return [
+    `${pinned}，上游 \`${pending.upstream}\` ${ahead}`,
+    `  ${parts.length ? parts.join('；') : 'skill 没有变化'}`,
+    `  确认后 \`/skills lib update ${name}\` 切过去`,
+  ].join('\n');
+}
+
+async function skillLibraryUpdate(name: string, ctx: CommandContext, libraries: SkillLibraries): Promise<void> {
+  const configured = configuredLibraries(ctx);
+  const library = configured.find((item) => item.name === name);
+  if (!library) {
+    await reply(
+      ctx,
+      !name
+        ? '用法：`/skills lib update <名字>`'
+        : `没有叫 \`${name}\` 的库。现有：${configured.map((item) => `\`${item.name}\``).join('、') || '（无）'}`,
+    );
+    return;
+  }
+  const before = (await libraries.status()).find((status) => status.config.name === name)?.commit;
+  const result = await updateLibrary(libraries, library, async (pin) => {
+    await configOps.saveSkillsConfig(ctx.controls, (skills) => ({
+      ...skills,
+      libraries: skills.libraries.map((item) => (item.name === name ? { ...item, pin } : item)),
+    }));
+  });
+  if (!result.ok) {
+    await reply(ctx, `❌ \`${name}\` 更新失败：${result.error ?? '未知错误'}`);
+    return;
+  }
+  if (library.owner !== 'external') {
+    await reply(ctx, describeSyncResult(result));
+    return;
+  }
+  log.info('skills', 'library-updated', { library: name, by: ctx.msg.senderId, commit: result.commit });
+  await reply(
+    ctx,
+    result.changed
+      ? `⬆️ 第三方库 \`${name}\` 已从 \`${before ?? '?'}\` 切到 \`${result.commit ?? '?'}\`，下一条消息起生效。`
+      : `✓ 第三方库 \`${name}\` 已是上游最新 \`${result.commit ?? '?'}\`。`,
   );
-  await reply(ctx, `🔄 skill 库同步完成\n${lines.join('\n')}`);
 }
 
 async function skillLibraryRemove(name: string, ctx: CommandContext, libraries: SkillLibraries): Promise<void> {

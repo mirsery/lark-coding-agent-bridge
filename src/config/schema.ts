@@ -233,7 +233,8 @@ export interface DreamTuning {
   minIdleMinutes?: number;
   /**
    * `skills.libraries[].name` new skills go to. Needed only when more than one
-   * library is configured; absent with exactly one, that one.
+   * self library is configured; absent with exactly one, that one. External
+   * (third-party) libraries never qualify.
    */
   skillLibrary?: string;
   /** Only these chat / topic scopes. Absent: every chat scope. */

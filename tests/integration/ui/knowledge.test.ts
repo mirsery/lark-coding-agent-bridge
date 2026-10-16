@@ -124,7 +124,7 @@ describe('console: skill libraries', { timeout: GIT_TIMEOUT_MS }, () => {
     expect(added.data.libraries).toMatchObject([
       { name: 'team-skills', url, exclude: ['triage'], present: true, skills: [{ name: 'deploy', description: '发布步骤' }] },
     ]);
-    expect((await profileOnDisk('work')).skills?.libraries).toEqual([{ name: 'team-skills', url, exclude: ['triage'] }]);
+    expect((await profileOnDisk('work')).skills?.libraries).toEqual([{ name: 'team-skills', owner: 'self', url, exclude: ['triage'] }]);
     expect(await readdir(mirrors)).toEqual(['team-skills']);
 
     const synced = await call('POST', '/api/skills?profile=work', { action: 'sync' });
@@ -136,6 +136,35 @@ describe('console: skill libraries', { timeout: GIT_TIMEOUT_MS }, () => {
     expect(removed.data.libraries).toEqual([]);
     expect((await profileOnDisk('work')).skills).toBeUndefined();
     expect(await readdir(mirrors)).toEqual([]);
+  });
+
+  it('pins an external library and moves it only on update', async () => {
+    const mine = await sourceRepo('mine', { deploy: '自己的' });
+    const dept = await sourceRepo('dept', { deploy: '部门的', triage: '排查流程' });
+    expect((await call('POST', '/api/skills?profile=work', { action: 'add', url: dept, owner: 'external' })).status).toBe(200);
+    const both = await call('POST', '/api/skills?profile=work', { action: 'add', url: mine });
+    // Self libraries are listed (and win name clashes) first, whatever the order they were added in.
+    expect(both.data.libraries).toMatchObject([
+      { name: 'mine', owner: 'self', shadowed: [] },
+      { name: 'dept', owner: 'external', shadowed: ['deploy'], pending: { ahead: 0 } },
+    ]);
+    const pin = (await profileOnDisk('work')).skills?.libraries.find((library) => library.name === 'dept')?.pin;
+    expect(pin).toMatch(/^[0-9a-f]{40}$/);
+
+    await mkdir(join(dept, 'skills', 'rollback'), { recursive: true });
+    await writeFile(join(dept, 'skills', 'rollback', 'SKILL.md'), '---\nname: rollback\ndescription: 回滚\n---\n');
+    await commitAll(dept, 'add rollback');
+    const synced = await call('POST', '/api/skills?profile=work', { action: 'sync', name: 'dept' });
+    expect(synced.data.results).toMatchObject([{ name: 'dept', ok: true, changed: false, pending: { ahead: 1, added: ['rollback'] } }]);
+
+    const updated = await call('POST', '/api/skills?profile=work', { action: 'update', name: 'dept' });
+    expect(updated.status).toBe(200);
+    expect(updated.data.results).toMatchObject([{ name: 'dept', ok: true, changed: true }]);
+    expect(updated.data.libraries[1].skills.map((skill: { name: string }) => skill.name)).toContain('rollback');
+    const moved = (await profileOnDisk('work')).skills?.libraries.find((library) => library.name === 'dept')?.pin;
+    expect(moved).toMatch(/^[0-9a-f]{40}$/);
+    expect(moved).not.toBe(pin);
+    expect((await call('POST', '/api/skills?profile=work', { action: 'update', name: 'nope' })).status).toBe(404);
   });
 
   it('saves nothing for a library that is invalid, taken or cannot be pulled', async () => {

@@ -281,7 +281,8 @@ describe('profile store canonical serialization', () => {
     expect(profile.skills).toBeUndefined();
     profile.skills = {
       libraries: [
-        { name: 'team', url: 'git@github.com:acme/team-skills.git', ref: 'main', path: 'pack', exclude: ['old'] },
+        { name: 'team', owner: 'self', url: 'git@github.com:acme/team-skills.git', ref: 'main', path: 'pack', exclude: ['old'] },
+        { name: 'dept', owner: 'external', pin: 'b'.repeat(40), url: 'git@github.com:dept/skills.git' },
       ],
       syncIntervalMinutes: 30,
     };

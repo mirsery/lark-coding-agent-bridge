@@ -176,6 +176,15 @@ describe('validateDreamProposals', () => {
       ctx(),
     );
     expect(update.skills[0]).toMatchObject({ action: 'update', source: 'team-lib' });
+    // A third party's library is never written to.
+    const external = validateDreamProposals(
+      { memory: [], skills: [skill({ action: 'update', name: 'deploy', body: '---\nname: deploy\ndescription: d\n---\nnew' })] },
+      ctx({
+        skills: [{ name: 'deploy', description: 'deploy steps', path: '/x/deploy/SKILL.md', source: 'dept', external: true }],
+      }),
+    );
+    expect(external.skills).toHaveLength(0);
+    expect(external.rejected[0]!.reason).toContain('第三方库');
     // over the per-scope cap the rest is rejected
     const many = validateDreamProposals(
       { memory: [], skills: [1, 2, 3, 4].map((i) => skill({ name: `s-${i}` })) },

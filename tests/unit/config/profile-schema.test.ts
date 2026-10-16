@@ -131,14 +131,39 @@ describe('profile schema', () => {
         syncIntervalMinutes: -5,
       },
     });
+    // Entries written before `owner` existed are the owner's own libraries.
     expect(cfg.skills).toEqual({
       libraries: [
-        { name: 'team', url: 'git@github.com:acme/team.git', ref: 'main', path: 'pack', include: ['a'] },
-        { name: 'bad-path', url: '/srv/skills' },
+        { name: 'team', owner: 'self', url: 'git@github.com:acme/team.git', ref: 'main', path: 'pack', include: ['a'] },
+        { name: 'bad-path', owner: 'self', url: '/srv/skills' },
       ],
       syncIntervalMinutes: 0,
     });
     expect(normalizeProfileConfig({ schemaVersion: 2, agentKind: 'claude', accounts: { app } }).skills).toBeUndefined();
+  });
+
+  it('keeps external libraries with their pin and drops pins elsewhere', () => {
+    const pin = 'a'.repeat(40);
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      skills: {
+        libraries: [
+          { name: 'dept', owner: 'external', pin: ` ${pin.toUpperCase()} `, url: 'git@github.com:dept/skills.git' },
+          { name: 'market', owner: 'external', pin: 'abc123', url: 'git@github.com:m/skills.git' },
+          { name: 'mine', owner: 'self', pin, url: 'git@github.com:me/skills.git' },
+          { name: 'odd', owner: 'someone', url: 'git@github.com:x/skills.git' },
+        ],
+      },
+    });
+    expect(cfg.skills?.libraries).toEqual([
+      { name: 'dept', owner: 'external', pin, url: 'git@github.com:dept/skills.git' },
+      // A short or malformed pin is no pin: the next update pins it properly.
+      { name: 'market', owner: 'external', url: 'git@github.com:m/skills.git' },
+      { name: 'mine', owner: 'self', url: 'git@github.com:me/skills.git' },
+      { name: 'odd', owner: 'self', url: 'git@github.com:x/skills.git' },
+    ]);
   });
 
   it('keeps a usable knowledge sync interval and drops the section otherwise', () => {

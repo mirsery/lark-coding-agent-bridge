@@ -15,10 +15,14 @@ import {
 } from '../knowledge/auto-sync';
 import {
   buildLibraryConfig,
+  byPrecedence,
   getSkillSyncIntervalMinutes,
   maskUrlCredentials,
   shadowedSkills,
   SkillLibraries,
+  updateLibrary,
+  withPin,
+  type LibraryPending,
   type LibrarySyncResult,
 } from '../knowledge/libraries';
 import { KnowledgeStore } from '../knowledge/store';
@@ -52,6 +56,8 @@ export interface ProfileTarget {
 
 export interface SkillLibraryView {
   name: string;
+  /** `external`: a third party's library, pinned and updated by hand. */
+  owner: 'self' | 'external';
   /** Credentials masked. */
   url: string;
   ref?: string;
@@ -68,6 +74,8 @@ export interface SkillLibraryView {
   skills: { name: string; description: string }[];
   /** Skills not loaded because an earlier one has the same name. */
   shadowed: string[];
+  /** External libraries: the fetched upstream compared with the pin. */
+  pending?: LibraryPending;
 }
 
 export interface SkillsView {
@@ -143,8 +151,9 @@ export async function skillsView(target: ProfileTarget): Promise<SkillsView> {
   return {
     live: target.live,
     syncIntervalMinutes: getSkillSyncIntervalMinutes(target.state.profileConfig.skills),
-    libraries: statuses.map((status) => ({
+    libraries: byPrecedence(statuses.map((status) => ({ ...status, owner: status.config.owner }))).map((status) => ({
       name: status.config.name,
+      owner: status.config.owner === 'external' ? ('external' as const) : ('self' as const),
       url: maskUrlCredentials(status.config.url),
       ...(status.config.ref ? { ref: status.config.ref } : {}),
       ...(status.config.path ? { path: status.config.path } : {}),
@@ -157,13 +166,16 @@ export async function skillsView(target: ProfileTarget): Promise<SkillsView> {
       ...(status.lastError ? { lastError: status.lastError } : {}),
       skills: status.skills.map(({ name, description }) => ({ name, description })),
       shadowed: shadowedSkills(status, merged),
+      ...(status.pending ? { pending: status.pending } : {}),
     })),
   };
 }
 
 /**
- * `add` (pull first, save only when that worked), `remove` (config entry and
- * mirror), `sync` (one library or all), `interval` (minutes between pulls).
+ * `add` (pull first, save only when that worked; `owner: "external"` pins it),
+ * `remove` (config entry and mirror), `sync` (one library or all — external
+ * ones only fetch), `update` (move an external library to its remote's latest
+ * commit), `interval` (minutes between pulls).
  */
 export async function mutateSkills(target: ProfileTarget, body: unknown): Promise<SkillsView> {
   const fv = asRecord(body);
@@ -177,6 +189,7 @@ export async function mutateSkills(target: ProfileTarget, body: unknown): Promis
         {
           url: typeof fv.url === 'string' ? fv.url : '',
           name,
+          ...(fv.owner === 'external' ? { owner: 'external' as const } : {}),
           ...(typeof fv.ref === 'string' ? { ref: fv.ref } : {}),
           ...(typeof fv.path === 'string' ? { path: fv.path } : {}),
           include: stringList(fv.include),
@@ -185,9 +198,9 @@ export async function mutateSkills(target: ProfileTarget, body: unknown): Promis
         new Set(configured.map((library) => library.name)),
       );
       if ('error' in built) throw new ApiError(400, built.error);
-      const library = built.library;
-      const result = await libraries.syncLibrary(library);
-      if (!result.ok) throw new ApiError(400, `拉取 ${library.name} 失败：${result.error ?? '未知错误'}`);
+      const result = await libraries.syncLibrary(built.library);
+      if (!result.ok) throw new ApiError(400, `拉取 ${built.library.name} 失败：${result.error ?? '未知错误'}`);
+      const library = withPin(built.library, result);
       try {
         await saveSkillsConfig(target.state, (skills) => ({
           ...skills,
@@ -216,6 +229,19 @@ export async function mutateSkills(target: ProfileTarget, body: unknown): Promis
       const results = await libraries.sync(name || undefined);
       return { ...(await skillsView(target)), results };
     }
+    case 'update': {
+      const library = configured.find((item) => item.name === name);
+      if (!library) throw new ApiError(404, `没有叫 ${name} 的库`);
+      const result = await updateLibrary(libraries, library, async (pin) => {
+        await saveSkillsConfig(target.state, (skills) => ({
+          ...skills,
+          libraries: skills.libraries.map((item) => (item.name === name ? { ...item, pin } : item)),
+        }));
+      });
+      if (!result.ok) throw new ApiError(400, `更新 ${name} 失败：${result.error ?? '未知错误'}`);
+      log.info('ui', 'skill-library-updated', { profile: target.state.profile, library: name, commit: result.commit });
+      return { ...(await skillsView(target)), results: [result] };
+    }
     case 'interval': {
       const minutes = parseInterval(fv.minutes);
       await saveSkillsConfig(target.state, (skills) => ({ ...skills, syncIntervalMinutes: minutes }));
@@ -223,7 +249,7 @@ export async function mutateSkills(target: ProfileTarget, body: unknown): Promis
       return skillsView(target);
     }
     default:
-      throw new ApiError(400, 'action must be add|remove|sync|interval');
+      throw new ApiError(400, 'action must be add|remove|sync|update|interval');
   }
 }
 

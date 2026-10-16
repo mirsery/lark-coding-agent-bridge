@@ -323,7 +323,7 @@ describe('/skills lib', () => {
     expect(lastMarkdown(h.channel)).toContain('同名已存在');
     // Saved to the config file, not only in memory.
     const saved = await loadRootConfig(h.controls.configPath);
-    expect(saved?.profiles.claude?.skills?.libraries).toEqual([{ name: 'team-skills', url: repo }]);
+    expect(saved?.profiles.claude?.skills?.libraries).toEqual([{ name: 'team-skills', owner: 'self', url: repo }]);
 
     await expect(h.run('/skills')).resolves.toBe(true);
     expect(lastCardJson(h.channel)).toContain('排查流程');
@@ -345,6 +345,43 @@ describe('/skills lib', () => {
     expect(lastMarkdown(h.channel)).toContain('已移除');
     expect((await loadRootConfig(h.controls.configPath))?.profiles.claude?.skills?.libraries ?? []).toEqual([]);
     expect((await h.store.listSkills()).map((skill) => skill.name)).toEqual(['deploy']);
+  });
+
+  it('pins an external library, shows upstream changes on sync and moves only on update', async () => {
+    const h = await createHarness({ withLibraries: true });
+    const repo = await libraryRepo(h.tmp.root, { deploy: '部门发布', triage: '排查流程' });
+
+    await expect(h.run(`/skills lib add ${repo} dept --external`)).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已添加第三方 skill 库 `dept`');
+    expect(lastMarkdown(h.channel)).toContain('不会自动更新');
+    const pinned = (await loadRootConfig(h.controls.configPath))?.profiles.claude?.skills?.libraries[0];
+    expect(pinned).toMatchObject({ name: 'dept', owner: 'external', url: repo });
+    expect(pinned?.pin).toMatch(/^[0-9a-f]{40}$/);
+
+    await mkdir(join(repo, 'skills', 'rollback'), { recursive: true });
+    await writeFile(join(repo, 'skills', 'rollback', 'SKILL.md'), '---\nname: rollback\ndescription: 回滚\n---\n');
+    await git(repo, ['add', '-A']);
+    await git(repo, ['-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'add rollback']);
+
+    await expect(h.run('/skills lib sync dept')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('领先 1 个提交');
+    expect(lastMarkdown(h.channel)).toContain('新增 `rollback`');
+    expect(lastMarkdown(h.channel)).toContain('/skills lib update dept');
+    expect((await h.store.listSkills()).map((skill) => skill.name)).not.toContain('rollback');
+
+    await expect(h.run('/skills lib')).resolves.toBe(true);
+    expect(lastCardJson(h.channel)).toContain('第三方库');
+    expect(lastCardJson(h.channel)).toContain('领先 1 个提交');
+
+    await expect(h.run('/skills lib update dept')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已从');
+    const moved = (await loadRootConfig(h.controls.configPath))?.profiles.claude?.skills?.libraries[0];
+    expect(moved?.pin).toMatch(/^[0-9a-f]{40}$/);
+    expect(moved?.pin).not.toBe(pinned?.pin);
+    expect((await h.store.listSkills()).map((skill) => skill.name)).toContain('rollback');
+
+    await expect(h.run('/skills lib update dept')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已是上游最新');
   });
 
   it('does not save a library that cannot be fetched', async () => {

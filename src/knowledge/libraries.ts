@@ -2,9 +2,11 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
 import {
+  isExternalLibrary,
   isSafeSkillLibraryPath,
   isValidSkillLibraryName,
   type SkillLibraryConfig,
+  type SkillLibraryOwner,
 } from '../config/profile-schema';
 import { log } from '../core/logger';
 import { git, isSafeRef } from '../git/exec';
@@ -23,6 +25,12 @@ import { isPlausibleGitUrl } from './sync';
  * The bridge only indexes the mirrors (name, description, path of SKILL.md);
  * the agent reads a body when it decides the skill applies, exactly as with the
  * profile's own `knowledge/skills/`.
+ *
+ * A library is either the owner's own (`self`, follows its remote) or someone
+ * else's (`external`). An external mirror stays at the configured `pin`: a sync
+ * only fetches and records what the remote has (`refs/bridge/upstream`), so the
+ * difference can be reviewed before {@link SkillLibraries.advance} moves the pin.
+ * Skills of self libraries win name clashes over external ones.
  */
 
 export interface LibrarySyncResult {
@@ -30,10 +38,28 @@ export interface LibrarySyncResult {
   ok: boolean;
   /** Short commit the mirror is at after the sync. */
   commit?: string;
+  /** Full id of {@link commit} — what an external library's `pin` stores. */
+  head?: string;
   /** The mirror was created or moved to a different commit. */
   changed?: boolean;
+  /** External libraries: what the remote has that the pinned mirror does not. */
+  pending?: LibraryPending;
   error?: string;
 }
+
+/** An external library's upstream compared with its pin, by skill directory. */
+export interface LibraryPending {
+  /** Short commit the remote is at. */
+  upstream: string;
+  /** Commits between the pin and the remote; absent when history does not connect them. */
+  ahead?: number;
+  added: string[];
+  removed: string[];
+  changed: string[];
+}
+
+/** The ref an external mirror keeps the remote's latest fetched commit under. */
+const UPSTREAM_REF = 'refs/bridge/upstream';
 
 export interface LibraryStatus {
   config: SkillLibraryConfig;
@@ -46,6 +72,8 @@ export interface LibraryStatus {
   lastError?: string;
   /** Skills found in the mirror after include / exclude, before de-duplication. */
   skills: SkillSummary[];
+  /** External libraries with a fetched upstream: how far the remote is from the pin. */
+  pending?: LibraryPending;
 }
 
 const FETCH_TIMEOUT_MS = 120_000;
@@ -73,14 +101,15 @@ export class SkillLibraries {
   }
 
   /**
-   * Every library's skills in configuration order. A name already taken by an
-   * earlier library is skipped — the profile's own skills are merged in front
-   * of these by {@link KnowledgeStore.listSkills} with the same rule.
+   * Every library's skills, self libraries before external ones and otherwise
+   * in configuration order. A name already taken by an earlier library is
+   * skipped — the profile's own skills are merged in front of these by
+   * {@link KnowledgeStore.listSkills} with the same rule.
    */
   async listSkills(): Promise<SkillSummary[]> {
     const merged: SkillSummary[] = [];
     const taken = new Set<string>();
-    for (const library of this.libraries()) {
+    for (const library of byPrecedence(this.libraries())) {
       for (const skill of await this.scan(library)) {
         if (taken.has(skill.name)) continue;
         taken.add(skill.name);
@@ -98,6 +127,7 @@ export class SkillLibraries {
         const head = present ? await git(mirror, ['log', '-1', '--format=%h %ct']) : undefined;
         const [commit, seconds] = head?.ok ? head.stdout.trim().split(' ') : [];
         const last = this.lastSync.get(config.name);
+        const pending = present && isExternalLibrary(config) ? await pendingChanges(mirror, config) : undefined;
         return {
           config,
           present,
@@ -106,6 +136,7 @@ export class SkillLibraries {
           ...(last ? { lastSyncAt: last.at } : {}),
           ...(last?.error ? { lastError: last.error } : {}),
           skills: present ? await this.scan(config) : [],
+          ...(pending ? { pending } : {}),
         };
       }),
     );
@@ -118,15 +149,37 @@ export class SkillLibraries {
   }
 
   /**
-   * Bring one library's mirror to the remote's current commit. Also used for a
-   * library that is not in the configuration yet: `/skills lib add` only saves
-   * the entry once this succeeded.
+   * Fetch one library. A self library's mirror moves to the remote's current
+   * commit; an external one stays at its `pin` (or, with none yet, is pinned at
+   * what was fetched — the caller saves {@link LibrarySyncResult.head}). Also
+   * used for a library that is not in the configuration yet: `/skills lib add`
+   * only saves the entry once this succeeded.
    */
   syncLibrary(library: SkillLibraryConfig): Promise<LibrarySyncResult> {
+    // Concurrent syncs of one library share a fetch.
     const running = this.inFlight.get(library.name);
     if (running) return running;
-    const task = this.fetchInto(library).finally(() => this.inFlight.delete(library.name));
-    this.inFlight.set(library.name, task);
+    return this.track(library.name, this.fetchInto(library, false));
+  }
+
+  /**
+   * Move an external library's mirror to the remote's current commit. The
+   * caller stores the returned {@link LibrarySyncResult.head} as the new `pin`;
+   * until it does, the next sync puts the mirror back at the old one.
+   */
+  async advance(library: SkillLibraryConfig): Promise<LibrarySyncResult> {
+    // Unlike a sync, this one cannot ride along: it checks out something else.
+    for (let running = this.inFlight.get(library.name); running; running = this.inFlight.get(library.name)) {
+      await running;
+    }
+    return this.track(library.name, this.fetchInto(library, true));
+  }
+
+  private track(name: string, work: Promise<LibrarySyncResult>): Promise<LibrarySyncResult> {
+    const task = work.finally(() => {
+      if (this.inFlight.get(name) === task) this.inFlight.delete(name);
+    });
+    this.inFlight.set(name, task);
     return task;
   }
 
@@ -224,7 +277,7 @@ export class SkillLibraries {
     );
   }
 
-  private async fetchInto(library: SkillLibraryConfig): Promise<LibrarySyncResult> {
+  private async fetchInto(library: SkillLibraryConfig, advance: boolean): Promise<LibrarySyncResult> {
     const mirror = this.mirrorDir(library.name);
     const fresh = !(await isDirectory(join(mirror, '.git')));
     // A first fetch happens in a scratch directory and is renamed into place
@@ -242,33 +295,55 @@ export class SkillLibraries {
         else if (current.stdout.trim() !== library.url) await run(work, ['remote', 'set-url', 'origin', library.url]);
       }
       const before = fresh ? undefined : await headCommit(work);
-      await run(
-        work,
-        [
-          '-c',
-          'protocol.ext.allow=never',
-          'fetch',
-          '-q',
-          '--depth',
-          '1',
-          '--no-tags',
-          '--no-recurse-submodules',
-          'origin',
-          library.ref ?? 'HEAD',
-        ],
-        FETCH_TIMEOUT_MS,
-      );
-      await run(work, ['-c', 'advice.detachedHead=false', 'checkout', '-q', '--force', '--detach', 'FETCH_HEAD']);
+      const external = isExternalLibrary(library);
+      // A self mirror only ever needs the tip. An external one keeps history so
+      // the card can say how many commits the remote is ahead of the pin, and
+      // so the pinned commit is still there after the remote moved on.
+      const depth = external
+        ? (await git(work, ['rev-parse', '--is-shallow-repository'])).stdout.trim() === 'true'
+          ? ['--unshallow']
+          : []
+        : ['--depth', '1'];
+      await fetch(work, [...depth, 'origin', library.ref ?? 'HEAD']);
+      let target = 'FETCH_HEAD';
+      if (external) {
+        await run(work, ['update-ref', UPSTREAM_REF, 'FETCH_HEAD']);
+        if (library.pin && !advance) {
+          target = library.pin;
+          if (!(await hasCommit(work, target))) {
+            // Not on the followed branch any more (force-pushed away, or the
+            // ref changed): ask for the commit itself.
+            await fetch(work, ['origin', target]).catch(() => {
+              throw new Error(`固定的提交 ${target.slice(0, 7)} 在远端已经找不到了，用 update 切到上游最新`);
+            });
+          }
+        }
+      }
+      await run(work, ['-c', 'advice.detachedHead=false', 'checkout', '-q', '--force', '--detach', target]);
       await run(work, ['clean', '-q', '-f', '-d', '-x']);
       const after = await headCommit(work);
+      const head = (await git(work, ['rev-parse', 'HEAD'])).stdout.trim();
+      const pending = external ? await pendingChanges(work, library) : undefined;
       if (fresh) {
         await rm(mirror, { recursive: true, force: true });
         await rename(work, mirror);
       }
       this.lastSync.set(library.name, { at: Date.now() });
       const changed = fresh || before !== after;
-      log.info('skills', 'library-synced', { library: library.name, commit: after, changed });
-      return { name: library.name, ok: true, ...(after ? { commit: after } : {}), changed };
+      log.info('skills', 'library-synced', {
+        library: library.name,
+        commit: after,
+        changed,
+        ...(pending ? { upstream: pending.upstream } : {}),
+      });
+      return {
+        name: library.name,
+        ok: true,
+        ...(after ? { commit: after } : {}),
+        ...(head ? { head } : {}),
+        changed,
+        ...(pending ? { pending } : {}),
+      };
     } catch (err) {
       if (fresh) await rm(work, { recursive: true, force: true }).catch(() => undefined);
       const error = maskUrlCredentials(err instanceof Error ? err.message : String(err));
@@ -327,7 +402,12 @@ export class SkillLibraries {
       }
       const header = parseSkillHeader(dirName, raw);
       if (!passesFilter(library, dirName, header.name)) continue;
-      skills.push({ ...header, path: file, source: library.name });
+      skills.push({
+        ...header,
+        path: file,
+        source: library.name,
+        ...(isExternalLibrary(library) ? { external: true } : {}),
+      });
     }
     return skills;
   }
@@ -341,6 +421,8 @@ export function getSkillSyncIntervalMinutes(skills: { syncIntervalMinutes?: numb
 /** What someone asks to add: `/skills lib add` arguments or the web console form. */
 export interface LibraryDraft {
   url: string;
+  /** Absent: `self`. */
+  owner?: SkillLibraryOwner;
   /** Absent or empty: derived from the URL. */
   name?: string;
   ref?: string;
@@ -379,6 +461,7 @@ export function buildLibraryConfig(
   return {
     library: {
       name,
+      owner: draft.owner === 'external' ? 'external' : 'self',
       url,
       ...(ref ? { ref } : {}),
       ...(path ? { path } : {}),
@@ -386,6 +469,46 @@ export function buildLibraryConfig(
       ...(exclude?.length ? { exclude } : {}),
     },
   };
+}
+
+/**
+ * `/skills lib update` and the console's update button. A self library just
+ * syncs. An external one moves to the remote's current commit and `savePin`
+ * stores it; if saving fails the mirror goes back to the old pin, so the files
+ * on disk never disagree with the configuration for longer than the attempt.
+ */
+export async function updateLibrary(
+  libraries: SkillLibraries,
+  library: SkillLibraryConfig,
+  savePin: (pin: string) => Promise<void>,
+): Promise<LibrarySyncResult> {
+  if (!isExternalLibrary(library)) return libraries.syncLibrary(library);
+  const result = await libraries.advance(library);
+  if (!result.ok || !result.head || result.head === library.pin) return result;
+  try {
+    await savePin(result.head);
+  } catch (err) {
+    await libraries.syncLibrary(library).catch(() => undefined);
+    return { name: library.name, ok: false, error: `保存配置失败：${err instanceof Error ? err.message : String(err)}` };
+  }
+  log.info('skills', 'library-pin-moved', { library: library.name, from: library.pin?.slice(0, 7), to: result.commit });
+  return result;
+}
+
+/**
+ * Store the commit an external library was first fetched at as its pin. `add`
+ * calls this before saving; a library added with a pin already keeps it.
+ */
+export function withPin(library: SkillLibraryConfig, result: LibrarySyncResult): SkillLibraryConfig {
+  return isExternalLibrary(library) && !library.pin && result.head ? { ...library, pin: result.head } : library;
+}
+
+/** Self libraries first, each group in configuration order: the order skills are merged in. */
+export function byPrecedence<T extends Pick<SkillLibraryConfig, 'owner'>>(libraries: readonly T[]): T[] {
+  return [
+    ...libraries.filter((library) => !isExternalLibrary(library)),
+    ...libraries.filter((library) => isExternalLibrary(library)),
+  ];
 }
 
 /** Skills of a library that lost to an earlier skill of the same name in the merged index. */
@@ -424,6 +547,66 @@ async function run(cwd: string, args: string[], timeoutMs?: number): Promise<voi
   // after it are generic advice ("Please make sure you have the correct…").
   const lines = result.stderr.split('\n').map((line) => line.trim()).filter(Boolean);
   throw new Error(lines.find((line) => /^(fatal|error):/.test(line)) ?? lines.at(-1) ?? `git 退出码 ${result.code}`);
+}
+
+async function fetch(cwd: string, args: string[]): Promise<void> {
+  await run(
+    cwd,
+    ['-c', 'protocol.ext.allow=never', 'fetch', '-q', '--no-tags', '--no-recurse-submodules', ...args],
+    FETCH_TIMEOUT_MS,
+  );
+}
+
+async function hasCommit(cwd: string, commit: string): Promise<boolean> {
+  return (await git(cwd, ['cat-file', '-e', `${commit}^{commit}`])).ok;
+}
+
+/**
+ * Skill directories that differ between the checked-out pin and the fetched
+ * upstream, under the library's skill directory and within its include /
+ * exclude filter (matched by directory name: the diff has no headers to read).
+ */
+async function pendingChanges(mirror: string, library: SkillLibraryConfig): Promise<LibraryPending | undefined> {
+  const upstream = await git(mirror, ['rev-parse', '--short', '--verify', '-q', `${UPSTREAM_REF}^{commit}`]);
+  if (!upstream.ok || !upstream.stdout.trim()) return undefined;
+  const count = await git(mirror, ['rev-list', '--count', `HEAD..${UPSTREAM_REF}`]);
+  const ahead = count.ok ? Number(count.stdout.trim()) : NaN;
+  const base = library.path ?? ((await isDirectory(join(mirror, 'skills'))) ? 'skills' : '');
+  const diff = await git(mirror, [
+    'diff',
+    '--name-status',
+    '--no-renames',
+    'HEAD',
+    UPSTREAM_REF,
+    '--',
+    ...(base ? [base] : []),
+  ]);
+  const added = new Set<string>();
+  const removed = new Set<string>();
+  const changed = new Set<string>();
+  if (diff.ok) {
+    const prefix = base ? `${base.replace(/\/+$/, '')}/` : '';
+    for (const line of diff.stdout.split('\n')) {
+      const [status, file] = line.split('\t');
+      if (!status || !file || !file.startsWith(prefix)) continue;
+      const parts = file.slice(prefix.length).split('/');
+      // A file directly in the base is the library itself being one skill.
+      const skill = parts.length === 1 ? library.name : parts[0]!;
+      if (skill.startsWith('.') || !passesFilter(library, skill, skill)) continue;
+      const isSkillFile = parts.length === 2 && parts[1] === 'SKILL.md';
+      if (isSkillFile && status === 'A') added.add(skill);
+      else if (isSkillFile && status === 'D') removed.add(skill);
+      else changed.add(skill);
+    }
+  }
+  for (const skill of [...added, ...removed]) changed.delete(skill);
+  return {
+    upstream: upstream.stdout.trim(),
+    ...(Number.isFinite(ahead) ? { ahead } : {}),
+    added: [...added].sort(),
+    removed: [...removed].sort(),
+    changed: [...changed].sort(),
+  };
 }
 
 async function headCommit(cwd: string): Promise<string | undefined> {

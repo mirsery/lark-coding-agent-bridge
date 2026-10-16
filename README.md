@@ -393,15 +393,19 @@ The knowledge directory belongs to one profile. To let several bots (say CC on C
 ```text
 /skills lib                                   # configured libraries, sync state, skills each one loaded
 /skills lib add <git-url> [name]              # add a library and pull it now (not saved if the pull fails)
+    [--external]                                # a third party's library: pinned at the fetched commit
     [--ref <branch/tag/commit>] [--path <dir>]
     [--only a,b] [--exclude a,b]
-/skills lib sync [name]                       # pull now
+/skills lib sync [name]                       # pull now; external libraries only fetch and list the difference
+/skills lib update <name>                     # move an external library to its remote's latest commit
 /skills lib rm <name>                         # remove it, mirror included
 ```
 
+- **Own and third-party libraries**: each library has an `owner`. Your own (`self`, the default) follows its remote on every sync and is where dream consolidation proposes new skills. A third party's (`external`, added with `--external`; any number of them — a department's, a marketplace's) is maintained by someone else and its content becomes the bot's instructions the moment it changes, so it stays at the commit recorded in `pin`: `sync` and the scheduled sync only fetch, and `/skills lib` shows how many commits the remote is ahead and which skills it adds, changes or removes; an admin moves the pin with `/skills lib update <name>` after reviewing that. External libraries are never a dream consolidation target, and their index entries carry `external: true`.
+
 - **Layout**: skills live at `skills/<name>/SKILL.md`; without a `skills/` directory the repository root is scanned, and `--path` picks another directory. A repository whose root is a single `SKILL.md` counts as one skill. Frontmatter may use quoted values and `>` / `|` multi-line descriptions.
 - **Read-only mirror**: a sync is fetch + check out the remote commit + drop local changes, never a merge. Change a skill in the library's own repository.
-- **Name clashes**: the profile's own `knowledge/skills/` win, then libraries in the order they were added; the losers are listed in `/skills lib`.
+- **Name clashes**: the profile's own `knowledge/skills/` win, then your own libraries, then third-party ones, each group in the order added; the losers are listed in `/skills lib`.
 - **Syncing**: once at start-up, then every 60 minutes (`skills.syncIntervalMinutes`; `0` pulls only at start-up and on `sync`).
 - **Permissions**: `/skills lib` is admin-only — a library's content becomes instructions the bot follows; `/skills` stays readable for everyone. Reach private repositories through the SSH key already on the host rather than a token in the URL (cards and logs mask credentials, the config file does not).
 - **Config**: stored in the profile's `skills` section:
@@ -409,15 +413,18 @@ The knowledge directory belongs to one profile. To let several bots (say CC on C
 ```json
 "skills": {
   "libraries": [
-    { "name": "team-skills", "url": "git@github.com:acme/team-skills.git", "ref": "main", "exclude": ["old-skill"] }
+    { "name": "team-skills", "owner": "self", "url": "git@github.com:acme/team-skills.git", "ref": "main", "exclude": ["old-skill"] },
+    { "name": "dept-skills", "owner": "external", "pin": "<40-char commit id>", "url": "git@github.com:dept/skills.git" }
   ],
   "syncIntervalMinutes": 60
 }
 ```
 
+Entries without `owner` (written before it existed) read as `self`; the field is filled in on the next config save.
+
 Mirrors live in `~/.lark-channel/profiles/<profile>/skill-libraries/<name>/`. Each profile configures and pulls its own; to share a library between bots, `add` it in each of them.
 
-The Skill libraries card on the Web console's Configuration page does the same: it lists each library's commit, last sync and loaded skills (shadowed ones struck through), and can add a library (saved only after the pull succeeds), sync one or all, remove one and change the interval. Pulls and mirror removal run on the spot; config changes apply at once for profiles the console hosts, and on the next restart for profiles hosted by another process — if such a process re-pulls a removed library before then, the mirror is swept at its start-up because the config no longer lists it.
+The Skill libraries card on the Web console's Configuration page does the same: it lists libraries grouped into your own and third-party ones with each one's commit, last sync and loaded skills (shadowed ones struck through) plus, for third-party ones, the upstream difference, and can add a library (saved only after the pull succeeds; tick "third-party" for `--external`), sync one or all, update a third-party one, remove one and change the interval. Pulls and mirror removal run on the spot; config changes apply at once for profiles the console hosts, and on the next restart for profiles hosted by another process — if such a process re-pulls a removed library before then, the mirror is swept at its start-up because the config no longer lists it.
 
 
 ### Dream consolidation (梦境整理, off by default)

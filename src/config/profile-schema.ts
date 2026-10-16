@@ -192,6 +192,15 @@ export interface ApprovalsConfig {
 }
 
 /**
+ * Who maintains a library. `self`: the owner's own repository — followed
+ * automatically and the one 梦境整理 proposes new skills to. `external`: a
+ * third party's (a department's, a marketplace's) — its content becomes
+ * instructions for the bot, so it stays at {@link SkillLibraryConfig.pin} until
+ * an admin reviews the upstream changes and moves it (`/skills lib update`).
+ */
+export type SkillLibraryOwner = 'self' | 'external';
+
+/**
  * One shared skill library: a git repository the bridge keeps a read-only
  * mirror of and adds to the agent's skill index, next to the profile's own
  * `knowledge/skills/`. See `src/knowledge/libraries.ts`.
@@ -199,6 +208,15 @@ export interface ApprovalsConfig {
 export interface SkillLibraryConfig {
   /** Directory name of the mirror and the label shown as the skill's source. */
   name: string;
+  /** Absent means `self`: entries written before the field existed are the owner's own. */
+  owner?: SkillLibraryOwner;
+  /**
+   * External libraries only: full commit id the mirror stays at. Set when the
+   * library is added and moved only by `/skills lib update`. Absent on an
+   * external library (hand-edited config): it follows the remote like a self
+   * library until the first `/skills lib update` pins it.
+   */
+  pin?: string;
   /** Anything `git fetch` accepts that {@link isPlausibleGitUrl} lets through. */
   url: string;
   /** Branch, tag or commit to follow. Absent: the remote's default branch. */
@@ -646,6 +664,15 @@ function normalizeApprovals(input: unknown): ApprovalsConfig {
 
 const SKILL_LIBRARY_NAME_RE = /^[A-Za-z0-9][\w.-]{0,63}$/;
 
+/** A full SHA-1 or SHA-256 object id, as {@link SkillLibraryConfig.pin} stores it. */
+export function isCommitId(value: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
+}
+
+export function isExternalLibrary(library: Pick<SkillLibraryConfig, 'owner'>): boolean {
+  return library.owner === 'external';
+}
+
 export function isValidSkillLibraryName(name: string): boolean {
   return SKILL_LIBRARY_NAME_RE.test(name) && name !== '.' && name !== '..';
 }
@@ -685,8 +712,12 @@ function normalizeSkills(input: unknown): SkillsConfig | undefined {
     const path = typeof item.path === 'string' ? item.path.trim() : '';
     const include = trimmed(item.include);
     const exclude = trimmed(item.exclude);
+    const owner: SkillLibraryOwner = item.owner === 'external' ? 'external' : 'self';
+    const pin = typeof item.pin === 'string' ? item.pin.trim().toLowerCase() : '';
     libraries.push({
       name,
+      owner,
+      ...(owner === 'external' && isCommitId(pin) ? { pin } : {}),
       url,
       ...(ref ? { ref } : {}),
       ...(path && isSafeSkillLibraryPath(path) ? { path } : {}),

@@ -10,6 +10,7 @@ import {
   libraryNameFromUrl,
   maskUrlCredentials,
   SkillLibraries,
+  updateLibrary,
 } from '../../../src/knowledge/libraries';
 import { KnowledgeStore } from '../../../src/knowledge/store';
 
@@ -113,6 +114,112 @@ describe('skill libraries', () => {
     config = [{ name: 'pinned', url, ref: 'main', path: 'pack', include: ['d', 'a'] }];
     await libraries.sync();
     expect((await libraries.listSkills()).map((skill) => skill.name)).toEqual(['a', 'd']);
+  });
+
+  it('keeps an external library at its pin and reports what upstream changed', async () => {
+    const url = await sourceRepo('dept', { deploy: '发布步骤', triage: '排查流程', old: '旧的' });
+    const added = await libraries.syncLibrary({ name: 'dept', owner: 'external', url });
+    expect(added).toMatchObject({ ok: true, changed: true });
+    expect(added.head).toMatch(/^[0-9a-f]{40}$/);
+    const pin = added.head!;
+    expect(added.pending).toMatchObject({ upstream: added.commit, ahead: 0, added: [], removed: [], changed: [] });
+
+    await writeSkill(join(url, 'skills'), 'rollback', '回滚步骤');
+    await writeSkill(join(url, 'skills'), 'deploy', '发布步骤 v2');
+    await rm(join(url, 'skills', 'old'), { recursive: true });
+    await commitAll(url, 'upstream moves on');
+    await writeFile(join(url, 'README.md'), '# changed\n');
+    await commitAll(url, 'docs only');
+
+    config = [{ name: 'dept', owner: 'external', pin, url }];
+    const [synced] = await libraries.sync('dept');
+    // Fetched, but the mirror did not move.
+    expect(synced).toMatchObject({ ok: true, changed: false, commit: added.commit });
+    expect(synced!.pending).toMatchObject({ ahead: 2, added: ['rollback'], changed: ['deploy'], removed: ['old'] });
+    expect(synced!.pending!.upstream).not.toBe(added.commit);
+    expect((await libraries.listSkills()).map((skill) => [skill.name, skill.description])).toEqual([
+      ['deploy', '发布步骤'],
+      ['old', '旧的'],
+      ['triage', '排查流程'],
+    ]);
+    const [status] = await libraries.status();
+    expect(status!.pending).toEqual(synced!.pending);
+
+    let saved: string | undefined;
+    const updated = await updateLibrary(libraries, config[0]!, async (next) => {
+      saved = next;
+    });
+    expect(updated).toMatchObject({ ok: true, changed: true });
+    expect(saved).toBe(updated.head);
+    expect(updated.pending).toMatchObject({ ahead: 0, added: [], removed: [], changed: [] });
+    expect((await libraries.listSkills()).map((skill) => skill.name)).toEqual(['deploy', 'rollback', 'triage']);
+  });
+
+  it('puts an external mirror back at the old pin when saving the new one fails', async () => {
+    const url = await sourceRepo('dept', { deploy: '发布步骤' });
+    const first = await libraries.syncLibrary({ name: 'dept', owner: 'external', url });
+    await writeSkill(join(url, 'skills'), 'rollback', '回滚步骤');
+    await commitAll(url, 'add rollback');
+    config = [{ name: 'dept', owner: 'external', pin: first.head!, url }];
+
+    const result = await updateLibrary(libraries, config[0]!, async () => {
+      throw new Error('disk full');
+    });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('disk full') });
+    expect((await libraries.status())[0]!.commit).toBe(first.commit);
+    expect((await libraries.listSkills()).map((skill) => skill.name)).toEqual(['deploy']);
+  });
+
+  it('fetches a pinned commit the followed branch no longer contains', async () => {
+    const url = await sourceRepo('dept', { deploy: '发布步骤' });
+    const first = await libraries.syncLibrary({ name: 'dept', owner: 'external', url });
+    await rm(libraries.mirrorDir('dept'), { recursive: true });
+    // Rewrite history: the pinned commit is no longer reachable from main.
+    await writeSkill(join(url, 'skills'), 'deploy', '改写过的');
+    for (const args of [
+      ['checkout', '-q', '--orphan', 'rewrite'],
+      ['add', '-A'],
+      ['-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'rewritten'],
+      ['branch', '-q', '-f', 'main', 'rewrite'],
+      ['checkout', '-q', 'main'],
+      ['tag', 'keep-old', first.head!],
+    ]) {
+      const result = await git(url, args);
+      if (!result.ok) throw new Error(result.stderr);
+    }
+    await git(url, ['config', 'uploadpack.allowAnySHA1InWant', 'true']);
+
+    config = [{ name: 'dept', owner: 'external', pin: first.head!, url }];
+    const [synced] = await libraries.sync('dept');
+    expect(synced).toMatchObject({ ok: true, commit: first.commit });
+    expect((await libraries.listSkills())[0]!.description).toBe('发布步骤');
+    // No common history with the pin: no commit count, but the skill diff still shows.
+    expect(synced!.pending).toMatchObject({ changed: ['deploy'] });
+  });
+
+  it('lets self libraries win name clashes over external ones, whatever the order', async () => {
+    const dept = await sourceRepo('dept', { deploy: '部门的', triage: '部门排查' });
+    const mine = await sourceRepo('mine', { deploy: '自己的' });
+    const market = await sourceRepo('market', { triage: '市场排查', lint: '检查' });
+    config = [
+      { name: 'dept', owner: 'external', url: dept },
+      { name: 'market', owner: 'external', url: market },
+      { name: 'mine', owner: 'self', url: mine },
+    ];
+    await libraries.sync();
+
+    const skills = await libraries.listSkills();
+    expect(skills.map((skill) => [skill.name, skill.source, skill.external ?? false])).toEqual([
+      ['deploy', 'mine', false],
+      ['triage', 'dept', true],
+      ['lint', 'market', true],
+    ]);
+
+    const store = new KnowledgeStore(join(root, 'knowledge'));
+    store.addSkillSource(libraries);
+    const context = await buildKnowledgeContext({ store, scopeId: 'oc_x' });
+    expect(context?.skills?.find((skill) => skill.name === 'triage')).toMatchObject({ source: 'dept', external: true });
+    expect(context?.skills?.find((skill) => skill.name === 'deploy')).not.toHaveProperty('external');
   });
 
   it('treats a repository with SKILL.md at its root as one skill', async () => {
@@ -266,7 +373,7 @@ describe('helpers', () => {
   it('checks a library before it is added', () => {
     const taken = new Set(['team']);
     expect(buildLibraryConfig({ url: 'git@github.com:acme/team-skills.git' }, taken)).toEqual({
-      library: { name: 'team-skills', url: 'git@github.com:acme/team-skills.git' },
+      library: { name: 'team-skills', owner: 'self', url: 'git@github.com:acme/team-skills.git' },
     });
     expect(
       buildLibraryConfig(
@@ -280,7 +387,10 @@ describe('helpers', () => {
         },
         taken,
       ),
-    ).toEqual({ library: { name: 'x', url: 'https://github.com/acme/x.git', ref: 'main', path: 'skills', include: ['a', 'b'] } });
+    ).toEqual({ library: { name: 'x', owner: 'self', url: 'https://github.com/acme/x.git', ref: 'main', path: 'skills', include: ['a', 'b'] } });
+    expect(buildLibraryConfig({ url: 'git@github.com:dept/skills.git', owner: 'external' }, taken)).toEqual({
+      library: { name: 'skills', owner: 'external', url: 'git@github.com:dept/skills.git' },
+    });
     expect(buildLibraryConfig({ url: 'not a url' }, taken)).toMatchObject({ error: expect.stringContaining('不像 git') });
     expect(buildLibraryConfig({ url: 'git@github.com:acme/team.git' }, taken)).toMatchObject({
       error: expect.stringContaining('已经有叫'),

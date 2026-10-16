@@ -24,6 +24,8 @@ export interface SkillRef {
   path: string;
   /** Shared library the skill comes from; absent for the profile's own. */
   source?: string;
+  /** From a third party's library: read-only here, changes go to that repository's maintainers. */
+  external?: true;
 }
 
 const DEFAULT_MAX_CHARS = 6000;
@@ -81,6 +83,7 @@ function toSkillRef(skill: SkillSummary): SkillRef {
     description,
     path: skill.path,
     ...(skill.source ? { source: skill.source } : {}),
+    ...(skill.external ? { external: true as const } : {}),
   };
 }
 

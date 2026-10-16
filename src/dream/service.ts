@@ -6,7 +6,7 @@ import { resolveEffortArg, resolveModelArg } from '../agent/models';
 import { fullestQuotaWindow, readAgentQuota, type QuotaReading } from '../agent/quota';
 import { agentDescriptor, isAgentKind } from '../agent/registry';
 import { readAgentTranscript, type AgentTranscript } from '../agent/session-transcript';
-import type { ProfileConfig, SkillLibraryConfig } from '../config/profile-schema';
+import { isExternalLibrary, type ProfileConfig, type SkillLibraryConfig } from '../config/profile-schema';
 import {
   getDream,
   getDreamAuto,
@@ -970,7 +970,7 @@ export class DreamService {
     for (const proposal of proposals) {
       const library =
         proposal.action === 'update'
-          ? libraries.find((item) => item.name === proposal.source)
+          ? libraries.find((item) => item.name === proposal.source && !isExternalLibrary(item))
           : 'library' in fallback
             ? fallback.library
             : undefined;
@@ -1177,11 +1177,13 @@ export class DreamService {
     return this.deps.lockDir ?? join(this.deps.workDir, 'locks');
   }
 
-  /** Every repository a run may write to: the knowledge repo and the configured skill libraries. */
+  /** Every repository a run may write to: the knowledge repo and the owner's own skill libraries. */
   private repoTargets(knowledgeUrl: string | undefined): Array<{ repo: string; url: string }> {
     return [
       ...(knowledgeUrl ? [{ repo: 'knowledge', url: knowledgeUrl }] : []),
-      ...(this.deps.profileConfig().skills?.libraries ?? []).map((library) => ({ repo: `skills:${library.name}`, url: library.url })),
+      ...(this.deps.profileConfig().skills?.libraries ?? [])
+        .filter((library) => !isExternalLibrary(library))
+        .map((library) => ({ repo: `skills:${library.name}`, url: library.url })),
     ];
   }
 
@@ -1284,7 +1286,9 @@ export async function composeDreamStatus(input: {
 
 /**
  * The library new skills go to: the configured `dreamTuning.skillLibrary`,
- * else the only library there is. More than one and none chosen is ambiguous.
+ * else the only self library there is. Third-party (`external`) libraries are
+ * never written to, however many there are; more than one self library and
+ * none chosen is ambiguous.
  */
 export function defaultSkillLibrary(
   libraries: readonly SkillLibraryConfig[],
@@ -1292,11 +1296,20 @@ export function defaultSkillLibrary(
 ): { library: SkillLibraryConfig } | { problem: string } {
   if (chosen) {
     const library = libraries.find((item) => item.name === chosen);
-    return library ? { library } : { problem: `配置的 skill 库 ${chosen} 不存在` };
+    if (!library) return { problem: `配置的 skill 库 ${chosen} 不存在` };
+    return isExternalLibrary(library) ? { problem: `skill 库 ${chosen} 是第三方库，不能作为提交目标` } : { library };
   }
-  if (libraries.length === 0) return { problem: '没有配置 skill 库（/skills lib add）' };
-  if (libraries.length > 1) return { problem: '配置了多个 skill 库，需要在 preferences.dreamTuning.skillLibrary 里指定一个' };
-  return { library: libraries[0]! };
+  const own = libraries.filter((library) => !isExternalLibrary(library));
+  if (own.length === 0) {
+    return {
+      problem:
+        libraries.length === 0
+          ? '没有配置 skill 库（/skills lib add）'
+          : '只有第三方 skill 库，没有自己的库（/skills lib add 不带 --external）',
+    };
+  }
+  if (own.length > 1) return { problem: '配置了多个自己的 skill 库，需要在 preferences.dreamTuning.skillLibrary 里指定一个' };
+  return { library: own[0]! };
 }
 
 function batchId(now: number): string {

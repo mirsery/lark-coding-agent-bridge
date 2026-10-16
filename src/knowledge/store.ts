@@ -35,6 +35,8 @@ export interface SkillSummary {
   path: string;
   /** Shared library the skill comes from; absent for the profile's own `skills/`. */
   source?: string;
+  /** The library is a third party's (`owner: external`), not the owner's own. */
+  external?: boolean;
 }
 
 /** Extra skills merged behind the profile's own — the shared libraries. */

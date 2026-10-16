@@ -184,6 +184,8 @@ export interface OnboardState {
 /** One shared skill library (`/skills lib`). */
 export interface SkillLibrary {
   name: string;
+  /** `external`: a third party's library, pinned and updated by hand. */
+  owner: "self" | "external";
   /** Credentials masked. */
   url: string;
   ref?: string;
@@ -199,6 +201,16 @@ export interface SkillLibrary {
   skills: { name: string; description: string }[];
   /** Not loaded: an earlier skill has the same name. */
   shadowed: string[];
+  /** External libraries: the fetched upstream compared with the pin. */
+  pending?: LibraryPending;
+}
+
+export interface LibraryPending {
+  upstream: string;
+  ahead?: number;
+  added: string[];
+  removed: string[];
+  changed: string[];
 }
 
 export interface LibrarySyncResult {
@@ -206,6 +218,7 @@ export interface LibrarySyncResult {
   ok: boolean;
   commit?: string;
   changed?: boolean;
+  pending?: LibraryPending;
   error?: string;
 }
 

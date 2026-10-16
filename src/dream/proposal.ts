@@ -259,6 +259,7 @@ function validateSkillItem(raw: unknown, ctx: ValidateContext): SkillProposal | 
   if (action === 'update') {
     if (!existing) return { error: `没有名为 ${name} 的 skill 可更新` };
     if (!existing.source) return { error: `${name} 是本 profile 自带的 skill，不在共享库里，梦境整理不改它` };
+    if (existing.external) return { error: `${name} 来自第三方库 ${existing.source}，梦境整理不往别人的库提交` };
   }
   return {
     scopeId: ctx.scopeId,

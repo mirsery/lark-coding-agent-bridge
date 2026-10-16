@@ -98,7 +98,7 @@ export interface BridgePromptAttachment {
 export interface BridgePromptKnowledge {
   profileMemory?: string[];
   chatMemory?: string[];
-  skills?: Array<{ name: string; description: string; path: string; source?: string }>;
+  skills?: Array<{ name: string; description: string; path: string; source?: string; external?: true }>;
   truncated?: boolean;
 }
 

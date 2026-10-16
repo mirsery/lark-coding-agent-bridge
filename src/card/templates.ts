@@ -310,7 +310,7 @@ export function helpCard(agentName = 'Agent'): object {
         helpSection('violet-50', '🧠 记忆与 skills', [
           '`/memory [add|forget|clear]` — 跨会话记忆，`--global` 写到全局',
           '`/skills [show <名字>]` — skill 索引，agent 按需读取正文',
-          '`/skills lib [add|sync|rm]` — 共享 skill 库（git 仓库，管理员）',
+          '`/skills lib [add|sync|update|rm]` — 共享 skill 库（git 仓库，管理员；`--external` 加第三方库）',
           '`/knowledge [bind|sync]` — 记忆与 skill 的 git 同步，绑定后定时自动同步',
           '`/dream [run|cancel|prs|diff|revert]` — 梦境整理：把已结束的会话整理成待审核的 Draft PR，可撤销已合并的批次（管理员私聊）',
         ]),
@@ -655,6 +655,8 @@ export interface SkillView {
   description: string;
   /** Shared library the skill comes from; absent for the profile's own. */
   source?: string;
+  /** The library is a third party's. */
+  external?: boolean;
 }
 
 /** Card descriptions are a glance, not the full trigger text the agent gets. */
@@ -681,9 +683,10 @@ export function skillsCard(skills: SkillView[], dir: string): object {
     groups.set(key, [...(groups.get(key) ?? []), skill]);
   }
   for (const [source, members] of groups) {
+    const kind = members[0]?.external ? '第三方库' : 'skill 库';
     elements.push(HR);
     elements.push(
-      divMd(source ? `📚 **skill 库 \`${escapeCode(source)}\`**（${members.length}）` : `📁 **本 profile**（${members.length}）`),
+      divMd(source ? `📚 **${kind} \`${escapeCode(source)}\`**（${members.length}）` : `📁 **本 profile**（${members.length}）`),
     );
     for (const skill of members) {
       const description =
@@ -700,6 +703,8 @@ export function skillsCard(skills: SkillView[], dir: string): object {
 
 export interface SkillLibraryView {
   name: string;
+  /** A third party's library: pinned, never a 梦境整理 target. */
+  external?: boolean;
   /** Display-safe: credentials already masked. */
   url: string;
   ref?: string;
@@ -715,6 +720,8 @@ export interface SkillLibraryView {
   skills: string[];
   /** Skills of this library hidden by an earlier one with the same name. */
   shadowed: string[];
+  /** External libraries: the fetched upstream compared with the pin. */
+  pending?: { upstream: string; ahead?: number; added: string[]; removed: string[]; changed: string[] };
 }
 
 export function skillLibrariesCard(libraries: SkillLibraryView[], syncIntervalMinutes: number): object {
@@ -722,8 +729,21 @@ export function skillLibrariesCard(libraries: SkillLibraryView[], syncIntervalMi
   if (libraries.length === 0) {
     elements.push(divMd('还没有配置 skill 库。'));
   }
+  // The caller passes self libraries first; a heading starts each group.
+  let group: boolean | undefined;
   for (const library of libraries) {
     if (elements.length > 0) elements.push(HR);
+    const external = library.external === true;
+    if (group !== external) {
+      group = external;
+      elements.push(
+        divMd(
+          external
+            ? "**第三方库**\n<font color='grey'>固定在审过的提交，sync 只拉取看差异，update 才切换；不作为梦境整理的提交目标。</font>"
+            : '**我的库**',
+        ),
+      );
+    }
     const lines = [`📚 **${escapeMd(library.name)}**`, `🔗 \`${escapeCode(library.url)}\``];
     const scope = [
       library.ref ? `ref \`${escapeCode(library.ref)}\`` : '默认分支',
@@ -734,9 +754,25 @@ export function skillLibrariesCard(libraries: SkillLibraryView[], syncIntervalMi
     lines.push(`🌿 ${scope.join(' · ')}`);
     if (library.present) {
       lines.push(
-        `📌 \`${escapeCode(library.commit ?? '?')}\`${library.commitAgo ? `（提交于 ${library.commitAgo}）` : ''}` +
+        `📌 ${external ? '固定在 ' : ''}\`${escapeCode(library.commit ?? '?')}\`${library.commitAgo ? `（提交于 ${library.commitAgo}）` : ''}` +
           (library.lastSyncAgo ? ` · 上次同步 ${library.lastSyncAgo}` : ''),
       );
+      const pending = library.pending;
+      if (pending && pending.upstream !== library.commit) {
+        const names = (items: string[]) => items.map((n) => `\`${escapeCode(n)}\``).join('、');
+        const parts = [
+          ...(pending.added.length ? [`新增 ${names(pending.added)}`] : []),
+          ...(pending.changed.length ? [`改动 ${names(pending.changed)}`] : []),
+          ...(pending.removed.length ? [`删除 ${names(pending.removed)}`] : []),
+        ];
+        lines.push(
+          `<font color='orange'>⬆️ 上游 \`${escapeCode(pending.upstream)}\`` +
+            (pending.ahead !== undefined ? ` 领先 ${pending.ahead} 个提交` : '') +
+            `${parts.length ? `：${parts.join('；')}` : '，skill 没有变化'}</font>`,
+        );
+      } else if (pending) {
+        lines.push("<font color='grey'>与上游一致</font>");
+      }
     } else {
       lines.push("📌 <font color='grey'>还没有拉取成功</font>");
     }
@@ -756,9 +792,9 @@ export function skillLibrariesCard(libraries: SkillLibraryView[], syncIntervalMi
   elements.push(
     divMd(
       [
-        `<font color='grey'>${syncIntervalMinutes > 0 ? `每 ${syncIntervalMinutes} 分钟自动同步` : '已关闭定时同步'}，启动时也会同步一次。</font>`,
-        '`/skills lib add <git 地址> [名字] [--ref 分支] [--path 子目录] [--only a,b] [--exclude a,b]`',
-        '`/skills lib sync [名字]` · `/skills lib rm <名字>`',
+        `<font color='grey'>${syncIntervalMinutes > 0 ? `每 ${syncIntervalMinutes} 分钟自动同步` : '已关闭定时同步'}，启动时也会同步一次；第三方库同步只拉取、不切换。</font>`,
+        '`/skills lib add <git 地址> [名字] [--external] [--ref 分支] [--path 子目录] [--only a,b] [--exclude a,b]`',
+        '`/skills lib sync [名字]` · `/skills lib update <名字>` · `/skills lib rm <名字>`',
       ].join('\n'),
     ),
   );

@@ -40,7 +40,7 @@ export function SkillLibrariesCard({ profile }: { profile: string }) {
   const [view, setView] = useState<SkillsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [draft, setDraft] = useState({ url: "", name: "", ref: "", path: "", include: "", exclude: "" });
+  const [draft, setDraft] = useState({ url: "", name: "", ref: "", path: "", include: "", exclude: "", external: false });
   const [advanced, setAdvanced] = useState(false);
   const [interval, setIntervalDraft] = useState("");
   const [removing, setRemoving] = useState<string | null>(null);
@@ -76,7 +76,8 @@ export function SkillLibrariesCard({ profile }: { profile: string }) {
 
   async function add() {
     if (!draft.url.trim()) return;
-    const next = await act("add", { action: "add", ...draft });
+    const { external, ...fields } = draft;
+    const next = await act("add", { action: "add", ...fields, ...(external ? { owner: "external" } : {}) });
     if (!next) return;
     const name = next.results?.[0]?.name ?? draft.name;
     const library = next.libraries.find((l) => l.name === name);
@@ -85,7 +86,7 @@ export function SkillLibrariesCard({ profile }: { profile: string }) {
     if (library && library.skills.length === 0) {
       toast.message("没找到 SKILL.md：skill 要放在 <目录>/<名字>/SKILL.md，不在 skills/ 下就填「子目录」");
     }
-    setDraft({ url: "", name: "", ref: "", path: "", include: "", exclude: "" });
+    setDraft({ url: "", name: "", ref: "", path: "", include: "", exclude: "", external: false });
   }
 
   async function sync(name?: string) {
@@ -94,6 +95,14 @@ export function SkillLibrariesCard({ profile }: { profile: string }) {
     if (!next) return;
     if (failed.length > 0) toast.error(failed.map((r) => `${r.name}：${r.error ?? "同步失败"}`).join("\n"));
     else toast.success(next.results?.some((r) => r.changed) ? "已同步到最新提交" : "已是最新");
+    const behind = next.results?.filter((r) => r.ok && r.pending && r.pending.upstream !== r.commit) ?? [];
+    if (behind.length > 0) toast.message(`第三方库上游有更新：${behind.map((r) => r.name).join("、")}，看过差异后点「更新」切换`);
+  }
+
+  async function update(name: string) {
+    const next = await act(`update:${name}`, { action: "update", name });
+    const result = next?.results?.[0];
+    if (result) toast.success(result.changed ? `${name} 已切到 ${result.commit ?? "?"}（${appliesWhen(next.live)}）` : `${name} 已是上游最新`);
   }
 
   async function remove(name: string) {
@@ -134,14 +143,23 @@ export function SkillLibrariesCard({ profile }: { profile: string }) {
               {view.libraries.length === 0 && (
                 <p className="px-3 py-2 text-xs text-muted-foreground">（还没有配置 skill 库）</p>
               )}
-              {view.libraries.map((library) => (
-                <LibraryRow
-                  key={library.name}
-                  library={library}
-                  busy={busy}
-                  onSync={() => sync(library.name)}
-                  onRemove={() => setRemoving(library.name)}
-                />
+              {view.libraries.map((library, i) => (
+                <div key={library.name}>
+                  {library.owner !== (i === 0 ? undefined : view.libraries[i - 1]!.owner) && (
+                    <p className="bg-muted/40 px-3 py-1.5 text-xs font-medium text-muted-foreground">
+                      {library.owner === "external"
+                        ? "第三方库 · 固定在审过的提交，同步只拉取看差异，点「更新」才切换；不作为梦境整理的提交目标"
+                        : "我的库 · 自动跟随远端"}
+                    </p>
+                  )}
+                  <LibraryRow
+                    library={library}
+                    busy={busy}
+                    onSync={() => sync(library.name)}
+                    onUpdate={() => update(library.name)}
+                    onRemove={() => setRemoving(library.name)}
+                  />
+                </div>
               ))}
             </div>
 
@@ -164,6 +182,14 @@ export function SkillLibrariesCard({ profile }: { profile: string }) {
                   {busy === "add" ? "拉取中…" : "添加"}
                 </Button>
               </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={draft.external}
+                  onChange={(e) => setDraft({ ...draft, external: e.target.checked })}
+                />
+                第三方库（别人维护的仓库：固定在添加时的提交，手动更新）
+              </label>
               <Button variant="ghost" size="sm" onClick={() => setAdvanced(!advanced)}>
                 {advanced ? "收起选项" : "更多选项（分支、子目录、筛选）"}
               </Button>
@@ -184,7 +210,7 @@ export function SkillLibrariesCard({ profile }: { profile: string }) {
                 </div>
               )}
               <p className="text-xs text-muted-foreground">
-                先拉取成功才会保存。私有仓库用本机已配好的 SSH key 访问，不要把 token 写进地址。同名 skill：profile 自己的优先，其次是先添加的库。
+                先拉取成功才会保存。私有仓库用本机已配好的 SSH key 访问，不要把 token 写进地址。同名 skill：profile 自己的优先，其次是我的库，最后是第三方库，同类里先添加的优先。
               </p>
             </div>
 
@@ -215,13 +241,25 @@ export function SkillLibrariesCard({ profile }: { profile: string }) {
   );
 }
 
-function LibraryRow({ library, busy, onSync, onRemove }: {
+function pendingSummary(pending: NonNullable<SkillLibrary["pending"]>): string {
+  const parts = [
+    pending.added.length ? `新增 ${pending.added.join("、")}` : "",
+    pending.changed.length ? `改动 ${pending.changed.join("、")}` : "",
+    pending.removed.length ? `删除 ${pending.removed.join("、")}` : "",
+  ].filter(Boolean);
+  return parts.length ? `：${parts.join("；")}` : "，skill 没有变化";
+}
+
+function LibraryRow({ library, busy, onSync, onUpdate, onRemove }: {
   library: SkillLibrary;
   busy: string | null;
   onSync: () => void;
+  onUpdate: () => void;
   onRemove: () => void;
 }) {
   const shadowed = new Set(library.shadowed);
+  const pending = library.pending;
+  const behind = pending !== undefined && pending.upstream !== library.commit;
   return (
     <div className="space-y-1.5 px-3 py-2">
       <div className="flex items-center gap-2">
@@ -242,9 +280,20 @@ function LibraryRow({ library, busy, onSync, onRemove }: {
         <Button variant="ghost" size="sm" disabled={busy !== null} onClick={onSync}>
           {busy === `sync:${library.name}` ? "同步中…" : "同步"}
         </Button>
+        {behind && (
+          <Button variant="outline" size="sm" disabled={busy !== null} onClick={onUpdate}>
+            {busy === `update:${library.name}` ? "更新中…" : "更新"}
+          </Button>
+        )}
         <Button variant="ghost" size="sm" disabled={busy !== null} onClick={onRemove}>移除</Button>
       </div>
       <div className="truncate font-mono text-xs text-muted-foreground">{library.url}</div>
+      {behind && pending && (
+        <p className="text-xs text-primary">
+          上游 {pending.upstream}{pending.ahead !== undefined ? ` 领先 ${pending.ahead} 个提交` : ""}
+          {pendingSummary(pending)}
+        </p>
+      )}
       {library.skills.length > 0 ? (
         <div className="flex flex-wrap gap-1">
           {library.skills.map((skill) => (

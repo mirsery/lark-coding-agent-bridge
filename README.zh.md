@@ -394,15 +394,19 @@ Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两�
 ```text
 /skills lib                                   # 已配置的库、同步状态、各自载入的 skill
 /skills lib add <git 地址> [名字]              # 加一个库并立即拉取（拉不下来就不保存）
+    [--external]                                # 第三方库：固定在拉到的提交
     [--ref <分支/标签/提交>] [--path <子目录>]
     [--only a,b] [--exclude a,b]
-/skills lib sync [名字]                        # 立即同步
+/skills lib sync [名字]                        # 立即同步；第三方库只拉取并列出差异
+/skills lib update <名字>                      # 第三方库切到上游最新提交
 /skills lib rm <名字>                          # 移除，本地镜像一起删掉
 ```
 
+- **自己的库和第三方库**：每个库有 `owner`。自己的库（`self`，默认）每次同步跟随远端，梦境整理往这里提交新 skill。第三方库（`external`，`--external` 添加，可以有多个，比如部门库、市场上的库）是别人维护的，内容一变就直接成为 bot 的操作指令，所以固定在 `pin` 记录的提交：`sync` 和定时同步只拉取，在 `/skills lib` 里显示上游领先几个提交、新增 / 改动 / 删除了哪些 skill，管理员看过后 `/skills lib update <名字>` 才切过去。第三方库不作为梦境整理的提交目标，注入给 agent 的条目带 `external: true`。
+
 - **布局**：skill 放在 `skills/<名字>/SKILL.md`；仓库里没有 `skills/` 就在根目录找，`--path` 可以指定别的目录；根目录直接就是一个 `SKILL.md` 的仓库算作一个 skill。frontmatter 支持带引号的值和 `>` / `|` 多行描述。
 - **只读镜像**：同步是 fetch + 切到远端提交 + 清掉本地改动，从不合并。要改 skill 就去改库的仓库本身。
-- **同名优先级**：本 profile 自己 `knowledge/skills/` 里的 skill 优先，其次是先加的库；被挡住的会在 `/skills lib` 里列出来。
+- **同名优先级**：本 profile 自己 `knowledge/skills/` 里的 skill 优先，其次是自己的库，最后是第三方库，同类里先加的优先；被挡住的会在 `/skills lib` 里列出来。
 - **同步**：启动时同步一次，之后每 60 分钟一次（`skills.syncIntervalMinutes` 可改，`0` 表示只在启动和手动 `sync` 时拉）。
 - **权限**：`/skills lib` 只有管理员能用——库里的内容会直接成为 bot 的操作指令；`/skills` 查看对所有人开放。私有仓库用本机已配好的 SSH key 访问，不要把 token 写进地址（卡片和日志里的地址会遮掉凭据，但配置文件里是原样）。
 - **配置**：存在 profile 配置的 `skills` 段：
@@ -410,15 +414,18 @@ Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两�
 ```json
 "skills": {
   "libraries": [
-    { "name": "team-skills", "url": "git@github.com:acme/team-skills.git", "ref": "main", "exclude": ["old-skill"] }
+    { "name": "team-skills", "owner": "self", "url": "git@github.com:acme/team-skills.git", "ref": "main", "exclude": ["old-skill"] },
+    { "name": "dept-skills", "owner": "external", "pin": "<40 位提交号>", "url": "git@github.com:dept/skills.git" }
   ],
   "syncIntervalMinutes": 60
 }
 ```
 
+没有 `owner` 的旧条目按 `self` 读，下次保存配置时补上。
+
 镜像在 `~/.lark-channel/profiles/<profile>/skill-libraries/<名字>/`。每个 profile 各自配置、各自拉取，同一个库给几个 bot 用就在每个 bot 里各 `add` 一次。
 
-也可以在 Web 控制台「配置」页的「Skill 库」卡片里管理：列出各库的提交、同步时间和载入的 skill（被同名挡住的划掉显示），添加（同样先拉取成功才保存）、单个或全部同步、移除、改同步间隔。拉取和删镜像当场执行；配置改动由控制台托管的 profile 立即生效，由别的进程托管的写进配置、下次重启生效——在那之前它若又拉回了已移除的库，启动时会把配置里没有的镜像清掉。
+也可以在 Web 控制台「配置」页的「Skill 库」卡片里管理：按「我的库」「第三方库」分组列出各库的提交、同步时间和载入的 skill（被同名挡住的划掉显示），第三方库还显示上游差异；可以添加（同样先拉取成功才保存，勾选「第三方库」即 `--external`）、单个或全部同步、更新第三方库、移除、改同步间隔。拉取和删镜像当场执行；配置改动由控制台托管的 profile 立即生效，由别的进程托管的写进配置、下次重启生效——在那之前它若又拉回了已移除的库，启动时会把配置里没有的镜像清掉。
 
 
 ### 梦境整理（默认关闭）
