@@ -34,6 +34,7 @@ import {
   getRunIdleTimeoutMs,
   getShowToolCalls,
   getSmartSession,
+  getTopicSessionRetentionMonths,
   getWorktreeCleanupIdleDays,
   type AppPreferences,
   type CotMessagesMode,
@@ -72,6 +73,7 @@ export interface ConfigView {
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   smartSession: boolean;
+  topicSessionRetentionMonths: number;
   autoWorktreeCleanup: boolean;
   /** 梦境整理 switch (manual runs; see the dream panel). */
   dream: boolean;
@@ -113,6 +115,7 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
     messageReply: getMessageReplyMode(state.cfg),
     showToolCalls: getShowToolCalls(state.cfg),
     smartSession: Boolean(getSmartSession(state.cfg)),
+    topicSessionRetentionMonths: getTopicSessionRetentionMonths(state.cfg),
     autoWorktreeCleanup: getWorktreeCleanupIdleDays(state.cfg) !== undefined,
     dream: getDream(state.cfg) !== undefined,
     dreamAuto: state.cfg.preferences?.dreamAuto === true,
@@ -270,6 +273,16 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
     typeof fv.showToolCalls === 'boolean' ? fv.showToolCalls : getShowToolCalls(state.cfg);
   const smartSession =
     typeof fv.smartSession === 'boolean' ? fv.smartSession : Boolean(getSmartSession(state.cfg));
+  const topicSessionRetentionMonths =
+    fv.topicSessionRetentionMonths === undefined
+      ? getTopicSessionRetentionMonths(state.cfg)
+      : fv.topicSessionRetentionMonths;
+  if (
+    !Number.isSafeInteger(topicSessionRetentionMonths) ||
+    (topicSessionRetentionMonths as number) < 0
+  ) {
+    throw new ApiError(400, 'topicSessionRetentionMonths 必须是非负整数');
+  }
   const autoWorktreeCleanup = typeof fv.autoWorktreeCleanup === 'boolean' ? fv.autoWorktreeCleanup : getWorktreeCleanupIdleDays(state.cfg) !== undefined;
   const dream = typeof fv.dream === 'boolean' ? fv.dream : getDream(state.cfg) !== undefined;
   const dreamAuto = typeof fv.dreamAuto === 'boolean' ? fv.dreamAuto : state.cfg.preferences?.dreamAuto === true;
@@ -319,6 +332,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       messageReplyMigrated: true,
       showToolCalls,
       smartSession,
+      topicSessionRetentionMonths: topicSessionRetentionMonths as number,
       autoWorktreeCleanup,
       dream,
       dreamAuto,

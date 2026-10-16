@@ -741,6 +741,20 @@ Thresholds are tunable in the config file (the profile's `preferences`; restart 
 }
 ```
 
+### Topic session retention (3 months by default)
+
+The bridge checks topic/thread sessions on startup and once an hour. An inactive topic expires after 3 host-local calendar months by default (for example, January 31 plus one month is February 28 or 29). Activity is refreshed on every accepted turn, including turns sent through a process kept alive between messages. Active runs, submissions waiting for capacity, queued messages, kept processes, and scheduled automatic resumes are protected.
+
+Expiry removes only bridge-owned resumable state for that topic: the session store and catalog entries, pending smart-session rotation, chat-context cursor, and related in-memory caches. It keeps the topic's workspace and `/timeout` preference. It does not delete Lark messages, Claude/Codex native conversation history, pending user work, knowledge, or dream records.
+
+Set 「话题会话保留」 in `/config` or Configuration → Replies & runs in the Web console. Online-profile changes apply without a restart. The same value is available in the profile's `preferences`; direct file edits apply after restarting that profile. Use a positive whole number of months, or `0` to keep topic sessions forever; invalid values are rejected.
+
+```json
+{
+  "topicSessionRetentionMonths": 3
+}
+```
+
 ### Automatic worktree cleanup (off by default)
 
 Enable 「Worktree 自动清理」 under `/config` → 运行与权限 or Web console → Configuration → Replies & runs, then save. Once an hour, the bridge checks worktrees registered by `/worktree add` that have been idle for at least 7 days. Existing worktrees and those created directly by an agent in a terminal are not enrolled automatically.

@@ -119,6 +119,11 @@ export class ActiveRuns {
     return [...this.handles.keys()];
   }
 
+  /** Active turn, submit preparation/pool wait, or a process kept between turns. */
+  hasScope(chatId: string): boolean {
+    return this.handles.has(chatId) || this.reservations.has(chatId) || this.lingering.has(chatId);
+  }
+
   /**
    * `background`: still running tasks the agent started. `idle`: merely kept
    * up for the conversation's next message (Codex app-server).

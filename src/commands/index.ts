@@ -121,6 +121,7 @@ import {
   getRunIdleTimeoutMs,
   getDream,
   getSmartSession,
+  getTopicSessionRetentionMonths,
   getWorktreeCleanupIdleDays,
   getShowToolCalls,
 } from '../config/schema';
@@ -3532,6 +3533,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
     approvalsEnabled: ctx.controls.profileConfig.approvals.enabled,
     smartSession: getSmartSession(ctx.controls.cfg) !== undefined,
+    topicSessionRetentionMonths: getTopicSessionRetentionMonths(ctx.controls.cfg),
     autoWorktreeCleanup: getWorktreeCleanupIdleDays(ctx.controls.cfg) !== undefined,
     dream: getDream(ctx.controls.cfg) !== undefined,
     dreamAuto: ctx.controls.cfg.preferences?.dreamAuto === true,
@@ -3661,6 +3663,13 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   const rawSmartSession = String(fv.smart_session ?? '').trim();
   const smartSession =
     rawSmartSession === 'on' ? true : rawSmartSession === 'off' ? false : getSmartSession(ctx.controls.cfg) !== undefined;
+  const rawTopicRetention = String(fv.topic_session_retention_months ?? '').trim();
+  const currentTopicRetention = getTopicSessionRetentionMonths(ctx.controls.cfg);
+  const parsedTopicRetention = rawTopicRetention === '' ? currentTopicRetention : Number(rawTopicRetention);
+  const topicRetentionValid =
+    rawTopicRetention === '' ||
+    (/^\d+$/.test(rawTopicRetention) && Number.isSafeInteger(parsedTopicRetention));
+  const topicSessionRetentionMonths = topicRetentionValid ? parsedTopicRetention : currentTopicRetention;
   const rawCleanup = String(fv.auto_worktree_cleanup ?? '').trim();
   const autoWorktreeCleanup = rawCleanup === 'on' ? true : rawCleanup === 'off' ? false : getWorktreeCleanupIdleDays(ctx.controls.cfg) !== undefined;
   // 梦境整理 switch. Empty / unexpected keeps current.
@@ -3715,6 +3724,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       runIdleTimeoutMinutes,
       requireMentionInGroup,
       smartSession,
+      topicSessionRetentionMonths,
       autoWorktreeCleanup,
       dream,
       dreamAuto,
@@ -3723,6 +3733,15 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     let failureStep = 'config.save';
     let larkCliPolicyApplied = false;
     try {
+      if (!topicRetentionValid) {
+        await waitForSettle();
+        await showResultCardInPlace(
+          ctx,
+          formMsgId,
+          configFailedCard('话题会话保留月数必须是非负整数（0 表示永不清理）。'),
+        );
+        return;
+      }
       if (larkCliIdentityChanged) {
         failureStep = 'config.lark-cli-policy';
         const applied = await applyConfigLarkCliIdentityPolicy(ctx, nextEffectiveIdentity);
@@ -3768,6 +3787,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       larkCliIdentity,
       approvalsEnabled,
       smartSession,
+      topicSessionRetentionMonths,
       autoWorktreeCleanup,
       dream,
       dreamAuto,
@@ -3793,6 +3813,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         larkCliIdentity,
         approvalsEnabled,
         smartSession,
+        topicSessionRetentionMonths,
         autoWorktreeCleanup,
         dream,
         dreamAuto,

@@ -71,6 +71,13 @@ export class PendingRotationStore {
     return entry;
   }
 
+  delete(scope: string): boolean {
+    if (!(scope in this.data)) return false;
+    delete this.data[scope];
+    this.schedulePersist();
+    return true;
+  }
+
   async flush(): Promise<void> {
     await this.saving;
   }

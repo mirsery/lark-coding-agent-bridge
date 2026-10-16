@@ -74,19 +74,35 @@ export class SessionStore {
     return this.data[chatId];
   }
 
-  set(chatId: string, sessionId: string, cwd: string): void {
+  set(chatId: string, sessionId: string, cwd: string, now: number = Date.now()): void {
     // Preserve idleTimeoutMinutes across run starts — it's a per-scope
     // preference, not per-run-instance state. /new (clear) wipes it.
     const prev = this.data[chatId];
     this.data[chatId] = {
       sessionId,
       cwd,
-      updatedAt: Date.now(),
+      updatedAt: now,
       ...(prev?.idleTimeoutMinutes !== undefined
         ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }
         : {}),
     };
     this.schedulePersist();
+  }
+
+  /** Mark an existing resumable conversation as used by another turn. */
+  touch(chatId: string, now: number = Date.now()): boolean {
+    const entry = this.data[chatId];
+    if (!entry?.sessionId || !entry.cwd || entry.updatedAt >= now) return false;
+    this.data[chatId] = { ...entry, updatedAt: now };
+    this.schedulePersist();
+    return true;
+  }
+
+  entries(): Array<{ scopeId: string; entry: SessionEntry }> {
+    return Object.entries(this.data).map(([scopeId, entry]) => ({
+      scopeId,
+      entry: { ...entry },
+    }));
   }
 
   clear(chatId: string): void {

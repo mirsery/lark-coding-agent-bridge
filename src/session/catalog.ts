@@ -151,6 +151,30 @@ export class SessionCatalog {
     return true;
   }
 
+  /** Mark every active identity in a scope as used by another turn. */
+  touchScope(scopeId: string, now: number = Date.now()): boolean {
+    let changed = false;
+    for (const [key, entry] of this.data.entries()) {
+      if (entry.scopeId !== scopeId || entry.status !== 'active' || entry.updatedAt >= now) continue;
+      this.data.set(key, { ...entry, updatedAt: now });
+      changed = true;
+    }
+    if (changed) this.schedulePersist();
+    return changed;
+  }
+
+  /** Remove all bridge catalog identities for a scope without touching agent history. */
+  removeScope(scopeId: string): boolean {
+    let changed = false;
+    for (const [key, entry] of this.data.entries()) {
+      if (entry.scopeId !== scopeId) continue;
+      this.data.delete(key);
+      changed = true;
+    }
+    if (changed) this.schedulePersist();
+    return changed;
+  }
+
   entries(): SessionCatalogEntry[] {
     return [...this.data.values()].map((entry) => ({ ...entry }));
   }

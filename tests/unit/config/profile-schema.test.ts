@@ -245,6 +245,32 @@ describe('profile schema', () => {
     });
   });
 
+  it('accepts only non-negative integer topic-session retention months', () => {
+    expect(
+      createDefaultProfileConfig({
+        agentKind: 'claude',
+        accounts: { app },
+        preferences: { topicSessionRetentionMonths: 0 },
+      }).preferences.topicSessionRetentionMonths,
+    ).toBe(0);
+    expect(
+      createDefaultProfileConfig({
+        agentKind: 'claude',
+        accounts: { app },
+        preferences: { topicSessionRetentionMonths: 12 },
+      }).preferences.topicSessionRetentionMonths,
+    ).toBe(12);
+    for (const value of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        createDefaultProfileConfig({
+          agentKind: 'claude',
+          accounts: { app },
+          preferences: { topicSessionRetentionMonths: value },
+        }),
+      ).toThrow(/topicSessionRetentionMonths/);
+    }
+  });
+
   it('normalizes workspaces to a default working directory only', () => {
     const cfg = createDefaultProfileConfig({
       agentKind: 'claude',

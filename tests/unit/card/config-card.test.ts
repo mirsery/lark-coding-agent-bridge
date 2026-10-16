@@ -11,6 +11,7 @@ const base: ConfigFormOpts = {
   cotMessages: 'off',
   maxConcurrentRuns: 1,
   runIdleTimeoutMinutes: 0,
+  topicSessionRetentionMonths: 3,
   requireMentionInGroup: false,
   larkCliIdentity: 'bot-only',
   approvalsEnabled: false,
@@ -28,6 +29,14 @@ describe('configFormCard approvals switch', () => {
 
   it('reports the switch on the saved card', () => {
     expect(JSON.stringify(configSavedCard({ ...base, approvalsEnabled: true }))).toContain('非管理员审批');
+  });
+});
+
+describe('configFormCard topic-session retention', () => {
+  it('shows the current month count and reports never for zero', () => {
+    expect(JSON.stringify(configFormCard(base))).toContain('topic_session_retention_months');
+    expect(JSON.stringify(configFormCard(base))).toContain('"default_value":"3"');
+    expect(JSON.stringify(configSavedCard({ ...base, topicSessionRetentionMonths: 0 }))).toContain('永不');
   });
 });
 

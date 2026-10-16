@@ -53,6 +53,7 @@ import {
   getRunIdleTimeoutMs,
   getShowToolCalls,
   getSmartSession,
+  getTopicSessionRetentionMonths,
   getWorktreeCleanupIdleDays,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
@@ -125,6 +126,7 @@ import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { PendingStore, type PendingRecord } from './pending-store';
 import { PendingRotationStore } from '../session/rotation-store';
+import { startTopicSessionRetention } from '../session/topic-retention';
 import { formatUsageLine, UsageLedger } from '../runtime/usage-ledger';
 import { ApprovalBroker, type GateContext } from '../runtime/approvals';
 import { ApprovalSocketServer } from '../runtime/approval-socket';
@@ -751,6 +753,23 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       void sendExpiredPendingNotice(channel, record);
     }
   }
+  // Topic sessions are bridge-owned resume pointers, so expiry never removes
+  // Lark messages or the agent CLI's native history. The first pass runs only
+  // after durable pending messages have been re-queued, which protects them.
+  const topicSessionRetention = startTopicSessionRetention({
+    sessions,
+    ...(sessionCatalog ? { sessionCatalog } : {}),
+    pendingRotations,
+    contextCursors,
+    retentionMonths: () => getTopicSessionRetentionMonths(controls.cfg),
+    isProtected: (scope) =>
+      activeRuns.hasScope(scope) || pending.depth(scope) > 0 || autoResumer.get(scope) !== undefined,
+    onExpire: (scope) => {
+      activePolicyFingerprints.delete(scope);
+      lastRunModelByScope.delete(scope);
+    },
+  });
+  await topicSessionRetention.sweep();
   // Scheduler starts only after the WS is up: a job that fires before the
   // channel can deliver would produce an answer with nowhere to go.
   let scheduler: Scheduler | undefined;
@@ -875,7 +894,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     channel,
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
-      await worktreeCleanup?.stop();
+      await Promise.all([worktreeCleanup?.stop(), topicSessionRetention.stop()]);
       // Side by side: each gives its in-flight git a few seconds at most.
       await Promise.all([skillLibraries?.stop(), knowledgeAutoSync?.stop()]);
       controls.skillLibraries = undefined;
@@ -1590,6 +1609,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 
   const { execution, cwdRealpath: cwd } = flow;
+  // A reused app-server/Claude process need not emit another system event, so
+  // touch the existing resume pointers on every accepted turn.
+  const acceptedAt = Date.now();
+  sessions.touch(scope, acceptedAt);
+  sessionCatalog?.touchScope(scope, acceptedAt);
   // Written before the first token so a hard kill at any point after this
   // leaves a trace the next process can act on.
   const chatName = mode === 'p2p' ? undefined : controls.knownChats?.find(c => c.id === chatId)?.name;

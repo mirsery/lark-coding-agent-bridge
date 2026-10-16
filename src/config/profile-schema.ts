@@ -478,15 +478,20 @@ function normalizePreferences(
     access: _access,
     requireMentionInGroup: _mention,
     messageReply,
+    topicSessionRetentionMonths,
     ...rest
   } = preferences ?? {};
-  if (messageReply !== undefined && isMessageReply(messageReply)) {
-    return {
-      ...rest,
-      messageReply,
-    };
+  if (
+    topicSessionRetentionMonths !== undefined &&
+    (!Number.isSafeInteger(topicSessionRetentionMonths) || topicSessionRetentionMonths < 0)
+  ) {
+    throw new Error('preferences.topicSessionRetentionMonths must be a non-negative integer');
   }
-  return rest;
+  return {
+    ...rest,
+    ...(topicSessionRetentionMonths !== undefined ? { topicSessionRetentionMonths } : {}),
+    ...(messageReply !== undefined && isMessageReply(messageReply) ? { messageReply } : {}),
+  };
 }
 
 function isMessageReply(value: unknown): value is MessageReplyMode {

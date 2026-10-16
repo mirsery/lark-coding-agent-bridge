@@ -64,6 +64,7 @@ describe('profile-aware account and config commands', () => {
       auto_worktree_cleanup: 'on',
       dream: 'on',
       dream_auto: 'on',
+      topic_session_retention_months: '6',
       max_concurrent_runs: '7',
       run_idle_timeout_minutes: '15',
       require_mention_in_group: 'no',
@@ -83,6 +84,7 @@ describe('profile-aware account and config commands', () => {
       autoWorktreeCleanup: true,
       dream: true,
       dreamAuto: true,
+      topicSessionRetentionMonths: 6,
       maxConcurrentRuns: 7,
       runIdleTimeoutMinutes: 15,
     });
@@ -131,6 +133,19 @@ describe('profile-aware account and config commands', () => {
     await h.command('/config submit', { message_reply: 'text' });
     const root = await waitForRoot(h.rootDir, (candidate) => candidate.profiles.claude?.preferences.messageReply === 'text');
     expect(root.profiles.claude?.approvals?.enabled).toBe(true);
+  });
+
+  it('rejects a non-integer topic-session retention value', async () => {
+    vi.useFakeTimers();
+    const h = await createHarness();
+
+    await h.command('/config submit', { topic_session_retention_months: '1.5' });
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(h.channel.sent.length).toBeGreaterThan(0));
+
+    const root = await readRoot(h.rootDir);
+    expect(root.profiles.claude?.preferences.topicSessionRetentionMonths).toBeUndefined();
+    expect(JSON.stringify(h.channel.sent.at(-1)?.content)).toContain('必须是非负整数');
   });
 
   it('persists the picked model and clears it when "default" is chosen', async () => {

@@ -87,6 +87,7 @@ export function ConfigView({ profile }: { profile: string }) {
         messageReply: cfg.messageReply,
         showToolCalls: cfg.showToolCalls,
         smartSession: cfg.smartSession,
+        topicSessionRetentionMonths: cfg.topicSessionRetentionMonths,
         autoWorktreeCleanup: cfg.autoWorktreeCleanup,
         dream: cfg.dream,
         dreamAuto: cfg.dreamAuto,
@@ -170,6 +171,10 @@ export function ConfigView({ profile }: { profile: string }) {
             onChange={(v) => set("showToolCalls", v)} />
           <ToggleRow label="会话智能压缩" hint="空闲超 1 小时且上下文超 15 万 token，或空闲超 8 小时，下次消息自动开新会话；任务完成时可自动收尾，长会话提前压缩。旧会话可用 /resume 找回；后台任务运行中、进程保留期间或引用回复时不切换。阈值可在配置文件中调整。"
             checked={cfg.smartSession} onChange={(v) => set("smartSession", v)} />
+          <Field label="话题会话保留（月）" hint="按最近活动时间和自然月清理话题的 bridge 会话状态；0=永不。运行中、排队中和保留进程不会被清理。">
+            <Input type="number" min={0} step={1} value={cfg.topicSessionRetentionMonths}
+              onChange={(e) => set("topicSessionRetentionMonths", Number(e.target.value))} />
+          </Field>
           <ToggleRow label="Worktree 自动清理" hint="每小时检查 bridge 创建的 worktree；默认闲置 7 天、已合入主工作区且无会话引用才清理。改动、未跟踪/忽略文件、锁定目录会保留；只删除 bridge 新建的分支。天数可在配置文件调整。"
             checked={cfg.autoWorktreeCleanup} onChange={(v) => set("autoWorktreeCleanup", v)} />
           <ToggleRow label="梦境整理" hint="打开后可以手动触发（/dream run 或下方「梦境整理」卡片）：读取已结束的会话，只读整理出记忆、笔记和 skill 提案，在知识库和 skill 库开 Draft PR，合并前不生效。默认关闭。"

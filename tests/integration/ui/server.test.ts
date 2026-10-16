@@ -218,6 +218,21 @@ describe('ui server (supervisor-backed)', () => {
     expect(saved.profiles.claude.mode).toBe('team');
   });
 
+  it('round-trips topic-session retention and rejects invalid values', async () => {
+    const url = '/api/config?profile=claude';
+    expect((await json(await get(url, handle.token))).topicSessionRetentionMonths).toBe(3);
+    const saved = await json(await post(url, handle.token, { topicSessionRetentionMonths: 6 }));
+    expect(saved.topicSessionRetentionMonths).toBe(6);
+    expect(online.get('claude').cfg.preferences.topicSessionRetentionMonths).toBe(6);
+    expect((await loadRootConfig(configPath))!.profiles.claude!.preferences.topicSessionRetentionMonths).toBe(6);
+
+    for (const invalid of [-1, 1.5, '3']) {
+      const response = await post(url, handle.token, { topicSessionRetentionMonths: invalid });
+      expect(response.status).toBe(400);
+    }
+    expect((await json(await post(url, handle.token, { topicSessionRetentionMonths: 0 }))).topicSessionRetentionMonths).toBe(0);
+  });
+
   it('reads and writes an offline profile on disk (deferred, live=false)', async () => {
     const view = await json(await get('/api/config?profile=work', handle.token));
     expect(view.live).toBe(false);

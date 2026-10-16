@@ -19,6 +19,8 @@ export interface ConfigFormOpts {
   maxConcurrentRuns: number;
   /** 0 means "disabled". */
   runIdleTimeoutMinutes: number;
+  /** Whole calendar months; 0 keeps topic sessions forever. */
+  topicSessionRetentionMonths: number;
   requireMentionInGroup: boolean;
   larkCliIdentity: LarkCliIdentityPreset;
   /** Whether non-admins' side-effecting steps wait for an admin's approval (#6). */
@@ -385,6 +387,18 @@ export function configFormCard(opts: ConfigFormOpts): object {
               {
                 tag: 'markdown',
                 content:
+                  '**话题会话保留**（自然月，0=永不）\n<font color="grey">默认 3 个月；只清理闲置话题的 bridge 会话状态，不删飞书消息或 agent 原始历史。运行、排队和保留进程中的话题受保护</font>',
+              },
+              {
+                tag: 'input',
+                name: 'topic_session_retention_months',
+                default_value: String(opts.topicSessionRetentionMonths),
+                placeholder: { tag: 'plain_text', content: '3（0=永不）' },
+                input_type: 'text',
+              },
+              {
+                tag: 'markdown',
+                content:
                   '**群里需要 @ bot**\n<font color="grey">是=群内仅 @ 触发；否=群内任意消息都触发。私聊永远不需要 @，@全员 永远不响应</font>',
               },
               {
@@ -584,6 +598,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
         kvBlock('⚙️ **运行与权限**', [
           ['并发上限', String(opts.maxConcurrentRuns)],
           ['run 探活', opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'],
+          ['话题会话保留', opts.topicSessionRetentionMonths === 0 ? '永不' : `${opts.topicSessionRetentionMonths} 个月`],
           ['群里需要 @ bot', opts.requireMentionInGroup ? '是' : '否'],
           ['非管理员审批', opts.approvalsEnabled ? '开' : '关'],
           ['会话智能压缩', opts.smartSession ? '开' : '关'],

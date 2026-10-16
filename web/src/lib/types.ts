@@ -54,6 +54,7 @@ export interface ConfigView {
   messageReply: MessageReply;
   showToolCalls: boolean;
   smartSession: boolean;
+  topicSessionRetentionMonths: number;
   autoWorktreeCleanup: boolean;
   /** 梦境整理 switch (manual runs: /dream run or the dream card). */
   dream: boolean;

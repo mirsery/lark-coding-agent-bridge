@@ -199,6 +199,12 @@ export interface AppPreferences {
    * agent CLI is asked to auto-compact long sessions earlier. Default off.
    */
   smartSession?: boolean;
+  /**
+   * Remove inactive topic/thread resumable state after this many calendar
+   * months. Default 3; 0 keeps topic sessions forever. Lark messages and the
+   * agent CLI's native history are never deleted.
+   */
+  topicSessionRetentionMonths?: number;
   /** Clean idle, merged bridge-managed worktrees; default off. */
   autoWorktreeCleanup?: boolean;
   /** Minimum idle days before cleanup, 1–365, default 7. */
@@ -485,6 +491,12 @@ export function getSmartSession(cfg: AppConfig): SmartSessionSettings | undefine
     hardIdleMinutes: pick(tuning.hardIdleMinutes, 30, 30 * 24 * 60, SMART_SESSION_DEFAULTS.hardIdleMinutes),
     compactWindowTokens: pick(tuning.compactWindowTokens, 100_000, 2_000_000, SMART_SESSION_DEFAULTS.compactWindowTokens),
   };
+}
+
+/** Topic/thread session retention in whole calendar months. Default 3; 0 = never. */
+export function getTopicSessionRetentionMonths(cfg: AppConfig): number {
+  const raw = cfg.preferences?.topicSessionRetentionMonths;
+  return Number.isSafeInteger(raw) && (raw as number) >= 0 ? (raw as number) : 3;
 }
 
 /**
