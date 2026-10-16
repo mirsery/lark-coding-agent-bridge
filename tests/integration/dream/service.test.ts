@@ -83,6 +83,7 @@ interface HarnessOptions {
   quota?: () => Promise<QuotaReading | undefined>;
   openPrs?: () => number | undefined;
   busy?: () => boolean;
+  memoryScopeOf?: (scopeId: string) => string;
 }
 
 async function harness(opts: HarnessOptions = {}) {
@@ -161,6 +162,7 @@ async function harness(opts: HarnessOptions = {}) {
     profileConfig: () => profileConfig,
     isAdmin: (id) => id === 'ou-admin',
     isScopeBusy: () => false,
+    ...(opts.memoryScopeOf ? { memoryScopeOf: opts.memoryScopeOf } : {}),
     readTranscript: async (record) => {
       const exchanges = transcripts.get(record.handle);
       return exchanges ? { exchanges, lastActivityAt: NOW - HOUR } : undefined;
@@ -213,7 +215,7 @@ describe('DreamService', { timeout: TIMEOUT }, () => {
   it('turns finished chats into Draft PRs on both repositories and moves the cursors', async () => {
     const h = await harness();
     talk(h, 'sess-1');
-    talk(h, 'cron-sess', 'cron:daily');
+    talk(h, 'meeting-sess', 'meeting:daily');
 
     const started = await h.service.start({ id: 'ou-admin' });
     if ('error' in started) throw new Error(started.error);
@@ -225,7 +227,7 @@ describe('DreamService', { timeout: TIMEOUT }, () => {
       ['knowledge', 'pr-created'],
       ['skills:team', 'pr-created'],
     ]);
-    // one read-only run for the one chat scope; the cron scope is never read
+    // one read-only run for the one chat scope; the meeting scope is never read
     expect(h.submits).toHaveLength(1);
     expect(h.submits[0]).toMatchObject({ scopeId: expect.stringMatching(/^dream:/), nowait: true });
     expect(h.submits[0]!.policy).toMatchObject({ sandbox: 'read-only', permissionMode: 'plan', accessMode: 'read-only' });
@@ -254,6 +256,23 @@ describe('DreamService', { timeout: TIMEOUT }, () => {
     await h.service.idle();
     expect(h.submits).toHaveLength(1);
     expect(h.service.runs()[0]).toMatchObject({ status: 'succeeded', note: expect.stringContaining('没有新的') });
+  });
+
+  it('reads a scheduled job and files its chat memory under the chat the job belongs to', async () => {
+    const h = await harness({
+      answer: () => JSON.stringify({ memory: [{ action: 'add', target: 'chat', text: '周会经验一条', reason: 'r', sources: ['S1#1'] }] }),
+      memoryScopeOf: (scopeId) => (scopeId === 'cron:weekly' ? 'oc_team' : scopeId),
+    });
+    talk(h, 'cron-sess', 'cron:weekly');
+
+    await h.service.start({ id: 'ou-admin' });
+    await h.service.idle();
+    const run = h.service.runs()[0]!;
+
+    expect(run.status).toBe('succeeded');
+    expect(h.submits).toHaveLength(1);
+    expect(h.prompts[0]).toContain('本群周五发周报');
+    expect(await showFile(h.knowledgeRemote, `dream/${run.id}`, 'chats/oc_team.md')).toContain('周会经验一条');
   });
 
   it('keeps an unopened PR for a retry and opens it on the next run', async () => {

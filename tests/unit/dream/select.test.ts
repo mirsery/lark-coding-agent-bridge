@@ -32,10 +32,11 @@ function reader(map: Record<string, AgentTranscript | undefined>) {
 const settings = { ...DREAM_DEFAULTS };
 
 describe('isChatScope', () => {
-  it('excludes scheduled, meeting, comment and dream scopes', () => {
+  it('reads chats and scheduled jobs, excludes meeting, comment and dream scopes', () => {
     expect(isChatScope('oc_1')).toBe(true);
     expect(isChatScope('oc_1:omt_2')).toBe(true);
-    for (const scope of ['cron:job', 'meeting:1', 'comment:doc', 'dream:b:1', '']) expect(isChatScope(scope)).toBe(false);
+    expect(isChatScope('cron:job')).toBe(true);
+    for (const scope of ['meeting:1', 'comment:doc', 'dream:b:1', '']) expect(isChatScope(scope)).toBe(false);
   });
 });
 
@@ -57,7 +58,7 @@ describe('selectDreamInputs', () => {
     let reads = 0;
     const sel = await selectDreamInputs({
       records: [
-        record('cron', { scopeId: 'cron:daily' }),
+        record('meet', { scopeId: 'meeting:daily' }),
         record('old', { consumed: 2, consumedAt: NOW - HOUR, lastSeenAt: NOW - 2 * HOUR }),
       ],
       settings,
@@ -145,7 +146,7 @@ describe('measureNewInput', () => {
     const records = [
       record('a', { consumed: 1, consumedHash: exchangeHash(exchange(1)), consumedAt: NOW - 3 * HOUR, firstSeenAt: NOW - 50 * HOUR }),
       record('b', { firstSeenAt: NOW - 20 * HOUR }),
-      record('c', { scopeId: 'cron:daily' }),
+      record('c', { scopeId: 'meeting:daily' }),
       record('d', { consumed: 2, consumedHash: exchangeHash(exchange(2)), consumedAt: NOW - HOUR }),
     ];
     const read = reader({

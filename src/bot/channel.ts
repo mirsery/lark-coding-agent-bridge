@@ -118,6 +118,7 @@ import { getSkillSyncIntervalMinutes, SkillLibraries } from '../knowledge/librar
 import { KnowledgeStore } from '../knowledge/store';
 import { Scheduler } from '../scheduler/scheduler';
 import { DreamService } from '../dream/service';
+import { jobOriginScope } from '../scheduler/runner';
 import { JobStore } from '../scheduler/store';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
@@ -790,6 +791,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       profileConfig: () => controls.profileConfig,
       isAdmin: (senderId) => canRunAdminCommand(controls.profileConfig, controls, senderId).ok,
       isScopeBusy: (scopeId) => activeRuns.get(scopeId) !== undefined || activeRuns.isLingering(scopeId),
+      memoryScopeOf: (scopeId) => {
+        const job = scopeId.startsWith('cron:') ? jobs?.get(scopeId.slice('cron:'.length)) : undefined;
+        return job ? jobOriginScope(job) : scopeId;
+      },
       isProfileBusy: () =>
         activeRuns.scopes().some(notDream) ||
         activeRuns.lingeringScopes().some(notDream) ||

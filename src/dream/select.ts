@@ -41,8 +41,13 @@ export interface DreamSelection {
 export const USER_EXCERPT_CHARS = 3_000;
 export const ASSISTANT_EXCERPT_CHARS = 4_000;
 
-/** Scopes that are not chats: scheduled jobs, meetings, doc comments, dream runs. */
-const NON_CHAT_SCOPE = /^(?:cron|meeting|comment|dream):/;
+/**
+ * Scopes a dream never reads: meetings, doc comments, dream runs. Scheduled
+ * jobs (`cron:`) are read like chats — a job the owner set up (e.g. the weekly
+ * bot meeting) can end in lessons worth keeping, and it now runs under the
+ * bot's own identity instead of a trigger message sent in someone's name.
+ */
+const NON_CHAT_SCOPE = /^(?:meeting|comment|dream):/;
 
 export function isChatScope(scopeId: string): boolean {
   return scopeId.length > 0 && !NON_CHAT_SCOPE.test(scopeId);

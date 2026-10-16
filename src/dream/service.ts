@@ -115,6 +115,11 @@ export interface DreamServiceDeps {
   /** A run is in flight for this chat scope right now. */
   isScopeBusy: (scopeId: string) => boolean;
   /**
+   * The scope whose chat memory a conversation feeds — a scheduled job's
+   * `cron:<id>` maps to the chat it was created in. Absent or unknown: itself.
+   */
+  memoryScopeOf?: (scopeId: string) => string;
+  /**
    * Anything of the profile's own is running or waiting — a user turn, a
    * scheduled job, background work, queued messages. Dream runs don't count.
    * Absent: never busy.
@@ -654,8 +659,10 @@ export class DreamService {
         for (const session of scope.sessions) deferred.push({ key: session.record.key, reason: '超出本轮运行时间' });
         continue;
       }
-      const chatMemory = await this.deps.knowledge.listMemories({ kind: 'chat', scopeId: scope.scopeId });
-      const outcome = await this.proposeForScope(run.id, done.length, scope, {
+      const memoryScope = this.deps.memoryScopeOf?.(scope.scopeId) ?? scope.scopeId;
+      const target = memoryScope === scope.scopeId ? scope : { ...scope, scopeId: memoryScope };
+      const chatMemory = await this.deps.knowledge.listMemories({ kind: 'chat', scopeId: target.scopeId });
+      const outcome = await this.proposeForScope(run.id, done.length, target, {
         actor,
         profileMemory,
         chatMemory,

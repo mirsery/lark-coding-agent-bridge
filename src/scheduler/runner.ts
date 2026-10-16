@@ -36,6 +36,15 @@ export function jobScopeId(jobId: string): string {
 }
 
 /**
+ * The chat a job belongs to: where it was created and where its chat memory
+ * lives. A job reads that memory on every fire, and 梦境整理 files what it
+ * learns from the job's runs back there.
+ */
+export function jobOriginScope(job: Pick<ScheduledJob, 'chatId' | 'threadId'>): string {
+  return job.threadId ? `${job.chatId}:${job.threadId}` : job.chatId;
+}
+
+/**
  * Run one scheduled job end to end: re-check the creator's access, submit the
  * run, drain it, and deliver the result into the job's chat.
  *
@@ -265,7 +274,7 @@ async function buildJobPrompt(
   // Chat memory is keyed by the *originating* chat's scope, not the job's own
   // `cron:<id>` scope — the job should inherit what that conversation taught
   // the bot, which is where it was created.
-  const originScope = job.threadId ? `${job.chatId}:${job.threadId}` : job.chatId;
+  const originScope = jobOriginScope(job);
   const knowledge = store
     ? await buildKnowledgeContext({ store, scopeId: originScope }).catch(() => undefined)
     : undefined;
