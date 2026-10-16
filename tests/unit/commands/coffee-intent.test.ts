@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCoffeeRequest } from '../../../src/commands/coffee-intent';
+import { CoffeeLeadIns, parseCoffeeRequest } from '../../../src/commands/coffee-intent';
 
 const SELF = 'ou_bot_self';
 
@@ -46,5 +46,31 @@ describe('parseCoffeeRequest', () => {
   it('ignores messages that merely mention coffee', () => {
     expect(parseCoffeeRequest('喝咖啡吗', [], SELF)).toBeNull();
     expect(parseCoffeeRequest('咖啡因含量多少', [], SELF)).toBeNull();
+  });
+});
+
+describe('CoffeeLeadIns', () => {
+  const colleague = { recipients: [{ openId: 'ou_youbo', name: '游博' }] };
+
+  it('hands a fresh request to the follow-up once', () => {
+    const leadIns = new CoffeeLeadIns(60_000, () => 0);
+    leadIns.note('k', colleague);
+    expect(leadIns.take('k')).toEqual(colleague.recipients);
+    expect(leadIns.take('k')).toBeUndefined();
+  });
+
+  it('drops a request once the sender says something else', () => {
+    const leadIns = new CoffeeLeadIns(60_000, () => 0);
+    leadIns.note('k', colleague);
+    leadIns.note('k', null);
+    expect(leadIns.take('k')).toBeUndefined();
+  });
+
+  it('drops a stale request', () => {
+    let now = 0;
+    const leadIns = new CoffeeLeadIns(60_000, () => now);
+    leadIns.note('k', colleague);
+    now = 60_001;
+    expect(leadIns.take('k')).toBeUndefined();
   });
 });

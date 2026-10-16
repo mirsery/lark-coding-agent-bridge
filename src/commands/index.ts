@@ -1,4 +1,10 @@
-import { coffeeRecipients, parseCoffeeRequest, type CoffeeRecipient } from './coffee-intent';
+import {
+  coffeeLeadInKey,
+  coffeeLeadIns,
+  coffeeRecipients,
+  parseCoffeeRequest,
+  type CoffeeRecipient,
+} from './coffee-intent';
 import { coffeeLogoKey } from '../card/coffee-logo';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -357,10 +363,19 @@ function isAdminCommand(cmd: string): boolean {
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const trimmed = ctx.msg.content.trim();
   if (!trimmed.startsWith('/')) {
-    const coffee = parseCoffeeRequest(trimmed, ctx.msg.mentions, ctx.channel.botIdentity?.openId);
+    const selfOpenId = ctx.channel.botIdentity?.openId;
+    const coffee = parseCoffeeRequest(trimmed, ctx.msg.mentions, selfOpenId);
     if (coffee) {
       await sendCoffee(ctx, coffee.recipients);
       return true;
+    }
+    // A bare "@bot" right after the same person's unmentioned coffee request.
+    if (trimmed === '' && ctx.msg.mentionedBot && ctx.msg.resources.length === 0) {
+      const recipients = coffeeLeadIns.take(coffeeLeadInKey(ctx.scope, ctx.msg.senderId, selfOpenId));
+      if (recipients) {
+        await sendCoffee(ctx, recipients);
+        return true;
+      }
     }
     return false;
   }

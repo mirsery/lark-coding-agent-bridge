@@ -5,6 +5,7 @@ import { AutoResumer } from '../../../src/bot/auto-resume';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index.js';
+import { coffeeLeadInKey, coffeeLeadIns } from '../../../src/commands/coffee-intent.js';
 import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema.js';
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -22,6 +23,7 @@ interface RunOverrides {
   chatId?: string;
   chatMode?: CommandContext['chatMode'];
   mentions?: NormalizedMessage['mentions'];
+  mentionedBot?: boolean;
 }
 
 interface Harness {
@@ -53,6 +55,20 @@ describe('Bridge command contracts', () => {
     expect(await h.run('来杯咖啡')).toBe(true);
     expect(JSON.stringify(lastContent(h.channel).card)).not.toContain('<at ');
     expect(h.channel.sent).toHaveLength(2);
+  });
+
+  it('serves a coffee asked for without @bot once the same person follows up with a bare @bot', async () => {
+    const h = await createHarness();
+    const scope = 'chat-coffee-lead-in';
+    coffeeLeadIns.note(coffeeLeadInKey(scope, 'ou-admin', undefined), {
+      recipients: [{ openId: 'ou-colleague', name: '同事' }],
+    });
+    expect(await h.run('', { scope, senderId: 'ou-other', mentionedBot: true })).toBe(false);
+    expect(await h.run('', { scope, mentionedBot: true })).toBe(true);
+    expect(JSON.stringify(lastContent(h.channel).card)).toContain('<at id=ou-colleague></at> User请你喝一杯');
+    // Fires once: another bare @ goes to the agent.
+    expect(await h.run('', { scope, mentionedBot: true })).toBe(false);
+    expect(h.channel.sent).toHaveLength(1);
   });
 
   it('switches /cd to any existing non-risk working directory', async () => {
@@ -595,6 +611,7 @@ async function createHarness(): Promise<Harness> {
         chatId,
         senderId: overrides.senderId ?? 'ou-admin',
         mentions: overrides.mentions ?? [],
+        mentionedBot: overrides.mentionedBot ?? false,
       }),
       scope,
       chatMode: overrides.chatMode ?? 'p2p',
@@ -639,6 +656,7 @@ function message(
     chatId: string;
     senderId: string;
     mentions?: NormalizedMessage['mentions'];
+    mentionedBot?: boolean;
   },
 ): NormalizedMessage {
   return {
@@ -650,7 +668,7 @@ function message(
     content,
     resources: [],
     mentions: opts.mentions ?? [],
-    mentionedBot: false,
+    mentionedBot: opts.mentionedBot ?? false,
   } as unknown as NormalizedMessage;
 }
 

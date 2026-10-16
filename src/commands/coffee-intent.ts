@@ -53,3 +53,47 @@ export function coffeeRecipients(
   }
   return recipients;
 }
+
+/**
+ * How long a coffee request that didn't @ the bot waits for a bare "@bot"
+ * follow-up from the same person.
+ */
+export const COFFEE_LEAD_IN_TTL_MS = 2 * 60_000;
+
+/**
+ * Coffee requests that skipped the bot, kept until the same person follows up.
+ * In a group that only answers @-mentions, "给 @同事 来杯咖啡" and a separate
+ * bare "@bot" arrive as two messages: the first is dropped for not mentioning
+ * the bot, the second has no text, so neither matched and the bare @ went to
+ * the agent. The request is remembered per scope and sender; any other
+ * unmentioned message from that sender replaces or clears it, so a bare @ only
+ * picks up a request that was the sender's latest word.
+ */
+export class CoffeeLeadIns {
+  private readonly pending = new Map<string, { recipients: CoffeeRecipient[]; at: number }>();
+
+  constructor(
+    private readonly ttlMs: number = COFFEE_LEAD_IN_TTL_MS,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** Record (or clear) what an unmentioned message from this sender asked for. */
+  note(key: string, request: CoffeeRequest | null): void {
+    if (request) this.pending.set(key, { recipients: request.recipients, at: this.now() });
+    else this.pending.delete(key);
+  }
+
+  /** The recipients of a still-fresh request, consumed so it fires once. */
+  take(key: string): CoffeeRecipient[] | undefined {
+    const entry = this.pending.get(key);
+    this.pending.delete(key);
+    if (!entry || this.now() - entry.at > this.ttlMs) return undefined;
+    return entry.recipients;
+  }
+}
+
+export const coffeeLeadIns = new CoffeeLeadIns();
+
+export function coffeeLeadInKey(scope: string, senderId: string, selfOpenId: string | undefined): string {
+  return `${selfOpenId ?? ''}|${scope}|${senderId}`;
+}

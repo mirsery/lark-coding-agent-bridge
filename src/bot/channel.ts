@@ -42,6 +42,7 @@ import {
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
+import { coffeeLeadInKey, coffeeLeadIns, parseCoffeeRequest } from '../commands/coffee-intent';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
@@ -1146,6 +1147,10 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     requireMentionForChat(controls.profileConfig, controls.cfg, msg.chatId) &&
     !msg.mentionedBot
   ) {
+    coffeeLeadIns.note(
+      coffeeLeadInKey(scope, msg.senderId, channel.botIdentity?.openId),
+      parseCoffeeRequest(msg.content.trim(), msg.mentions, channel.botIdentity?.openId),
+    );
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
     return;
   }
