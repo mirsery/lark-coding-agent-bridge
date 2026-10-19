@@ -85,6 +85,12 @@ export async function runScheduledJob(
 
   const capability = agentCapability(deps.controls.profileConfig);
 
+  // A job a knowledge library names (the weekly meeting) gets that library's
+  // write window before its prompt is built, so the knowledge block carries
+  // the work clone.
+  const writable = (await deps.controls.knowledgeLibraries?.openForJob(job.id)) ?? [];
+  if (writable.length > 0) log.info('scheduler', 'job-knowledge-write', { jobId: job.id, libraries: writable });
+
   const flow = await startRunFlow({
     scopeId,
     scope: {

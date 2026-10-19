@@ -115,6 +115,7 @@ import { reportInterruptedRuns } from './interrupted-notice';
 import { RunRegistry } from '../runtime/run-registry';
 import { buildKnowledgeContext } from '../knowledge/inject';
 import { getKnowledgeSyncIntervalMinutes, KnowledgeAutoSync } from '../knowledge/auto-sync';
+import { KnowledgeLibraries } from '../knowledge/knowledge-libraries';
 import { getSkillSyncIntervalMinutes, SkillLibraries } from '../knowledge/libraries';
 import { KnowledgeStore } from '../knowledge/store';
 import { Scheduler } from '../scheduler/scheduler';
@@ -291,7 +292,12 @@ export interface StartChannelDeps {
     Partial<
       Pick<
         AppPaths,
-        'rotationsFile' | 'contextCursorsFile' | 'skillLibrariesDir' | 'userLockDir' | 'autoResumeFile'
+        | 'rotationsFile'
+        | 'contextCursorsFile'
+        | 'skillLibrariesDir'
+        | 'knowledgeLibrariesDir'
+        | 'userLockDir'
+        | 'autoResumeFile'
       >
     >;
 }
@@ -339,6 +345,20 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     controls.skillLibraries = skillLibraries;
     knowledge?.addSkillSource(skillLibraries);
     skillLibraries.startAutoSync(() => getSkillSyncIntervalMinutes(controls.profileConfig.skills));
+  }
+  // Subscribed knowledge repositories (`/knowledge lib`): read-only mirrors
+  // indexed into every run, pulled on the knowledge repo's interval, writable
+  // through their work clone only while a write window is open.
+  const knowledgeLibraries = deps.appPaths?.knowledgeLibrariesDir
+    ? new KnowledgeLibraries({
+        dir: deps.appPaths.knowledgeLibrariesDir,
+        libraries: () => controls.profileConfig.knowledge?.libraries ?? [],
+      })
+    : undefined;
+  if (knowledgeLibraries) {
+    controls.knowledgeLibraries = knowledgeLibraries;
+    knowledge?.setLibrarySource(knowledgeLibraries);
+    knowledgeLibraries.startAutoSync(() => getKnowledgeSyncIntervalMinutes(controls.profileConfig.knowledge));
   }
   // Scheduled jobs (`/cron`). Absent only in tests that omit appPaths — the
   // bridge then simply has no scheduler, and `/cron` says so.
@@ -895,8 +915,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       activeRuns.pauseNewRuns('bridge-disconnect');
       await Promise.all([worktreeCleanup?.stop(), topicSessionRetention.stop()]);
       // Side by side: each gives its in-flight git a few seconds at most.
-      await Promise.all([skillLibraries?.stop(), knowledgeAutoSync?.stop()]);
+      await Promise.all([skillLibraries?.stop(), knowledgeAutoSync?.stop(), knowledgeLibraries?.stop()]);
       controls.skillLibraries = undefined;
+      controls.knowledgeLibraries = undefined;
+      knowledge?.setLibrarySource(undefined);
       controls.knowledgeAutoSync = undefined;
       ownerRefresh.stop();
       knownChatsRefresh.stop();

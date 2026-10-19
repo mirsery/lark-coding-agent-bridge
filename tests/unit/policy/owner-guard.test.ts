@@ -62,6 +62,11 @@ describe('guest runs: owner-only areas', () => {
     ['cd then write', 'cd ~/.claude/skills/x && echo hi > SKILL.md'],
     ['writing into a skill library', 'echo x >> ~/.lark-channel/profiles/claude/skill-libraries/lib/skills/x/SKILL.md'],
     ['deleting a skill library', 'rm -rf ~/.lark-channel/profiles/claude/skill-libraries/lib'],
+    ['writing into a knowledge library mirror', 'echo x >> ~/.lark-channel/profiles/claude/knowledge-libraries/dept/shared/a.md'],
+    ['committing in a knowledge library mirror', 'git -C ~/.lark-channel/profiles/claude/knowledge-libraries/dept commit -am x'],
+    ['reading a knowledge library work clone', 'cat ~/.lark-channel/profiles/claude/knowledge-libraries/dept.work/bots/cc/a.md'],
+    ['pushing from a knowledge library work clone', 'cd ~/.lark-channel/profiles/claude/knowledge-libraries/dept.work && git push'],
+    ['opening a write window by hand', 'echo {} > ~/.lark-channel/profiles/claude/knowledge-libraries/dept.window.json'],
     ['reading other bridge data', 'cat ~/.lark-channel/profiles/claude/sessions.json'],
   ])('refuses %s', (_label, command) => {
     const res = bash(command);
@@ -73,6 +78,15 @@ describe('guest runs: owner-only areas', () => {
     expect(hook('Edit', { file_path: `${HOME}/.claude/skills/x/SKILL.md` }).code).toBe(2);
     expect(hook('Write', { file_path: `${LC}/profiles/claude/skill-libraries/lib/skills/x/SKILL.md` }).code).toBe(2);
     expect(hook('Read', { file_path: `${LC}/profiles/claude/skill-libraries/lib/skills/x/SKILL.md` }).code).toBe(0);
+  });
+
+  it('lets a knowledge library mirror be read but not edited, and keeps the work clone out of reach', () => {
+    const mirror = `${LC}/profiles/claude/knowledge-libraries/dept/shared/experience/a.md`;
+    expect(hook('Read', { file_path: mirror }).code).toBe(0);
+    expect(hook('Grep', { path: `${LC}/profiles/claude/knowledge-libraries/dept/shared` }).code).toBe(0);
+    expect(hook('Edit', { file_path: mirror }).code).toBe(2);
+    expect(hook('Read', { file_path: `${LC}/profiles/claude/knowledge-libraries/dept.work/bots/cc/a.md` }).code).toBe(2);
+    expect(hook('Write', { file_path: `${LC}/profiles/claude/knowledge-libraries/dept.window.json` }).code).toBe(2);
   });
 });
 
@@ -99,6 +113,8 @@ describe('guest runs: file scope', () => {
     ['running a skill script', 'python3 ~/.claude/skills/alphaess-tcpdump/scripts/capture.py --sn AL1 > /tmp/out.txt'],
     ['reading an attachment', 'file ~/.lark-channel/profiles/claude/media/abc.jpg'],
     ['reading a shared skill library', 'cat ~/.lark-channel/profiles/claude/skill-libraries/lib/skills/x/SKILL.md'],
+    ['reading a knowledge library mirror', 'cat ~/.lark-channel/profiles/claude/knowledge-libraries/dept/shared/pitfalls/a.md'],
+    ['browsing a knowledge library mirror with git', 'git -C ~/.lark-channel/profiles/claude/knowledge-libraries/dept log -3'],
     ['running a library skill script', 'python3 ~/.lark-channel/profiles/claude/skill-libraries/lib/skills/x/scripts/run.py AL1 > /tmp/out.json'],
     ['copying an attachment out', 'cp ~/.lark-channel/profiles/claude/media/abc.jpg /tmp/abc.jpg'],
     ['a tool on PATH dir', '~/.local/bin/alphaq-tool diagnose AL1'],

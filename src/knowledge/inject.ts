@@ -1,3 +1,4 @@
+import type { LibraryEntry, LibraryWriteTarget } from './knowledge-libraries';
 import type { KnowledgeStore, MemoryEntry, SkillSummary } from './store';
 
 export interface KnowledgeContext {
@@ -7,6 +8,10 @@ export interface KnowledgeContext {
   chatMemory?: string[];
   /** Index only — the agent reads a skill's body itself when it needs it. */
   skills?: SkillRef[];
+  /** Index of the subscribed knowledge libraries (a department's shared repository…). */
+  libraryKnowledge?: LibraryEntryRef[];
+  /** Libraries the agent may commit to right now — only while a write window is open. */
+  libraryWrite?: LibraryWriteRef[];
   /** Set when notes were dropped to stay inside the budget. */
   truncated?: boolean;
 }
@@ -28,6 +33,30 @@ export interface SkillRef {
   external?: true;
 }
 
+export interface LibraryEntryRef {
+  library: string;
+  path: string;
+  title: string;
+  summary: string;
+  /** Under `shared/`: the library's reviewed conclusions. */
+  authoritative?: true;
+  /** In this bot's own directory of the library. */
+  own?: true;
+  /** Another bot's notes: for reference only. */
+  personal?: true;
+}
+
+export interface LibraryWriteRef {
+  library: string;
+  /** Clone to commit and push in. */
+  work: string;
+  /** Directory the default branch accepts changes in. */
+  self: string;
+  branch: string;
+  /** When the window closes, ISO 8601. */
+  until: string;
+}
+
 const DEFAULT_MAX_CHARS = 6000;
 const MAX_SKILLS = 80;
 /**
@@ -37,6 +66,9 @@ const MAX_SKILLS = 80;
  */
 const MAX_DESCRIPTION_CHARS = 240;
 const SKILL_INDEX_MAX_CHARS = 16_000;
+/** Entries arrive shared first, other bots' notes last, so those are what the budget drops. */
+const MAX_LIBRARY_ENTRIES = 120;
+const LIBRARY_INDEX_MAX_CHARS = 8000;
 
 /**
  * Assemble what the agent should know before answering, or `undefined` when
@@ -49,18 +81,25 @@ const SKILL_INDEX_MAX_CHARS = 16_000;
 export async function buildKnowledgeContext(
   input: BuildKnowledgeContextInput,
 ): Promise<KnowledgeContext | undefined> {
-  const [profile, chat, skills] = await Promise.all([
+  const [profile, chat, skills, entries, targets] = await Promise.all([
     input.store.listMemories({ kind: 'profile' }),
     input.store.listMemories({ kind: 'chat', scopeId: input.scopeId }),
     input.store.listSkills(),
+    // A library that cannot be read must not cost the run its own memory.
+    input.store.listLibraryEntries().catch((): LibraryEntry[] => []),
+    input.store.libraryWriteTargets().catch((): LibraryWriteTarget[] => []),
   ]);
 
   const budgeted = applyBudget(profile, chat, input.maxChars ?? DEFAULT_MAX_CHARS);
   const trimmedSkills = budgetSkills(skills.slice(0, MAX_SKILLS).map(toSkillRef));
+  const libraryKnowledge = budgetLibraryEntries(entries.slice(0, MAX_LIBRARY_ENTRIES).map(toLibraryEntryRef));
+  const libraryWrite = targets.map(toLibraryWriteRef);
   if (
     budgeted.profile.length === 0 &&
     budgeted.chat.length === 0 &&
-    trimmedSkills.length === 0
+    trimmedSkills.length === 0 &&
+    libraryKnowledge.length === 0 &&
+    libraryWrite.length === 0
   ) {
     return undefined;
   }
@@ -69,8 +108,46 @@ export async function buildKnowledgeContext(
     ...(budgeted.profile.length > 0 ? { profileMemory: budgeted.profile } : {}),
     ...(budgeted.chat.length > 0 ? { chatMemory: budgeted.chat } : {}),
     ...(trimmedSkills.length > 0 ? { skills: trimmedSkills } : {}),
-    ...(budgeted.truncated || skills.length > trimmedSkills.length ? { truncated: true } : {}),
+    ...(libraryKnowledge.length > 0 ? { libraryKnowledge } : {}),
+    ...(libraryWrite.length > 0 ? { libraryWrite } : {}),
+    ...(budgeted.truncated || skills.length > trimmedSkills.length || entries.length > libraryKnowledge.length
+      ? { truncated: true }
+      : {}),
   };
+}
+
+function toLibraryEntryRef(entry: LibraryEntry): LibraryEntryRef {
+  return {
+    library: entry.library,
+    path: entry.path,
+    title: entry.title,
+    summary: entry.summary,
+    ...(entry.kind === 'shared' ? { authoritative: true as const } : {}),
+    ...(entry.kind === 'own' ? { own: true as const } : {}),
+    ...(entry.kind === 'personal' ? { personal: true as const } : {}),
+  };
+}
+
+function toLibraryWriteRef(target: LibraryWriteTarget): LibraryWriteRef {
+  return {
+    library: target.library,
+    work: target.work,
+    self: `${target.self}/`,
+    branch: target.defaultBranch,
+    until: new Date(target.until).toISOString(),
+  };
+}
+
+function budgetLibraryEntries(entries: LibraryEntryRef[]): LibraryEntryRef[] {
+  const kept: LibraryEntryRef[] = [];
+  let used = 0;
+  for (const entry of entries) {
+    const size = entry.library.length + entry.path.length + entry.title.length + entry.summary.length;
+    if (used + size > LIBRARY_INDEX_MAX_CHARS) break;
+    kept.push(entry);
+    used += size;
+  }
+  return kept;
 }
 
 function toSkillRef(skill: SkillSummary): SkillRef {

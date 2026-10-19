@@ -30,6 +30,8 @@ export interface AppPaths {
   knowledgeDir: string;
   /** Read-only mirrors of the profile's shared skill libraries, one per directory. */
   skillLibrariesDir: string;
+  /** Mirrors (and write-window clones) of `knowledge.libraries`. */
+  knowledgeLibrariesDir: string;
   /** Scheduled jobs (`/cron`), one file per profile. */
   jobsFile: string;
   /** Tasks waiting to be resumed (quota reset, task-ledger interruptions). */
@@ -85,6 +87,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     auditFile: join(profileDir, 'audit.jsonl'),
     knowledgeDir: join(profileDir, 'knowledge'),
     skillLibrariesDir: join(profileDir, 'skill-libraries'),
+    knowledgeLibrariesDir: join(profileDir, 'knowledge-libraries'),
     jobsFile: join(profileDir, 'jobs.json'),
     autoResumeFile: join(profileDir, 'auto-resume.json'),
     secretsFile: join(profileDir, 'secrets.enc'),

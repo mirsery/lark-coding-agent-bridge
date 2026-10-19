@@ -307,6 +307,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/memory [add\|forget\|clear]` | Cross-session memory; `--global` writes profile-wide |
 | `/skills [show <name>]` | The skill index the agent reads on demand |
 | `/knowledge [bind\|sync\|unbind]` | Git sync for memory and skills |
+| `/knowledge lib [add\|sync\|write\|rm]` | Subscribe to other knowledge repositories; writable only in a write window (owner only) |
 | `/dream [run\|cancel\|prs\|diff\|revert]` | Dream consolidation: turn finished conversations into memory / skill Draft PRs (admins, DM only) |
 | `/diff [staged\|<ref>]` | Show the working tree's changes, with the full patch attached when long |
 | `/worktree [add\|use\|remove]` | Manage task worktrees; the session follows the new one |
@@ -426,6 +427,36 @@ Mirrors live in `~/.lark-channel/profiles/<profile>/skill-libraries/<name>/`. Ea
 
 The Skill libraries card on the Web console's Configuration page does the same: it lists libraries grouped into your own and third-party ones with each one's commit, last sync and loaded skills (shadowed ones struck through) plus, for third-party ones, the upstream difference, and can add a library (saved only after the pull succeeds; tick "third-party" for `--external`), sync one or all, update a third-party one, remove one and change the interval. Pulls and mirror removal run on the spot; config changes apply at once for profiles the console hosts, and on the next restart for profiles hosted by another process — if such a process re-pulls a removed library before then, the mirror is swept at its start-up because the config no longer lists it.
 
+
+### Subscribed knowledge libraries (a department's shared repository…)
+
+Besides its own knowledge directory, a profile can subscribe to knowledge repositories other people maintain. The bridge keeps a read-only mirror of each, follows the remote, and puts the title and first sentence of the selected Markdown files into every run's index (`libraryKnowledge` in `<bridge_knowledge>`); bodies are read on demand.
+
+```text
+/knowledge lib                                           # subscribed libraries, pull state, write windows (also on the /knowledge card)
+/knowledge lib add <git-url> [name] [--read glob,glob] [--self dir] [--ref branch]
+/knowledge lib sync [name]                               # pull now
+/knowledge lib write <name> [minutes]                    # open the write window (default 120 minutes); `off` closes it
+/knowledge lib write <name> job <job id>                 # open it whenever this scheduled job (the weekly bot meeting) runs; again to undo
+/knowledge lib rm <name>                                 # unsubscribe, deleting the mirror and work clone
+```
+
+- **Index**: `--read` globs pick the files (`*` within a directory, `**` across; default every `.md`, repository docs such as README excluded). Entries under `shared/` are `authoritative`, those under the bot's own directory (`--self`) `own`, those in sibling directories (other bots') `personal`. Precedence: chat memory > profile memory > authoritative > others > personal notes; the index has its own budget and drops personal notes first.
+- **Read-only**: a mirror's push URL leads nowhere and every sync resets it to the remote. Guest runs may read mirrors, never write them.
+- **Write window**: a library with `--self` is read-only too, except while a window is open (for three hours after a bound job fires, or after the owner ran `/knowledge lib write`). Then the bridge prepares a writable clone in `knowledge-libraries/<name>.work/` and lists it under `libraryWrite`. The agent commits and pushes there with plain git; hooks refuse anything outside the window, anything but the bot's own directory on the default branch (shared directories go through a branch and a Draft PR), content or messages that look like credentials, SNs, IPs, e-mail addresses, ticket numbers or internal host names, and AI attribution in commit messages. Closing the window deletes the clone unless it holds unpushed work.
+- **Permissions**: `/knowledge lib` is for the bot owner only (not admins).
+- **Config**: the profile's `knowledge` section; libraries pull on the same `syncIntervalMinutes` as the knowledge directory:
+
+```json
+"knowledge": {
+  "syncIntervalMinutes": 30,
+  "libraries": [
+    { "name": "dept-kb", "url": "git@github.com:dept/kb.git", "read": ["shared/**", "bots/*/notes/**"], "write": { "self": "bots/cc", "jobs": ["<job id>"] } }
+  ]
+}
+```
+
+Dream consolidation never writes to these libraries.
 
 ### Dream consolidation (梦境整理, off by default)
 
@@ -606,6 +637,7 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
 | `~/.lark-channel/profiles/<profile>/knowledge/` | Memory and skills (optionally a git repo) |
 | `~/.lark-channel/profiles/<profile>/skill-libraries/` | Read-only mirrors of shared skill libraries (`/skills lib`) |
+| `~/.lark-channel/profiles/<profile>/knowledge-libraries/` | Read-only mirrors of subscribed knowledge libraries, and work clones while a write window is open (`/knowledge lib`) |
 | `~/.lark-channel/profiles/<profile>/jobs.json` | Scheduled jobs (`/cron`) |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |

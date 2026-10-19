@@ -8,6 +8,7 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema.j
 import { loadRootConfig, saveRootConfig } from '../../../src/config/profile-store.js';
 import { git } from '../../../src/git/exec.js';
 import { KnowledgeAutoSync } from '../../../src/knowledge/auto-sync.js';
+import { KnowledgeLibraries } from '../../../src/knowledge/knowledge-libraries.js';
 import { SkillLibraries } from '../../../src/knowledge/libraries.js';
 import { KnowledgeStore } from '../../../src/knowledge/store.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -18,7 +19,9 @@ import { createTmpProfile } from '../../helpers/tmp-profile.js';
 
 const cleanups: Array<() => Promise<void>> = [];
 
-async function createHarness(opts: { withKnowledge?: boolean; withLibraries?: boolean } = {}) {
+async function createHarness(
+  opts: { withKnowledge?: boolean; withLibraries?: boolean; withKnowledgeLibraries?: boolean } = {},
+) {
   const tmp = await createTmpProfile('knowledge-command-');
   const channel = createFakeChannel();
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
@@ -50,7 +53,7 @@ async function createHarness(opts: { withKnowledge?: boolean; withLibraries?: bo
   } as unknown as Controls;
 
   let libraries: SkillLibraries | undefined;
-  if (opts.withLibraries) {
+  if (opts.withLibraries || opts.withKnowledgeLibraries) {
     // `/skills lib add|rm` persist through the profile (v2) config file.
     await saveRootConfig(
       { schemaVersion: 2, activeProfile: 'claude', preferences: {}, profiles: { claude: profileConfig } },
@@ -62,6 +65,15 @@ async function createHarness(opts: { withKnowledge?: boolean; withLibraries?: bo
     });
     store.addSkillSource(libraries);
     controls.skillLibraries = libraries;
+  }
+  let knowledgeLibraries: KnowledgeLibraries | undefined;
+  if (opts.withKnowledgeLibraries) {
+    knowledgeLibraries = new KnowledgeLibraries({
+      dir: join(tmp.profile, 'knowledge-libraries'),
+      libraries: () => controls.profileConfig.knowledge?.libraries ?? [],
+    });
+    store.setLibrarySource(knowledgeLibraries);
+    controls.knowledgeLibraries = knowledgeLibraries;
   }
 
   const run = (content: string, senderId = 'ou-admin'): Promise<boolean> =>
@@ -92,7 +104,7 @@ async function createHarness(opts: { withKnowledge?: boolean; withLibraries?: bo
     await tmp.cleanup();
   });
 
-  return { tmp, channel, store, run, controls, libraries };
+  return { tmp, channel, store, run, controls, libraries, knowledgeLibraries };
 }
 
 function lastMarkdown(channel: FakeChannel): string {
@@ -409,5 +421,79 @@ describe('/skills lib', () => {
     // Listing what got loaded stays open to everyone.
     await expect(h.run('/skills', 'ou-member')).resolves.toBe(true);
     expect(lastCardJson(h.channel)).toContain('Skills');
+  });
+});
+
+describe('/knowledge lib', () => {
+  afterEach(async () => {
+    await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  });
+
+  async function departmentRepo(root: string): Promise<string> {
+    const repo = join(root, 'dept-kb');
+    await mkdir(join(repo, 'shared', 'pitfalls'), { recursive: true });
+    await mkdir(join(repo, 'bots', 'cc', 'notes'), { recursive: true });
+    await git(repo, ['init', '-q', '--initial-branch=main']);
+    await writeFile(join(repo, 'shared', 'pitfalls', 'a.md'), '# 公共的坑\n\n做法。\n');
+    await writeFile(join(repo, 'bots', 'cc', 'notes', 'b.md'), '# 自己的笔记\n\n做法。\n');
+    await git(repo, ['add', '-A']);
+    const commit = await git(repo, ['-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'init']);
+    if (!commit.ok) throw new Error(commit.stderr);
+    return repo;
+  }
+
+  it('subscribes, shows, opens a write window, binds a job and unsubscribes', async () => {
+    const h = await createHarness({ withKnowledgeLibraries: true });
+    const repo = await departmentRepo(h.tmp.root);
+
+    await expect(h.run(`/knowledge lib add ${repo} dept --read shared/**,bots/*/notes/** --self bots/cc/`, 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已订阅知识库 `dept`');
+    expect(lastMarkdown(h.channel)).toContain('索引 2 条');
+    const saved = await loadRootConfig(h.controls.configPath);
+    expect(saved?.profiles.claude?.knowledge?.libraries).toEqual([
+      { name: 'dept', url: repo, read: ['shared/**', 'bots/*/notes/**'], write: { self: 'bots/cc' } },
+    ]);
+
+    await expect(h.run('/knowledge', 'ou-owner')).resolves.toBe(true);
+    expect(lastCardJson(h.channel)).toContain('dept');
+    expect(lastCardJson(h.channel)).toContain('写入窗口关闭');
+
+    await expect(h.run('/knowledge lib write dept 30', 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('写入窗口开到');
+    expect((await h.knowledgeLibraries!.writeTargets()).map((target) => target.library)).toEqual(['dept']);
+    await expect(h.run('/knowledge lib write dept off', 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已关闭');
+    expect(await h.knowledgeLibraries!.writeTargets()).toEqual([]);
+
+    // Unbinding a job that is no longer scheduled still works; binding needs a real one.
+    await expect(h.run('/knowledge lib write dept job nope', 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('没有 id 为');
+
+    await expect(h.run('/knowledge lib rm dept', 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已取消订阅');
+    expect((await loadRootConfig(h.controls.configPath))?.profiles.claude?.knowledge?.libraries).toBeUndefined();
+    expect(await h.store.listLibraryEntries()).toEqual([]);
+  });
+
+  it('is for the bot owner only, admins included', async () => {
+    const h = await createHarness({ withKnowledgeLibraries: true });
+    const repo = await departmentRepo(h.tmp.root);
+
+    await expect(h.run(`/knowledge lib add ${repo}`, 'ou-admin')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('仅限 bot 主人');
+    expect(h.controls.profileConfig.knowledge).toBeUndefined();
+  });
+
+  it('rejects bad arguments before fetching anything', async () => {
+    const h = await createHarness({ withKnowledgeLibraries: true });
+
+    await expect(h.run('/knowledge lib add not-a-url', 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('不像 git 仓库地址');
+    await expect(h.run('/knowledge lib add /srv/x --self ../../etc', 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('不合法');
+    await expect(h.run('/knowledge lib add /srv/x kb.work', 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('不可用');
+    await expect(h.run(`/knowledge lib add ${join(h.tmp.root, 'missing')} gone`, 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('拉取 `gone` 失败');
   });
 });

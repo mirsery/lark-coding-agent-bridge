@@ -317,6 +317,7 @@ export function helpCard(agentName = 'Agent'): object {
           '`/skills [show <名字>]` — skill 索引，agent 按需读取正文',
           '`/skills lib [add|sync|update|rm]` — 共享 skill 库（git 仓库，管理员；`--external` 加第三方库）',
           '`/knowledge [bind|sync]` — 记忆与 skill 的 git 同步，绑定后定时自动同步',
+          '`/knowledge lib` — 订阅部门共享等其他知识库，周会时才可写（仅 bot 主人）',
           '`/dream [run|cancel|prs|diff|revert]` — 梦境整理：把已结束的会话整理成待审核的 Draft PR，可撤销已合并的批次（管理员私聊）',
         ]),
         helpSection('green-50', '🧪 联调', [
@@ -831,6 +832,43 @@ export interface KnowledgeStatusView {
     /** Failed automatic rounds in a row, when more than one. */
     failures?: number;
   };
+  /** Subscribed knowledge repositories (`/knowledge lib`). */
+  libraries?: KnowledgeLibraryView[];
+}
+
+export interface KnowledgeLibraryView {
+  name: string;
+  /** Display-safe: credentials already masked. */
+  url: string;
+  present: boolean;
+  commit?: string;
+  /** Preformatted, e.g. "3m 前". */
+  lastSyncAgo?: string;
+  lastError?: string;
+  entries: number;
+  /** `bots/cc`; absent: read-only. */
+  self?: string;
+  /** Preformatted close time of an open write window. */
+  windowUntil?: string;
+  weekCommits?: number;
+  jobs?: string[];
+}
+
+function knowledgeLibraryLines(library: KnowledgeLibraryView): string[] {
+  const state = !library.present
+    ? "<font color='grey'>还没拉取</font>"
+    : `\`${escapeCode(library.commit ?? '?')}\` · 索引 ${library.entries} 条${library.lastSyncAgo ? ` · ${library.lastSyncAgo}同步` : ''}`;
+  const lines = [`📖 **${escapeMd(library.name)}**：${state}`, `<font color='grey'>${escapeMd(library.url)}</font>`];
+  if (library.lastError) lines.push(`<font color='red'>❌ 上次拉取失败：${escapeMd(library.lastError)}</font>`);
+  if (!library.self) {
+    lines.push("<font color='grey'>只读（没配 `write.self`）</font>");
+    return lines;
+  }
+  const window = library.windowUntil ? `写入窗口开到 ${library.windowUntil}` : '写入窗口关闭';
+  const week = library.weekCommits !== undefined ? ` · 本周已写入 ${library.weekCommits} 次` : '';
+  const jobs = library.jobs?.length ? ` · 定时任务 ${library.jobs.map((job) => `\`${escapeCode(job)}\``).join('、')} 运行时开放` : '';
+  lines.push(`✍️ \`${escapeCode(library.self)}/\` · ${window}${week}${jobs}`);
+  return lines;
 }
 
 export function knowledgeCard(view: KnowledgeStatusView): object {
@@ -864,9 +902,13 @@ export function knowledgeCard(view: KnowledgeStatusView): object {
     lines.push("🔗 **远端**：<font color='grey'>未绑定，用 `/knowledge bind <仓库地址>` 开启同步</font>");
   }
 
+  const libraries = view.libraries?.length
+    ? [divMd(view.libraries.flatMap(knowledgeLibraryLines).join('\n')), HR]
+    : [];
   return shell('\u{1f4da} 知识库', [
     divMd(lines.join('\n')),
     HR,
+    ...libraries,
     actions([
       { text: '同步', value: { cmd: 'knowledge.sync' }, style: 'primary' },
       { text: '记忆', value: { cmd: 'memory' } },

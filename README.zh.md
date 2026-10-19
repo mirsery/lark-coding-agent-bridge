@@ -308,6 +308,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/memory [add\|forget\|clear]` | 跨会话记忆，`--global` 写到全局 |
 | `/skills [show <名字>]` | agent 按需读取的 skill 索引 |
 | `/knowledge [bind\|sync\|unbind]` | 记忆与 skill 的 git 同步 |
+| `/knowledge lib [add\|sync\|write\|rm]` | 订阅其他知识库（部门共享库等），周会时可写（仅 bot 主人） |
 | `/dream [run\|cancel\|prs\|diff\|revert]` | 梦境整理：把已结束的会话整理成记忆 / skill 的 Draft PR（管理员私聊） |
 | `/diff [staged\|<ref>]` | 查看工作目录的改动，patch 过长时附带完整文件 |
 | `/worktree [add\|use\|remove]` | 管理任务级 worktree，会话自动跟着切 |
@@ -427,6 +428,41 @@ Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两�
 
 也可以在 Web 控制台「配置」页的「Skill 库」卡片里管理：按「我的库」「第三方库」分组列出各库的提交、同步时间和载入的 skill（被同名挡住的划掉显示），第三方库还显示上游差异；可以添加（同样先拉取成功才保存，勾选「第三方库」即 `--external`）、单个或全部同步、更新第三方库、移除、改同步间隔。拉取和删镜像当场执行；配置改动由控制台托管的 profile 立即生效，由别的进程托管的写进配置、下次重启生效——在那之前它若又拉回了已移除的库，启动时会把配置里没有的镜像清掉。
 
+
+### 订阅其他知识库（部门共享库等）
+
+自己的知识目录照常用，另外还可以订阅别人维护的知识仓库，比如部门的共享知识库。bridge 为每个库维护一份只读镜像，跟着远端走，把选中的 Markdown 文件的标题和第一句话放进每一轮的索引（`<bridge_knowledge>` 的 `libraryKnowledge`），正文按需读取。
+
+```text
+/knowledge lib                                          # 已订阅的库、拉取状态、写入窗口（也显示在 /knowledge 面板里）
+/knowledge lib add <git 地址> [名字] [--read 规则,规则] [--self 目录] [--ref 分支]
+/knowledge lib sync [名字]                              # 立即拉取
+/knowledge lib write <名字> [分钟]                      # 打开写入窗口（缺省 120 分钟）；off 关闭
+/knowledge lib write <名字> job <任务 id>               # 这个定时任务（如每周的机器人周会）运行时自动打开窗口，再执行一次取消
+/knowledge lib rm <名字>                                # 取消订阅，镜像和工作副本一起删掉
+```
+
+- **索引**：`--read` 选哪些文件进索引（`*` 不跨目录，`**` 跨目录；缺省所有 `.md`，README / CONTRIBUTING 这类仓库说明不算）。`shared/` 下的条目标为 `authoritative`（审过的公共结论），自己目录（`--self`）下的标为 `own`，和自己目录同级的其他目录（别的 bot 的）标为 `personal`（个人笔记，仅供参考）。冲突时：会话记忆 > profile 记忆 > 公共结论 > 其他 > 个人笔记。索引有字数预算，超出时先丢个人笔记。
+- **只读**：镜像的推送地址指向一个不存在的路径，同步时 `checkout --force` + `clean` 回到远端，在镜像里改了什么都会被丢掉。非主人发起的任务能读镜像，不能写。
+- **写入窗口**：配了 `--self`（bot 在库里自己的目录，如 `bots/cc`）的库，平时也是只读的；只有窗口开着时（绑定的定时任务运行后 3 小时内，或主人用 `/knowledge lib write` 打开），bridge 才在 `knowledge-libraries/<名字>.work/` 准备一份可写的 clone，并在索引里给出 `libraryWrite`。agent 在里面用普通 git 提交推送，git 钩子检查：窗口是否开着；默认分支上只能改自己的目录（`shared/` 这类公共目录要开分支、推分支、发 Draft PR）；新增内容和提交信息里不能有密钥、SN、IP、邮箱、工单号、内部地址；提交信息里不能有 AI 署名。窗口关闭后工作副本删掉，有没推上去的改动就先留着，下次开窗口接着推。
+- **权限**：`/knowledge lib` 只有 bot 主人能用（管理员也不行）。私有仓库用本机已配好的 SSH key 访问。
+- **配置**：存在 profile 配置的 `knowledge` 段，拉取间隔和知识目录共用 `syncIntervalMinutes`：
+
+```json
+"knowledge": {
+  "syncIntervalMinutes": 30,
+  "libraries": [
+    {
+      "name": "cilab-bot-knowledge",
+      "url": "git@github.com:alphaess-developer/cilab-bot-knowledge.git",
+      "read": ["shared/**", "bots/*/notes/**"],
+      "write": { "self": "bots/cc", "jobs": ["<周会任务 id>"] }
+    }
+  ]
+}
+```
+
+梦境整理不往这些库写东西，它只管自己的知识库和 skill 库。
 
 ### 梦境整理（默认关闭）
 
@@ -607,6 +643,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | agent-aware 会话索引 |
 | `~/.lark-channel/profiles/<profile>/knowledge/` | 记忆与 skills（可作为 git 仓库同步） |
 | `~/.lark-channel/profiles/<profile>/skill-libraries/` | 共享 skill 库的只读镜像（`/skills lib`） |
+| `~/.lark-channel/profiles/<profile>/knowledge-libraries/` | 订阅的知识库的只读镜像，以及写入窗口期间的工作副本（`/knowledge lib`） |
 | `~/.lark-channel/profiles/<profile>/jobs.json` | 定时任务（`/cron`） |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |

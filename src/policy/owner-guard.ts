@@ -94,6 +94,9 @@ export function ownerOnlyGuard(opts: {
   const readOnlyRoots = (opts.guestReadOnlyRoots ?? []).map(expand);
   const media = `${escapeRe(lc)}/profiles/[^/]+/media/`;
   const libraries = `${escapeRe(lc)}/profiles/[^/]+/skill-libraries/`;
+  // Knowledge library mirrors are read like skill libraries. The writable
+  // clones next to them (`<name>.work/`) and the window files are not.
+  const knowledgeLibraries = `${escapeRe(lc)}/profiles/[^/]+/knowledge-libraries/(?![^/\\s'"]*\\.(?:work|window\\.json)(?:[/\\s'"]|$))[^/\\s'"]+(?:/|(?=[\\s'"])|$)`;
   return {
     home,
     allowedRoots: [
@@ -108,12 +111,13 @@ export function ownerOnlyGuard(opts: {
       ...skillTargets(join(claude, 'skills')),
       join(home, '.local', 'bin'),
     ],
-    allowPatterns: [media, libraries],
+    allowPatterns: [media, libraries, knowledgeLibraries],
     rules: [
       { path: root, bash: 'any' },
       // Attachments the user sent land under media/ and must stay readable;
-      // shared skill libraries (`/skills lib`) are read and run like skills.
-      { path: lc, bash: 'any', allow: [media, libraries] },
+      // shared skill libraries (`/skills lib`) are read and run like skills,
+      // knowledge library mirrors read like the profile's own notes.
+      { path: lc, bash: 'any', allow: [media, libraries, knowledgeLibraries] },
       // …but nothing may write into a library mirror.
       { path: lc, bash: 'write', allow: [media] },
       ...['CLAUDE.md', 'settings.json', 'settings.local.json', 'skills', 'agents', 'scripts', 'projects'].map(

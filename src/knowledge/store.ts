@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
+import type { LibraryEntry, LibraryWriteTarget } from './knowledge-libraries';
 
 /**
  * Bridge-managed knowledge for one profile: what the bot should remember, and
@@ -44,12 +45,19 @@ export interface SkillSource {
   listSkills(): Promise<SkillSummary[]>;
 }
 
+/** Other knowledge repositories (`knowledge.libraries`): their index and where the agent may write now. */
+export interface LibraryKnowledgeSource {
+  listEntries(): Promise<LibraryEntry[]>;
+  writeTargets(): Promise<LibraryWriteTarget[]>;
+}
+
 /** Bullet lines look like `- [a1b2c3] remember this`. */
 const ENTRY_RE = /^-\s*\[([0-9a-f]{6})\]\s*(.*)$/;
 
 export class KnowledgeStore {
   readonly dir: string;
   private readonly skillSources: SkillSource[] = [];
+  private librarySource: LibraryKnowledgeSource | undefined;
 
   constructor(dir: string = paths.knowledgeDir) {
     this.dir = dir;
@@ -58,6 +66,19 @@ export class KnowledgeStore {
   /** Merge another source's skills behind this profile's own (`/skills lib`). */
   addSkillSource(source: SkillSource): void {
     this.skillSources.push(source);
+  }
+
+  /** Index the knowledge libraries next to this profile's own memory (`/knowledge lib`). */
+  setLibrarySource(source: LibraryKnowledgeSource | undefined): void {
+    this.librarySource = source;
+  }
+
+  async listLibraryEntries(): Promise<LibraryEntry[]> {
+    return (await this.librarySource?.listEntries()) ?? [];
+  }
+
+  async libraryWriteTargets(): Promise<LibraryWriteTarget[]> {
+    return (await this.librarySource?.writeTargets()) ?? [];
   }
 
   get skillsDir(): string {

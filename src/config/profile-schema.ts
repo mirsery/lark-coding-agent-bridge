@@ -246,8 +246,40 @@ export interface KnowledgeConfig {
   /**
    * Minutes between automatic syncs (commit, pull --rebase, push) once the
    * directory is bound to a remote. Absent: 30. `0`: only `/knowledge sync`.
+   * Knowledge libraries are pulled on the same interval.
    */
   syncIntervalMinutes?: number;
+  /** Other knowledge repositories the profile subscribes to (`/knowledge lib`). */
+  libraries?: KnowledgeLibraryConfig[];
+}
+
+/**
+ * A knowledge repository besides the profile's own — a department's shared
+ * one, say. The bridge keeps a read-only mirror under
+ * `knowledge-libraries/<name>/`, follows the remote, and puts an index of its
+ * Markdown files into every run. See `src/knowledge/knowledge-libraries.ts`.
+ */
+export interface KnowledgeLibraryConfig {
+  /** Directory name of the mirror and the label the index shows. */
+  name: string;
+  url: string;
+  /** Branch to follow. Absent: the remote's default branch. */
+  ref?: string;
+  /** Globs (`*` within a directory, `**` across) of indexed files. Absent: every `.md` file. */
+  read?: string[];
+  /** Absent: the library is read-only. */
+  write?: KnowledgeLibraryWrite;
+}
+
+export interface KnowledgeLibraryWrite {
+  /**
+   * The bot's own directory in the repository (`bots/cc`): the only path it
+   * may push straight to the default branch. Anything else goes through a
+   * branch and a pull request.
+   */
+  self: string;
+  /** Scheduled jobs (`/cron` ids) whose runs open the write window. */
+  jobs?: string[];
 }
 
 export type LarkCliIdentityPreset = 'bot-only' | 'user-default';
@@ -738,12 +770,71 @@ function normalizeSkills(input: unknown): SkillsConfig | undefined {
   return { libraries, ...(interval !== undefined ? { syncIntervalMinutes: interval } : {}) };
 }
 
-/** Same rules as the skills interval: a negative number means `0`, anything else invalid is dropped. */
+/**
+ * Same rules as the skills interval: a negative number means `0`, anything
+ * else invalid is dropped. Libraries are dropped one by one like skill
+ * libraries; a `write` section that names no usable directory makes the
+ * library read-only rather than dropping it.
+ */
 function normalizeKnowledge(input: unknown): KnowledgeConfig | undefined {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const raw = input as { syncIntervalMinutes?: unknown };
-  if (typeof raw.syncIntervalMinutes !== 'number' || !Number.isFinite(raw.syncIntervalMinutes)) return undefined;
-  return { syncIntervalMinutes: Math.max(0, Math.floor(raw.syncIntervalMinutes)) };
+  const raw = input as { syncIntervalMinutes?: unknown; libraries?: unknown };
+  const interval =
+    typeof raw.syncIntervalMinutes === 'number' && Number.isFinite(raw.syncIntervalMinutes)
+      ? Math.max(0, Math.floor(raw.syncIntervalMinutes))
+      : undefined;
+  const trimmed = (value: unknown): string[] =>
+    stringArray(value)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  const libraries: KnowledgeLibraryConfig[] = [];
+  const seen = new Set<string>();
+  for (const entry of Array.isArray(raw.libraries) ? raw.libraries : []) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const item = entry as Record<string, unknown>;
+    const name = typeof item.name === 'string' ? item.name.trim() : '';
+    const url = typeof item.url === 'string' ? item.url.trim() : '';
+    if (!url || !isValidKnowledgeLibraryName(name) || seen.has(name)) continue;
+    seen.add(name);
+    const ref = typeof item.ref === 'string' ? item.ref.trim() : '';
+    const read = trimmed(item.read);
+    const write = normalizeKnowledgeWrite(item.write);
+    libraries.push({
+      name,
+      url,
+      ...(ref ? { ref } : {}),
+      ...(read.length > 0 ? { read } : {}),
+      ...(write ? { write } : {}),
+    });
+  }
+  if (interval === undefined && libraries.length === 0) return undefined;
+  return {
+    ...(interval !== undefined ? { syncIntervalMinutes: interval } : {}),
+    ...(libraries.length > 0 ? { libraries } : {}),
+  };
+}
+
+function normalizeKnowledgeWrite(input: unknown): KnowledgeLibraryWrite | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const raw = input as { self?: unknown; jobs?: unknown };
+  const self = typeof raw.self === 'string' ? normalizeLibraryDir(raw.self) : undefined;
+  if (!self) return undefined;
+  const jobs = [...new Set(stringArray(raw.jobs).map((job) => job.trim()).filter(Boolean))];
+  return { self, ...(jobs.length > 0 ? { jobs } : {}) };
+}
+
+/**
+ * Mirror names share the directory with `<name>.work` (the writable clone)
+ * and `<name>.window.json`, so a name may not look like either.
+ */
+export function isValidKnowledgeLibraryName(name: string): boolean {
+  return isValidSkillLibraryName(name) && !/\.(?:work|window\.json)$/i.test(name) && !/\.tmp-[0-9a-f]{8}$/.test(name);
+}
+
+/** `./bots/cc/` → `bots/cc`; undefined when it is not a directory inside the repository. */
+export function normalizeLibraryDir(path: string): string | undefined {
+  const clean = path.trim().replace(/^\.\/+/, '').replace(/\/+$/, '');
+  return clean && isSafeSkillLibraryPath(clean) && !clean.split(/[\\/]+/).includes('.') ? clean : undefined;
 }
 
 function normalizeLarkCli(input: unknown): LarkCliConfig {

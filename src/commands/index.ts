@@ -36,6 +36,7 @@ import {
   buildLibraryConfig,
   byPrecedence,
   getSkillSyncIntervalMinutes,
+  libraryNameFromUrl,
   maskUrlCredentials,
   shadowedSkills,
   updateLibrary,
@@ -46,8 +47,14 @@ import {
 } from '../knowledge/libraries';
 import type { KnowledgeStore, MemoryScope } from '../knowledge/store';
 import {
+  DEFAULT_WINDOW_MINUTES,
+  MAX_WINDOW_MINUTES,
+  type KnowledgeLibraries,
+} from '../knowledge/knowledge-libraries';
+import {
   bindKnowledgeRemote,
   knowledgeRemoteUrl,
+  isPlausibleGitUrl,
   knowledgeRepoStatus,
   syncKnowledge,
   unbindKnowledgeRemote,
@@ -76,6 +83,7 @@ import {
   diffCard,
   helpCard,
   knowledgeCard,
+  type KnowledgeLibraryView,
   type KnowledgeStatusView,
   memoryCard,
   pullRequestCard,
@@ -95,7 +103,7 @@ import {
   readDiffPatch,
   readDiffStat,
 } from '../git/diff';
-import { isGitError } from '../git/exec';
+import { isGitError, isSafeRef } from '../git/exec';
 import { checksLabel, parsePrArg, readPullRequest, reviewLabel } from '../git/pr';
 import { describeRepoStatus, isDirty, readRepoStatus, type GitRepoStatus } from '../git/status';
 import { addWorktree, listWorktrees, matchWorktree, removeWorktree } from '../git/worktree';
@@ -126,13 +134,18 @@ import {
   getShowToolCalls,
 } from '../config/schema';
 import type {
+  KnowledgeLibraryConfig,
   LarkCliIdentityPreset,
   ProfileAccess,
   ProfileConfig,
   ProfileMode,
   SkillLibraryConfig,
 } from '../config/profile-schema';
-import { effectiveLarkCliIdentity } from '../config/profile-schema';
+import {
+  effectiveLarkCliIdentity,
+  isValidKnowledgeLibraryName,
+  normalizeLibraryDir,
+} from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
 import { describeActiveRun } from '../bot/run-status';
 import { formatMoment, limitLabel, type AutoResumer } from '../bot/auto-resume';
@@ -142,6 +155,7 @@ import {
   canStopRun,
   canUseDm,
   canUseGroup,
+  isCreator,
   type OwnerRefreshState,
 } from '../policy/access';
 import { buildEncryptedAccountConfig } from '../config/store';
@@ -221,6 +235,8 @@ export interface Controls {
   skillLibraries?: SkillLibraries;
   /** Periodic sync of the knowledge repo, shown by `/knowledge`. Late-bound by startChannel. */
   knowledgeAutoSync?: KnowledgeAutoSync;
+  /** Subscribed knowledge repositories backing `/knowledge lib`. Late-bound by startChannel. */
+  knowledgeLibraries?: KnowledgeLibraries;
   /** Scheduled-job engine backing `/cron`; present only while the channel is
    * connected and a profile data dir exists. Late-bound by startChannel. */
   scheduler?: Scheduler;
@@ -2618,16 +2634,20 @@ async function handleKnowledge(args: string, ctx: CommandContext): Promise<void>
     }
     case 'sync':
       return knowledgeSync(ctx, store);
+    case 'lib':
+    case 'libs':
+      return handleKnowledgeLibraries(trimmed.slice(sub.length).trim(), ctx);
     default:
       await reply(
         ctx,
         [
           '**知识库**',
           '',
-          '`/knowledge` — 当前状态（记忆条数、skill 数、同步状态）',
+          '`/knowledge` — 当前状态（记忆条数、skill 数、同步状态、订阅的知识库）',
           '`/knowledge bind <git 仓库地址>` — 绑定远端并拉取已有内容',
           '`/knowledge sync` — 立即同步：提交本地改动、拉取远端、推上去',
           '`/knowledge unbind` — 解除绑定（本地内容保留）',
+          '`/knowledge lib` — 订阅的其他知识库（部门共享库等），仅 bot 主人',
           '',
           knowledgeAutoSyncHelp(getKnowledgeSyncIntervalMinutes(ctx.controls.profileConfig.knowledge)),
         ].join('\n'),
@@ -2636,12 +2656,13 @@ async function handleKnowledge(args: string, ctx: CommandContext): Promise<void>
 }
 
 async function knowledgeStatus(ctx: CommandContext, store: KnowledgeStore): Promise<void> {
-  const [chat, profile, skills, repo, remote] = await Promise.all([
+  const [chat, profile, skills, repo, remote, libraries] = await Promise.all([
     store.listMemories({ kind: 'chat', scopeId: ctx.scope }),
     store.listMemories({ kind: 'profile' }),
     store.listSkills(),
     knowledgeRepoStatus(store),
     knowledgeRemoteUrl(store),
+    knowledgeLibraryViews(ctx),
   ]);
   await ctx.channel.send(
     ctx.msg.chatId,
@@ -2656,6 +2677,7 @@ async function knowledgeStatus(ctx: CommandContext, store: KnowledgeStore): Prom
         ...(repo?.upstream ? { ahead: repo.upstream.ahead, behind: repo.upstream.behind } : {}),
         ...(repo ? { dirty: isDirty(repo) } : {}),
         ...knowledgeAutoSyncView(ctx),
+        ...(libraries.length > 0 ? { libraries } : {}),
       }),
     },
     commandReplyOptions(ctx),
@@ -2721,6 +2743,279 @@ async function knowledgeSync(ctx: CommandContext, store: KnowledgeStore): Promis
     result.pushed ? '已推送' : '',
   ].filter(Boolean);
   await reply(ctx, `🔄 ${parts.join('，')}。${result.note ?? ''}`.trim());
+}
+
+// ─── /knowledge lib: subscribed knowledge repositories ─────────────────────
+
+const KNOWLEDGE_LIB_HELP = [
+  '**订阅的知识库**（仅 bot 主人）',
+  '',
+  '`/knowledge lib` — 已订阅的库、拉取状态、写入窗口',
+  '`/knowledge lib add <git 地址> [名字] [--read 规则,规则] [--self 目录] [--ref 分支]` — 订阅一个库并立即拉取；`--read` 选哪些文件进索引（如 `shared/**,bots/*/notes/**`，缺省全部 `.md`），`--self` 是 bot 在库里自己的目录（如 `bots/cc`），不写就是只读',
+  '`/knowledge lib sync [名字]` — 立即拉取',
+  `\`/knowledge lib write <名字> [分钟]\` — 打开写入窗口（缺省 ${DEFAULT_WINDOW_MINUTES} 分钟，最长 ${MAX_WINDOW_MINUTES / 60} 小时）；\`off\` 关闭；\`job <任务 id>\` 让这个定时任务（如周会）运行时自动打开，再执行一次取消`,
+  '`/knowledge lib rm <名字>` — 取消订阅，本地镜像和未推送的写入一起删掉',
+  '',
+  '库是只读镜像，跟着远端走，文件标题和第一句话进每一轮的索引（`shared/` 下的标为公共结论，其他 bot 目录下的标为个人笔记）。只有写入窗口开着时 bot 才能在库的工作副本里提交：默认分支上只能改自己的目录，其余走分支 + Draft PR，提交前检查脱敏。私有仓库用本机已配好的 SSH key 访问，不要把 token 写进地址。',
+].join('\n');
+
+async function handleKnowledgeLibraries(args: string, ctx: CommandContext): Promise<void> {
+  // A subscribed library feeds every run of this profile, and a write window
+  // lets the bot push to a repository other people read: the owner's call.
+  if (!isCreator(ctx.controls, ctx.msg.senderId)) {
+    await reply(ctx, '这项操作仅限 bot 主人发起。');
+    return;
+  }
+  const libraries = ctx.controls.knowledgeLibraries;
+  if (!libraries) {
+    await reply(ctx, '当前 bridge 没有启用知识库订阅（缺少 profile 数据目录）。');
+    return;
+  }
+  const [sub = '', ...rest] = args.split(/\s+/).filter(Boolean);
+  switch (sub) {
+    case '':
+    case 'list':
+    case 'status':
+      return knowledgeStatus(ctx, requireKnowledge(ctx)!);
+    case 'add':
+      return knowledgeLibraryAdd(rest, ctx, libraries);
+    case 'sync':
+    case 'pull':
+      return knowledgeLibrarySync(rest[0], ctx, libraries);
+    case 'write':
+      return knowledgeLibraryWrite(rest, ctx, libraries);
+    case 'rm':
+    case 'remove':
+      return knowledgeLibraryRemove(rest[0] ?? '', ctx, libraries);
+    default:
+      await reply(ctx, KNOWLEDGE_LIB_HELP);
+  }
+}
+
+function configuredKnowledgeLibraries(ctx: CommandContext): KnowledgeLibraryConfig[] {
+  return ctx.controls.profileConfig.knowledge?.libraries ?? [];
+}
+
+async function knowledgeLibraryViews(ctx: CommandContext): Promise<KnowledgeLibraryView[]> {
+  const libraries = ctx.controls.knowledgeLibraries;
+  if (!libraries || configuredKnowledgeLibraries(ctx).length === 0) return [];
+  const now = Date.now();
+  return (await libraries.status().catch(() => [])).map((status) => ({
+    name: status.config.name,
+    url: maskUrlCredentials(status.config.url),
+    present: status.present,
+    ...(status.commit ? { commit: status.commit } : {}),
+    ...(status.lastSyncAt ? { lastSyncAgo: formatAgo(now - status.lastSyncAt) } : {}),
+    ...(status.lastError ? { lastError: status.lastError } : {}),
+    entries: status.entries,
+    ...(status.config.write ? { self: status.config.write.self } : {}),
+    ...(status.window ? { windowUntil: formatClock(status.window.until) } : {}),
+    ...(status.weekCommits !== undefined ? { weekCommits: status.weekCommits } : {}),
+    ...(status.config.write?.jobs?.length ? { jobs: status.config.write.jobs } : {}),
+  }));
+}
+
+function formatClock(epochMs: number): string {
+  const d = new Date(epochMs);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** `<url> [name] [--read a,b] [--self dir] [--ref x] [--name x]`. */
+function parseKnowledgeLibraryAdd(
+  tokens: string[],
+  taken: ReadonlySet<string>,
+): { library: KnowledgeLibraryConfig } | { error: string } {
+  const positional: string[] = [];
+  const flags: Record<string, string> = {};
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    const flag = /^--(read|self|ref|name)(?:=(.*))?$/.exec(token);
+    if (flag) {
+      const value = flag[2] ?? tokens[i + 1];
+      if (flag[2] === undefined) i += 1;
+      if (!value) return { error: `\`--${flag[1]}\` 后面缺少值。` };
+      flags[flag[1]!] = value;
+      continue;
+    }
+    if (token.startsWith('--')) return { error: `不认识的参数 \`${token}\`。` };
+    positional.push(token);
+  }
+  const url = positional[0] ?? '';
+  if (!url) return { error: '用法：`/knowledge lib add <git 地址> [名字]`' };
+  if (!isPlausibleGitUrl(url)) return { error: `看起来不像 git 仓库地址：\`${maskUrlCredentials(url)}\`` };
+  const name = (flags.name ?? positional[1] ?? '').trim() || libraryNameFromUrl(url);
+  if (!isValidKnowledgeLibraryName(name)) {
+    return { error: `库名 \`${name || '(空)'}\` 不可用：字母或数字开头，只含字母、数字、\`.\`、\`_\`、\`-\`，最长 64，不以 \`.work\` 结尾。` };
+  }
+  if (taken.has(name)) return { error: `已经有叫 \`${name}\` 的库了，换个名字或先把它移除。` };
+  const ref = flags.ref?.trim();
+  if (ref !== undefined && (!ref || !isSafeRef(ref) || ref.includes('..'))) return { error: `ref \`${ref}\` 不合法。` };
+  let self: string | undefined;
+  if (flags.self !== undefined) {
+    self = normalizeLibraryDir(flags.self);
+    if (!self) return { error: `目录 \`${flags.self}\` 不合法：要写仓库内的相对路径。` };
+  }
+  const read = flags.read?.split(',').map((item) => item.trim()).filter(Boolean);
+  return {
+    library: {
+      name,
+      url,
+      ...(ref ? { ref } : {}),
+      ...(read?.length ? { read } : {}),
+      ...(self ? { write: { self } } : {}),
+    },
+  };
+}
+
+async function knowledgeLibraryAdd(tokens: string[], ctx: CommandContext, libraries: KnowledgeLibraries): Promise<void> {
+  const parsed = parseKnowledgeLibraryAdd(tokens, new Set(configuredKnowledgeLibraries(ctx).map((item) => item.name)));
+  if (!('library' in parsed)) {
+    await reply(ctx, `❌ ${parsed.error}\n\n${KNOWLEDGE_LIB_HELP}`);
+    return;
+  }
+  const library = parsed.library;
+  // Fetch first and only then save, like `/skills lib add`.
+  const result = await libraries.syncLibrary(library);
+  if (!result.ok) {
+    await reply(ctx, `❌ 拉取 \`${library.name}\` 失败：${result.error ?? '未知错误'}`);
+    return;
+  }
+  try {
+    await configOps.saveKnowledgeConfig(ctx.controls, (knowledge) => ({
+      ...knowledge,
+      libraries: [...(knowledge.libraries ?? []).filter((item) => item.name !== library.name), library],
+    }));
+  } catch (err) {
+    await libraries.remove(library.name).catch(() => undefined);
+    await reply(ctx, `❌ 保存配置失败：${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  log.info('knowledge-lib', 'library-added', { library: library.name, by: ctx.msg.senderId });
+  const entries = (await libraries.listEntries()).filter((entry) => entry.library === library.name);
+  const interval = getKnowledgeSyncIntervalMinutes(ctx.controls.profileConfig.knowledge);
+  await reply(
+    ctx,
+    [
+      `📖 已订阅知识库 \`${library.name}\`（\`${result.commit ?? '?'}\`），索引 ${entries.length} 条，下一条消息起生效。`,
+      ...(entries.length === 0 ? ['⚠️ 没有文件进索引：检查 `--read` 规则是否写对（相对仓库根目录，`*` 不跨目录，`**` 跨目录）。'] : []),
+      library.write
+        ? `可写目录 \`${library.write.self}/\`：平时只读，\`/knowledge lib write ${library.name}\` 打开写入窗口，或 \`/knowledge lib write ${library.name} job <任务 id>\` 让周会任务运行时自动打开。`
+        : '只读订阅：没有配置 `--self`，bot 不会往这个库写东西。',
+      interval > 0 ? `每 ${interval} 分钟自动拉取。` : '自动拉取已关闭，用 `/knowledge lib sync` 拉取。',
+    ].join('\n'),
+  );
+}
+
+async function knowledgeLibrarySync(name: string | undefined, ctx: CommandContext, libraries: KnowledgeLibraries): Promise<void> {
+  const configured = configuredKnowledgeLibraries(ctx);
+  if (configured.length === 0) {
+    await reply(ctx, '还没有订阅知识库，用 `/knowledge lib add <git 地址>` 添加。');
+    return;
+  }
+  if (name && !configured.some((item) => item.name === name)) {
+    await reply(ctx, `没有叫 \`${name}\` 的库。现有：${configured.map((item) => `\`${item.name}\``).join('、')}`);
+    return;
+  }
+  const results = await libraries.sync(name);
+  await reply(
+    ctx,
+    `🔄 知识库拉取完成\n${results
+      .map((result) =>
+        result.ok
+          ? `✓ \`${result.name}\`：${result.changed ? '已更新到' : '已是最新'} \`${result.commit ?? '?'}\``
+          : `❌ \`${result.name}\`：${result.error ?? '拉取失败'}`,
+      )
+      .join('\n')}`,
+  );
+}
+
+async function knowledgeLibraryWrite(tokens: string[], ctx: CommandContext, libraries: KnowledgeLibraries): Promise<void> {
+  const [name = '', action = '', jobId = ''] = tokens;
+  const configured = configuredKnowledgeLibraries(ctx);
+  const library = configured.find((item) => item.name === name);
+  if (!library) {
+    await reply(
+      ctx,
+      !name
+        ? `用法：\`/knowledge lib write <名字> [分钟|off|job <任务 id>]\``
+        : `没有叫 \`${name}\` 的库。现有：${configured.map((item) => `\`${item.name}\``).join('、') || '（无）'}`,
+    );
+    return;
+  }
+  if (!library.write) {
+    await reply(ctx, `\`${name}\` 是只读订阅：先在配置里给它加 \`write.self\`（bot 在库里自己的目录）。`);
+    return;
+  }
+  if (action === 'off' || action === 'close') {
+    const { keptWork } = await libraries.closeWindow(name);
+    await reply(
+      ctx,
+      keptWork
+        ? `🔒 \`${name}\` 写入窗口已关闭。工作副本里还有没推送的改动，先保留，下次打开窗口时接着推。`
+        : `🔒 \`${name}\` 写入窗口已关闭。`,
+    );
+    return;
+  }
+  if (action === 'job') {
+    const scheduler = ctx.controls.scheduler;
+    const job = jobId ? scheduler?.jobs.get(jobId) : undefined;
+    const bound = library.write.jobs?.includes(jobId) ?? false;
+    if (!jobId || (!job && !bound)) {
+      await reply(ctx, jobId ? `没有 id 为 \`${jobId}\` 的定时任务，\`/cron\` 看看列表。` : '用法：`/knowledge lib write <名字> job <任务 id>`');
+      return;
+    }
+    await configOps.saveKnowledgeConfig(ctx.controls, (knowledge) => ({
+      ...knowledge,
+      libraries: (knowledge.libraries ?? []).map((item) => {
+        if (item.name !== name || !item.write) return item;
+        const jobs = bound ? (item.write.jobs ?? []).filter((id) => id !== jobId) : [...(item.write.jobs ?? []), jobId];
+        return { ...item, write: { self: item.write.self, ...(jobs.length > 0 ? { jobs } : {}) } };
+      }),
+    }));
+    await reply(
+      ctx,
+      bound
+        ? `✓ 定时任务 \`${jobId}\` 运行时不再打开 \`${name}\` 的写入窗口。`
+        : `✓ 定时任务 \`${jobId}\` 每次运行时打开 \`${name}\` 的写入窗口，持续 3 小时。`,
+    );
+    return;
+  }
+  const minutes = action ? Number(action) : DEFAULT_WINDOW_MINUTES;
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    await reply(ctx, `用法：\`/knowledge lib write ${name} [分钟|off|job <任务 id>]\``);
+    return;
+  }
+  try {
+    const target = await libraries.openWindow(name, { minutes, reason: 'owner' });
+    await reply(
+      ctx,
+      `✍️ \`${name}\` 写入窗口开到 ${formatClock(target.until)}：默认分支 \`${target.defaultBranch}\` 上可以改 \`${target.self}/\`，其余走分支 + Draft PR。\`/knowledge lib write ${name} off\` 提前关闭。`,
+    );
+  } catch (err) {
+    await reply(ctx, `❌ 打开写入窗口失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function knowledgeLibraryRemove(name: string, ctx: CommandContext, libraries: KnowledgeLibraries): Promise<void> {
+  const configured = configuredKnowledgeLibraries(ctx);
+  if (!configured.some((item) => item.name === name)) {
+    await reply(
+      ctx,
+      !name
+        ? '用法：`/knowledge lib rm <名字>`'
+        : `没有叫 \`${name}\` 的库。现有：${configured.map((item) => `\`${item.name}\``).join('、') || '（无）'}`,
+    );
+    return;
+  }
+  await configOps.saveKnowledgeConfig(ctx.controls, (knowledge) => {
+    const rest = (knowledge.libraries ?? []).filter((item) => item.name !== name);
+    const { libraries: _drop, ...others } = knowledge;
+    return { ...others, ...(rest.length > 0 ? { libraries: rest } : {}) };
+  });
+  await libraries.remove(name);
+  log.info('knowledge-lib', 'library-removed', { library: name, by: ctx.msg.senderId });
+  await reply(ctx, `🗑️ 已取消订阅 \`${name}\`，本地镜像已删除。`);
 }
 
 // ─── /cron ────────────────────────────────────────────────────────────────

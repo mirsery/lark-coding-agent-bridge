@@ -17,6 +17,17 @@ export default defineConfig([
     },
   },
   {
+    // Git hooks of knowledge library work clones (bin/knowledge-hook.mjs).
+    entry: { 'knowledge-hook': 'src/knowledge/write-hook-main.ts' },
+    outDir: 'dist',
+    format: ['esm'],
+    target: 'node20',
+    platform: 'node',
+    sourcemap: false,
+    splitting: false,
+    dts: false,
+  },
+  {
     entry: { index: 'src/index.ts' },
     outDir: 'dist',
     format: ['esm'],

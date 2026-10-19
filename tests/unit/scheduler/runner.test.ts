@@ -229,6 +229,33 @@ describe('scheduled runs and knowledge', () => {
     expect(prompt).toContain('看一下昨天的日志');
   });
 
+  it('opens the knowledge library write window a job is bound to before building its prompt', async () => {
+    mocks.startRunFlow.mockResolvedValue(flowEmitting(answer));
+    const order: string[] = [];
+    const deps = makeDeps();
+    const controls = (deps as { controls: Record<string, unknown> }).controls;
+    controls.knowledgeLibraries = {
+      openForJob: vi.fn(async (id: string) => {
+        order.push(`open:${id}`);
+        return ['dept'];
+      }),
+    };
+    controls.knowledge = {
+      listMemories: async () => [],
+      listSkills: async () => [],
+      listLibraryEntries: async () => [],
+      libraryWriteTargets: async () => {
+        order.push('prompt');
+        return [{ library: 'dept', work: '/w', self: 'bots/cc', defaultBranch: 'main', until: 0 }];
+      },
+    };
+
+    await runScheduledJob(deps, job());
+
+    expect(order).toEqual([`open:${job().id}`, 'prompt']);
+    expect(mocks.startRunFlow.mock.calls[0]?.[0]?.prompt as string).toContain('libraryWrite');
+  });
+
   it('runs without a knowledge store at all', async () => {
     mocks.startRunFlow.mockResolvedValue(flowEmitting(answer));
     await runScheduledJob(makeDeps(), job());

@@ -58,6 +58,9 @@ export interface LibraryPending {
   changed: string[];
 }
 
+/** Push URL of every mirror: not a repository, so `git push` fails with a path that says why. */
+export const READ_ONLY_PUSH_URL = '/dev/null/read-only-mirror';
+
 /** The ref an external mirror keeps the remote's latest fetched commit under. */
 const UPSTREAM_REF = 'refs/bridge/upstream';
 
@@ -90,10 +93,27 @@ export class SkillLibraries {
   private tick: ((first: boolean) => Promise<void>) | undefined;
   private intervalMinutes: (() => number) | undefined;
   private stopped = false;
+  private readonly fullHistory: boolean;
+  private readonly keepEntry: (name: string) => boolean;
+  private readonly logScope: string;
 
-  constructor(opts: { dir: string; libraries: () => readonly SkillLibraryConfig[] }) {
+  constructor(opts: {
+    dir: string;
+    libraries: () => readonly SkillLibraryConfig[];
+    /**
+     * Fetch whole history for every library, not just external ones — the
+     * knowledge libraries count what was written this week.
+     */
+    fullHistory?: boolean;
+    /** Entries of {@link dir} that are not mirrors and must survive the start-up sweep. */
+    keep?: (name: string) => boolean;
+    logScope?: string;
+  }) {
     this.dir = opts.dir;
     this.libraries = opts.libraries;
+    this.fullHistory = opts.fullHistory ?? false;
+    this.keepEntry = opts.keep ?? (() => false);
+    this.logScope = opts.logScope ?? 'skills';
   }
 
   mirrorDir(name: string): string {
@@ -271,7 +291,10 @@ export class SkillLibraries {
         .filter(
           (entry) =>
             /\.tmp-[0-9a-f]{8}$/.test(entry.name) ||
-            (entry.isDirectory() && isValidSkillLibraryName(entry.name) && !configured.has(entry.name)),
+            (entry.isDirectory() &&
+              isValidSkillLibraryName(entry.name) &&
+              !configured.has(entry.name) &&
+              !this.keepEntry(entry.name)),
         )
         .map((entry) => rm(join(this.dir, entry.name), { recursive: true, force: true }).catch(() => undefined)),
     );
@@ -294,16 +317,21 @@ export class SkillLibraries {
         if (!current.ok) await run(work, ['remote', 'add', 'origin', library.url]);
         else if (current.stdout.trim() !== library.url) await run(work, ['remote', 'set-url', 'origin', library.url]);
       }
+      // A mirror never pushes: whatever someone commits in it would be thrown
+      // away by the next sync anyway, and must not reach the remote first.
+      await run(work, ['config', 'remote.origin.pushurl', READ_ONLY_PUSH_URL]);
       const before = fresh ? undefined : await headCommit(work);
       const external = isExternalLibrary(library);
       // A self mirror only ever needs the tip. An external one keeps history so
       // the card can say how many commits the remote is ahead of the pin, and
-      // so the pinned commit is still there after the remote moved on.
-      const depth = external
-        ? (await git(work, ['rev-parse', '--is-shallow-repository'])).stdout.trim() === 'true'
-          ? ['--unshallow']
-          : []
-        : ['--depth', '1'];
+      // so the pinned commit is still there after the remote moved on;
+      // knowledge mirrors keep it to tell what was written this week.
+      const depth =
+        external || this.fullHistory
+          ? (await git(work, ['rev-parse', '--is-shallow-repository'])).stdout.trim() === 'true'
+            ? ['--unshallow']
+            : []
+          : ['--depth', '1'];
       await fetch(work, [...depth, 'origin', library.ref ?? 'HEAD']);
       let target = 'FETCH_HEAD';
       if (external) {
@@ -330,7 +358,7 @@ export class SkillLibraries {
       }
       this.lastSync.set(library.name, { at: Date.now() });
       const changed = fresh || before !== after;
-      log.info('skills', 'library-synced', {
+      log.info(this.logScope, 'library-synced', {
         library: library.name,
         commit: after,
         changed,
@@ -348,7 +376,7 @@ export class SkillLibraries {
       if (fresh) await rm(work, { recursive: true, force: true }).catch(() => undefined);
       const error = maskUrlCredentials(err instanceof Error ? err.message : String(err));
       this.lastSync.set(library.name, { at: Date.now(), error });
-      log.warn('skills', 'library-sync-failed', { library: library.name, err: error });
+      log.warn(this.logScope, 'library-sync-failed', { library: library.name, err: error });
       return { name: library.name, ok: false, error };
     }
   }

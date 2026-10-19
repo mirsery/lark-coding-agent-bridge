@@ -180,6 +180,41 @@ describe('profile schema', () => {
     expect(knowledge(undefined)).toBeUndefined();
   });
 
+  it('keeps usable knowledge libraries one by one', () => {
+    const knowledge = (value: unknown) =>
+      normalizeProfileConfig({ schemaVersion: 2, agentKind: 'claude', accounts: { app }, knowledge: value }).knowledge;
+    expect(
+      knowledge({
+        libraries: [
+          {
+            name: 'dept',
+            url: ' git@github.com:dept/kb.git ',
+            read: ['shared/**', ' ', 'bots/*/notes/**'],
+            write: { self: './bots/cc/', jobs: ['w1', 'w1', ''] },
+          },
+          { name: 'dept', url: 'git@github.com:dup/kb.git' },
+          { name: 'clash.work', url: 'git@github.com:x/kb.git' },
+          { name: 'nourl' },
+          { name: 'ro', url: 'git@github.com:x/ro.git', ref: 'main', write: { self: '../escape' } },
+          { name: 'dot', url: 'git@github.com:x/dot.git', write: { self: 'bots/./cc' } },
+        ],
+      }),
+    ).toEqual({
+      libraries: [
+        {
+          name: 'dept',
+          url: 'git@github.com:dept/kb.git',
+          read: ['shared/**', 'bots/*/notes/**'],
+          write: { self: 'bots/cc', jobs: ['w1'] },
+        },
+        // A write directory outside the repository makes the library read-only, not invalid.
+        { name: 'ro', url: 'git@github.com:x/ro.git', ref: 'main' },
+        { name: 'dot', url: 'git@github.com:x/dot.git' },
+      ],
+    });
+    expect(knowledge({ syncIntervalMinutes: 10, libraries: [] })).toEqual({ syncIntervalMinutes: 10 });
+  });
+
   it('requires codex configuration when agentKind is codex', () => {
     expect(() =>
       normalizeProfileConfig({
