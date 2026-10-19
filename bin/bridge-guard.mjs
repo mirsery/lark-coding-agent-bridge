@@ -76,11 +76,14 @@ function inScope(path, cfg) {
 function commandPaths(cmd, cwd) {
   const out = [];
   for (const raw of cmd.split(/[\s;|&<>()'"`=,]+/)) {
-    const token = raw.replace(/^[{[]+|[}\],:]+$/g, '');
-    if (!token || /^[a-z][a-z0-9+.-]*:\/\//i.test(token)) continue;
-    if (!(token.startsWith('/') || token.startsWith('.') || token.includes('/'))) continue;
-    if (token.startsWith('-')) continue;
-    out.push(isAbsolute(token) ? resolve(token) : resolve(cwd, token));
+    const word = raw.replace(/^[{[]+|[}\],:]+$/g, '');
+    if (!word || /^[a-z][a-z0-9+.-]*:\/\//i.test(word)) continue;
+    // `PATH=~/.local/bin:$PATH` lists several paths in one word.
+    for (const token of word.split(':')) {
+      if (!(token.startsWith('/') || token.startsWith('.') || token.includes('/'))) continue;
+      if (token.startsWith('-')) continue;
+      out.push(isAbsolute(token) ? resolve(token) : resolve(cwd, token));
+    }
   }
   return out;
 }

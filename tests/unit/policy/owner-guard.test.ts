@@ -85,6 +85,7 @@ describe('guest runs: file scope', () => {
     ['a bare cd home', 'cd && ls'],
     ['the whole disk', 'find / -name "*.pem"'],
     ['a relative escape from the workspace', 'cat ../../../Desktop/coding/lark/thing-hub/README.md'],
+    ['a private dir put on PATH', 'export PATH=~/Documents/bin:$PATH && ls'],
     ['a script reading private files', `python3 -c "print(open('${HOME}/.ssh/id_rsa').read())"`],
   ])('refuses %s', (_label, command) => {
     const res = bash(command);
@@ -101,6 +102,7 @@ describe('guest runs: file scope', () => {
     ['running a library skill script', 'python3 ~/.lark-channel/profiles/claude/skill-libraries/lib/skills/x/scripts/run.py AL1 > /tmp/out.json'],
     ['copying an attachment out', 'cp ~/.lark-channel/profiles/claude/media/abc.jpg /tmp/abc.jpg'],
     ['a tool on PATH dir', '~/.local/bin/alphaq-tool diagnose AL1'],
+    ['putting the tool dir on PATH', 'export PATH=$HOME/.local/bin:$PATH; alphaq-tool --json --list'],
     ['ordinary work in tmp', 'grep -r foo /tmp/repo > /tmp/hits.txt && wc -l /tmp/hits.txt'],
     ['relative paths in the workspace', 'mkdir -p out/logs && ls ./out'],
     ['querying EFK', 'curl -s -u elastic:x "http://efk-prod-aus.alphaess.com:5601/api/console/proxy?path=logs-*/_search&method=POST"'],
