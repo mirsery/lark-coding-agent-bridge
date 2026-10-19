@@ -12,6 +12,8 @@ export interface KnowledgeContext {
   libraryKnowledge?: LibraryEntryRef[];
   /** Libraries the agent may commit to right now — only while a write window is open. */
   libraryWrite?: LibraryWriteRef[];
+  /** Libraries whose window opens by itself once the agent reads one of `skills`. */
+  libraryWriteOnSkill?: LibrarySkillWriteRef[];
   /** Set when notes were dropped to stay inside the budget. */
   truncated?: boolean;
 }
@@ -57,6 +59,13 @@ export interface LibraryWriteRef {
   until: string;
 }
 
+export interface LibrarySkillWriteRef {
+  library: string;
+  work: string;
+  self: string;
+  skills: string[];
+}
+
 const DEFAULT_MAX_CHARS = 6000;
 const MAX_SKILLS = 80;
 /**
@@ -94,12 +103,17 @@ export async function buildKnowledgeContext(
   const trimmedSkills = budgetSkills(skills.slice(0, MAX_SKILLS).map(toSkillRef));
   const libraryKnowledge = budgetLibraryEntries(entries.slice(0, MAX_LIBRARY_ENTRIES).map(toLibraryEntryRef));
   const libraryWrite = targets.map(toLibraryWriteRef);
+  // A library whose window is already open needs no "it will open" note.
+  const libraryWriteOnSkill = (input.store.librarySkillBindings?.() ?? [])
+    .filter((binding) => !targets.some((target) => target.library === binding.library))
+    .map((binding) => ({ ...binding, self: `${binding.self}/` }));
   if (
     budgeted.profile.length === 0 &&
     budgeted.chat.length === 0 &&
     trimmedSkills.length === 0 &&
     libraryKnowledge.length === 0 &&
-    libraryWrite.length === 0
+    libraryWrite.length === 0 &&
+    libraryWriteOnSkill.length === 0
   ) {
     return undefined;
   }
@@ -110,6 +124,7 @@ export async function buildKnowledgeContext(
     ...(trimmedSkills.length > 0 ? { skills: trimmedSkills } : {}),
     ...(libraryKnowledge.length > 0 ? { libraryKnowledge } : {}),
     ...(libraryWrite.length > 0 ? { libraryWrite } : {}),
+    ...(libraryWriteOnSkill.length > 0 ? { libraryWriteOnSkill } : {}),
     ...(budgeted.truncated || skills.length > trimmedSkills.length || entries.length > libraryKnowledge.length
       ? { truncated: true }
       : {}),
@@ -209,4 +224,11 @@ function applyBudget(
   }
 
   return { profile: keptProfile, chat: keptChat, truncated };
+}
+
+/** Without the Read hook nothing opens the window, so the prompt must not promise it. */
+export function withoutSkillWrite(context: KnowledgeContext | undefined): KnowledgeContext | undefined {
+  if (!context?.libraryWriteOnSkill) return context;
+  const { libraryWriteOnSkill: _dropped, ...rest } = context;
+  return Object.keys(rest).length > 0 ? rest : undefined;
 }

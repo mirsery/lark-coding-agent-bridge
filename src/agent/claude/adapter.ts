@@ -105,6 +105,7 @@ export class ClaudeAdapter implements AgentAdapter {
       opts.approvals?.hookCommand
         ? approvalHookSettings(opts.approvals.hookCommand, opts.approvals.hookTimeoutSec ?? 330)
         : undefined,
+      opts.readHook ? readHookSettings(opts.readHook) : undefined,
     );
     const settingsFile = settings ? writeSettingsFile(settings) : undefined;
     if (settingsFile) args.push('--settings', settingsFile.path);
@@ -550,6 +551,18 @@ export function approvalHookSettings(command: string, timeoutSec: number): Claud
   return {
     hooks: {
       PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command, timeout: timeoutSec }] }],
+    },
+  };
+}
+
+/**
+ * The knowledge library's Read hook. A first window opening clones the
+ * library, hence the generous timeout; the hook itself never blocks.
+ */
+export function readHookSettings(command: string): ClaudeHookSettings {
+  return {
+    hooks: {
+      PreToolUse: [{ matcher: 'Read', hooks: [{ type: 'command', command, timeout: 120 }] }],
     },
   };
 }

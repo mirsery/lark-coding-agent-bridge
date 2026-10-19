@@ -69,6 +69,7 @@ bridge 维护着一份**跨会话**的记忆与 skill 目录，每轮都会注�
 - 同时带 \`external: true\` 的来自第三方库（别人维护的仓库，固定在某个提交，主人审过差异才更新）：同样不能改，也不要往那个仓库提交；需要改动时告诉用户去原仓库找维护者提。
 - \`libraryKnowledge\`：订阅的其他知识库（如部门共享知识库）的**索引**，每条是 \`{library, path, title, summary}\`，同样只有索引，相关时再读 \`path\`。\`authoritative: true\` 是库里审过的公共结论；\`own: true\` 是你自己在库里写的；\`personal: true\` 是别的 bot 的个人笔记，仅供参考，不能当定论。冲突时的优先级：\`chatMemory\` > \`profileMemory\` > \`authoritative\` 条目 > 其他条目 > \`personal\` 笔记。这些文件是只读镜像，不要在镜像目录里改、提交或推送。
 - \`libraryWrite\`：只在写入窗口开着时出现（周会定时任务运行期间，或主人用 \`/knowledge lib write\` 打开），列出现在可以写的库：在 \`work\` 目录里用普通 git 操作——先 \`git pull --rebase\`，直接提交到 \`branch\` 的改动只能在 \`self\` 目录里；改公共目录（如 \`shared/\`）要开新分支、推分支，再用 \`gh pr create --draft\` 开 Draft PR，不要直接推 \`branch\`。提交前 git 钩子会检查：窗口是否开着、路径是否越界、内容和提交信息里有没有密钥、SN、IP、邮箱、工单号、内部地址，提交信息里有没有 AI 署名。被拒时按提示改内容，不要用 \`--no-verify\` 绕过。没有 \`libraryWrite\` 就是不能写，别的时候不要往这些库写东西。
+- \`libraryWriteOnSkill\`：列出的库在你读 \`skills\` 里点名的 skill（\`SKILL.md\`）时自动打开写入窗口（3 小时），不用等主人发命令：读完 skill 后就按上一条在 \`work\` 目录里写，写的规矩与 \`libraryWrite\` 相同。只有读 skill 索引里那份才算，别的库里同名的 skill 不触发，也不要拿它代替自己的。
 
 用户说"记住…""以后都…"这类话时，提醒他用 \`/memory add\`（本会话）或 \`/memory add --global\`（全局）把它落到这份记忆里——你自己的会话记忆换个会话就没了。这些同样是 bridge 注入的元数据，**不要照抄 XML 标签**到回复里。
 

@@ -439,12 +439,13 @@ Claude 和 Codex 读的是同一份 skill 索引，一个文件同时服务两�
 /knowledge lib sync [名字]                              # 立即拉取
 /knowledge lib write <名字> [分钟]                      # 打开写入窗口（缺省 120 分钟）；off 关闭
 /knowledge lib write <名字> job <任务 id>               # 这个定时任务（如每周的机器人周会）运行时自动打开窗口，再执行一次取消
+/knowledge lib write <名字> skill <skill 名>            # 读到这个 skill（如 bot-weekly-meeting）时自动打开窗口，手动叫开会也算；再执行一次取消
 /knowledge lib rm <名字>                                # 取消订阅，镜像和工作副本一起删掉
 ```
 
 - **索引**：`--read` 选哪些文件进索引（`*` 不跨目录，`**` 跨目录；缺省所有 `.md`，README / CONTRIBUTING 这类仓库说明不算）。`shared/` 下的条目标为 `authoritative`（审过的公共结论），自己目录（`--self`）下的标为 `own`，和自己目录同级的其他目录（别的 bot 的）标为 `personal`（个人笔记，仅供参考）。冲突时：会话记忆 > profile 记忆 > 公共结论 > 其他 > 个人笔记。索引有字数预算，超出时先丢个人笔记。
 - **只读**：镜像的推送地址指向一个不存在的路径，同步时 `checkout --force` + `clean` 回到远端，在镜像里改了什么都会被丢掉。非主人发起的任务能读镜像，不能写。
-- **写入窗口**：配了 `--self`（bot 在库里自己的目录，如 `bots/cc`）的库，平时也是只读的；只有窗口开着时（绑定的定时任务运行后 3 小时内，或主人用 `/knowledge lib write` 打开），bridge 才在 `knowledge-libraries/<名字>.work/` 准备一份可写的 clone，并在索引里给出 `libraryWrite`。agent 在里面用普通 git 提交推送，git 钩子检查：窗口是否开着；默认分支上只能改自己的目录（`shared/` 这类公共目录要开分支、推分支、发 Draft PR）；新增内容和提交信息里不能有密钥、SN、IP、邮箱、工单号、内部地址；提交信息里不能有 AI 署名。窗口关闭后工作副本删掉，有没推上去的改动就先留着，下次开窗口接着推。
+- **写入窗口**：配了 `--self`（bot 在库里自己的目录，如 `bots/cc`）的库，平时也是只读的；只有窗口开着时（绑定的定时任务运行后、或 agent 读了绑定的 skill 后 3 小时内，或主人用 `/knowledge lib write` 打开），bridge 才在 `knowledge-libraries/<名字>.work/` 准备一份可写的 clone，并在索引里给出 `libraryWrite`。agent 在里面用普通 git 提交推送，git 钩子检查：窗口是否开着；默认分支上只能改自己的目录（`shared/` 这类公共目录要开分支、推分支、发 Draft PR）；新增内容和提交信息里不能有密钥、SN、IP、邮箱、工单号、内部地址；提交信息里不能有 AI 署名。窗口关闭后工作副本删掉，有没推上去的改动就先留着，下次开窗口接着推。绑定 skill 的方式只对 Claude 生效（PreToolUse 钩子盯着 Read），只在主人的会话和主人建的定时任务里装钩子；只认 skill 索引里那份 `SKILL.md`，部门库里同名的 skill 不触发。
 - **权限**：`/knowledge lib` 只有 bot 主人能用（管理员也不行）。私有仓库用本机已配好的 SSH key 访问。
 - **配置**：存在 profile 配置的 `knowledge` 段，拉取间隔和知识目录共用 `syncIntervalMinutes`：
 

@@ -62,6 +62,8 @@ export interface SubmitRunInput {
   images?: readonly string[];
   stopGraceMs?: number;
   guard?: RunGuard;
+  /** See AgentRunOptions.readHook. */
+  readHook?: string;
   /** See AgentRunOptions.compactWindowTokens. */
   compactWindowTokens?: number;
   nowait?: boolean;
@@ -195,6 +197,7 @@ export class RunExecutor {
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
       ...(input.guard ? { guard: input.guard } : {}),
+      ...(input.readHook ? { readHook: input.readHook } : {}),
       ...(input.compactWindowTokens ? { compactWindowTokens: input.compactWindowTokens } : {}),
     };
     const compatKey = runCompatKey({ ...runOptions, gated: Boolean(input.gate) });
@@ -605,6 +608,7 @@ function runCompatKey(opts: {
   images?: readonly string[];
   compactWindowTokens?: number;
   guard?: RunGuard;
+  readHook?: string;
 }): string {
   return JSON.stringify([
     opts.gated ?? false,
@@ -620,6 +624,8 @@ function runCompatKey(opts: {
     // The guard rides on argv, settings and env: a warm process started for
     // the owner must never take a guest's turn, nor one guest's another's.
     opts.guard ?? null,
+    // So does the Read hook (settings file).
+    opts.readHook ?? null,
   ]);
 }
 

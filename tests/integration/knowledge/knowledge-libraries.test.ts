@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,13 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { KnowledgeLibraryConfig } from '../../../src/config/profile-schema';
 import { git } from '../../../src/git/exec';
 import { buildKnowledgeContext } from '../../../src/knowledge/inject';
-import { KnowledgeLibraries, parseEntryHeader, startOfWeek } from '../../../src/knowledge/knowledge-libraries';
+import {
+  KnowledgeLibraries,
+  openForSkillRead,
+  parseEntryHeader,
+  startOfWeek,
+  type SkillWindowArm,
+} from '../../../src/knowledge/knowledge-libraries';
 import { READ_ONLY_PUSH_URL } from '../../../src/knowledge/libraries';
 import { KnowledgeStore } from '../../../src/knowledge/store';
 
@@ -169,6 +176,94 @@ describe('knowledge libraries', { timeout: 30_000 }, () => {
     expect(await libraries.openForJob('daily-report')).toEqual([]);
     expect(await libraries.writeTargets()).toEqual([]);
     expect(await libraries.openForJob('weekly')).toEqual(['dept']);
+  });
+
+  describe('skills that open the window', () => {
+    let skillFile: string;
+    let otherCopy: string;
+
+    beforeEach(async () => {
+      config[0]!.write = { self: 'bots/cc', skills: ['bot-weekly-meeting'] };
+      skillFile = join(root, 'own-skills', 'bot-weekly-meeting', 'SKILL.md');
+      otherCopy = join(root, 'knowledge-libraries', 'dept', 'skills', 'bot-weekly-meeting', 'SKILL.md');
+      await put(root, 'own-skills/bot-weekly-meeting/SKILL.md', '---\nname: bot-weekly-meeting\n---\n');
+    });
+
+    const index = (): { name: string; path: string }[] => [
+      { name: 'bot-weekly-meeting', path: skillFile },
+      { name: 'show-cron', path: join(root, 'own-skills', 'show-cron', 'SKILL.md') },
+    ];
+
+    it('arms only skills a library lists, and none without an index entry', async () => {
+      expect(await libraries.armSkillHook([{ name: 'show-cron', path: skillFile }])).toBeUndefined();
+      const command = await libraries.armSkillHook(index());
+      expect(command).toContain("'skill-read'");
+      expect(command).toContain(libraries.skillArmFile());
+      const arm = JSON.parse(await readFile(libraries.skillArmFile(), 'utf8')) as SkillWindowArm;
+      expect(arm.skills.map((entry) => entry.skill)).toEqual(['bot-weekly-meeting']);
+      expect(arm.libraries.map((library) => library.name)).toEqual(['dept']);
+      expect(libraries.skillWriteBindings()).toEqual([
+        { library: 'dept', work: libraries.workDir('dept'), self: 'bots/cc', skills: ['bot-weekly-meeting'] },
+      ]);
+    });
+
+    it('opens the window when the indexed SKILL.md is read, not a same-named copy elsewhere', async () => {
+      await libraries.armSkillHook(index());
+      const arm = JSON.parse(await readFile(libraries.skillArmFile(), 'utf8')) as SkillWindowArm;
+      const opts = { hookCommand: [process.execPath, hookScript], now: () => now };
+
+      expect(await openForSkillRead(arm, otherCopy, opts)).toEqual([]);
+      expect(await openForSkillRead(arm, join(root, 'own-skills', 'show-cron', 'SKILL.md'), opts)).toEqual([]);
+      expect(await libraries.writeTargets()).toEqual([]);
+
+      expect(await openForSkillRead(arm, skillFile, opts)).toEqual(['dept']);
+      const [target] = await libraries.writeTargets();
+      expect(target).toMatchObject({ library: 'dept', self: 'bots/cc', until: now + 180 * 60_000 });
+      const status = await libraries.status();
+      expect(status[0]?.window?.reason).toBe('skill:bot-weekly-meeting');
+    });
+
+    it('the hook process opens the window and never blocks the read', async () => {
+      const command = await libraries.armSkillHook(index());
+      expect(command).toBeDefined();
+      const hook = (filePath: string, tool = 'Read') =>
+        spawnSync(process.execPath, [hookScript, 'skill-read', libraries.skillArmFile()], {
+          input: JSON.stringify({ tool_name: tool, tool_input: { file_path: filePath } }),
+          encoding: 'utf8',
+          timeout: 60_000,
+        });
+
+      const miss = hook(otherCopy);
+      expect(miss.status).toBe(0);
+      expect(miss.stdout).toBe('');
+      expect(await libraries.writeTargets()).toEqual([]);
+
+      const hit = hook(skillFile);
+      expect(hit.status).toBe(0);
+      expect(hit.stdout).toBe('');
+      expect(hit.stderr).toContain('dept');
+      expect((await libraries.writeTargets()).map((target) => target.library)).toEqual(['dept']);
+
+      // A broken arm file is reported, the read still goes ahead.
+      const broken = spawnSync(process.execPath, [hookScript, 'skill-read', join(root, 'missing.json')], {
+        input: JSON.stringify({ tool_name: 'Read', tool_input: { file_path: skillFile } }),
+        encoding: 'utf8',
+      });
+      expect(broken.status).toBe(0);
+    }, 60_000);
+
+    it('announces the skill binding until the window is open', async () => {
+      const store = new KnowledgeStore(join(root, 'knowledge'));
+      store.setLibrarySource(libraries);
+      const before = await buildKnowledgeContext({ store, scopeId: 'oc_x' });
+      expect(before?.libraryWriteOnSkill).toEqual([
+        { library: 'dept', work: libraries.workDir('dept'), self: 'bots/cc/', skills: ['bot-weekly-meeting'] },
+      ]);
+      await libraries.openWindow('dept', { minutes: 30, reason: 'owner' });
+      const after = await buildKnowledgeContext({ store, scopeId: 'oc_x' });
+      expect(after?.libraryWriteOnSkill).toBeUndefined();
+      expect(after?.libraryWrite?.[0]?.library).toBe('dept');
+    });
   });
 
   it('refuses to open a window on a read-only library', async () => {

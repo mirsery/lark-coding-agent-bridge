@@ -110,6 +110,12 @@ export interface AgentRunOptions {
   guard?: RunGuard;
   approvals?: RunApprovals;
   /**
+   * Shell command run before every file Read (a Claude PreToolUse hook on
+   * `Read`): opens a knowledge library's write window when the agent reads a
+   * bound skill. Never blocks the read. Adapters without hooks ignore it.
+   */
+  readHook?: string;
+  /**
    * 会话智能压缩: auto-compact the conversation against a context window of
    * this many tokens instead of the model's full window, so long sessions get
    * summarised well before they reach it. Adapters without the knob ignore it.

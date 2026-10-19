@@ -52,6 +52,25 @@ export interface LibraryWriteTarget {
   until: number;
 }
 
+/** A library whose window opens when the agent reads one of `skills`. */
+export interface SkillWriteBinding {
+  library: string;
+  work: string;
+  self: string;
+  skills: string[];
+}
+
+/**
+ * What the Read hook of one run needs to open a window on its own: the
+ * SKILL.md files that count (resolved, from this profile's skill index only),
+ * and enough of the library config to clone the work copy.
+ */
+export interface SkillWindowArm {
+  dir: string;
+  libraries: KnowledgeLibraryConfig[];
+  skills: { skill: string; path: string; libraries: string[] }[];
+}
+
 export interface KnowledgeLibraryStatus {
   config: KnowledgeLibraryConfig;
   present: boolean;
@@ -247,6 +266,42 @@ export class KnowledgeLibraries {
     await writeFileAtomic(this.windowFile(name), `${JSON.stringify(window, null, 2)}\n`, { mode: 0o600 });
     log.info('knowledge-lib', 'window-opened', { library: name, until, reason: opts.reason });
     return { library: name, work, self: write.self, defaultBranch: await defaultBranchOf(work, library), until };
+  }
+
+  /** Libraries with `write.skills`, for the prompt to say where reading the skill lets it write. */
+  skillWriteBindings(): SkillWriteBinding[] {
+    return this.libraries().flatMap((library) =>
+      library.write?.skills?.length
+        ? [{ library: library.name, work: this.workDir(library.name), self: library.write.self, skills: library.write.skills }]
+        : [],
+    );
+  }
+
+  /**
+   * Write the arm file for `write.skills` and return the PreToolUse command
+   * that watches Reads, or undefined when no listed skill is in `index`.
+   * Only the index's own paths count: a same-named skill elsewhere (the
+   * department library's copy) is just a file and opens nothing.
+   */
+  async armSkillHook(index: readonly { name: string; path: string }[]): Promise<string | undefined> {
+    const libraries = this.libraries().filter((library) => library.write?.skills?.length);
+    const skills: SkillWindowArm['skills'] = [];
+    for (const entry of index) {
+      const names = libraries.filter((library) => library.write!.skills!.includes(entry.name)).map((library) => library.name);
+      if (names.length === 0) continue;
+      const path = await realpath(entry.path).catch(() => entry.path);
+      skills.push({ skill: entry.name, path, libraries: names });
+    }
+    if (skills.length === 0) return undefined;
+    const arm: SkillWindowArm = { dir: this.dir, libraries, skills };
+    const file = this.skillArmFile();
+    await mkdir(this.dir, { recursive: true, mode: 0o700 });
+    await writeFileAtomic(file, `${JSON.stringify(arm, null, 2)}\n`, { mode: 0o600 });
+    return [...this.hookCommand, 'skill-read', file].map(shellQuote).join(' ');
+  }
+
+  skillArmFile(): string {
+    return join(this.dir, 'skill-windows.json');
   }
 
   /** Windows for the libraries that list this job. Failures are logged, never thrown: the job runs regardless. */
@@ -528,4 +583,49 @@ function isInside(root: string, path: string): boolean {
 
 async function isDirectory(path: string): Promise<boolean> {
   return stat(path).then((info) => info.isDirectory(), () => false);
+}
+
+/** The Read hook for skills bound to a library's write window, if any are in the index. */
+export async function armSkillReadHook(
+  libraries: KnowledgeLibraries,
+  skills: { listSkills(): Promise<readonly { name: string; path: string }[]> },
+  scope: string,
+): Promise<string | undefined> {
+  try {
+    return await libraries.armSkillHook(await skills.listSkills());
+  } catch (err) {
+    log.warn('knowledge-lib', 'skill-hook-failed', { scope, err: String(err) });
+    return undefined;
+  }
+}
+
+/**
+ * The Read hook side: `filePath` is what the agent is about to read. When it
+ * is an armed skill, open the windows that skill is bound to. Returns the
+ * libraries opened; never throws on a mismatch.
+ */
+export async function openForSkillRead(
+  arm: SkillWindowArm,
+  filePath: string,
+  opts: { hookCommand?: readonly string[]; now?: () => number } = {},
+): Promise<string[]> {
+  if (!filePath) return [];
+  const resolved = await realpath(filePath).catch(() => filePath);
+  const hit = arm.skills.filter((entry) => entry.path === resolved || entry.path === filePath);
+  if (hit.length === 0) return [];
+  const libraries = new KnowledgeLibraries({
+    dir: arm.dir,
+    libraries: () => arm.libraries,
+    ...(opts.hookCommand ? { hookCommand: opts.hookCommand } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
+  });
+  const opened: string[] = [];
+  for (const entry of hit) {
+    for (const name of entry.libraries) {
+      if (opened.includes(name)) continue;
+      await libraries.openWindow(name, { minutes: JOB_WINDOW_MINUTES, reason: `skill:${entry.skill}` });
+      opened.push(name);
+    }
+  }
+  return opened;
 }

@@ -852,6 +852,8 @@ export interface KnowledgeLibraryView {
   windowUntil?: string;
   weekCommits?: number;
   jobs?: string[];
+  /** Skills whose reading opens the window. */
+  skills?: string[];
 }
 
 function knowledgeLibraryLines(library: KnowledgeLibraryView): string[] {
@@ -867,7 +869,8 @@ function knowledgeLibraryLines(library: KnowledgeLibraryView): string[] {
   const window = library.windowUntil ? `写入窗口开到 ${library.windowUntil}` : '写入窗口关闭';
   const week = library.weekCommits !== undefined ? ` · 本周已写入 ${library.weekCommits} 次` : '';
   const jobs = library.jobs?.length ? ` · 定时任务 ${library.jobs.map((job) => `\`${escapeCode(job)}\``).join('、')} 运行时开放` : '';
-  lines.push(`✍️ \`${escapeCode(library.self)}/\` · ${window}${week}${jobs}`);
+  const skills = library.skills?.length ? ` · 读 ${library.skills.map((skill) => `\`${escapeCode(skill)}\``).join('、')} 时开放` : '';
+  lines.push(`✍️ \`${escapeCode(library.self)}/\` · ${window}${week}${jobs}${skills}`);
   return lines;
 }
 

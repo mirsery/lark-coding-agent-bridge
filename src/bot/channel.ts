@@ -113,9 +113,9 @@ import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { reportInterruptedRuns } from './interrupted-notice';
 import { RunRegistry } from '../runtime/run-registry';
-import { buildKnowledgeContext } from '../knowledge/inject';
+import { buildKnowledgeContext, withoutSkillWrite } from '../knowledge/inject';
 import { getKnowledgeSyncIntervalMinutes, KnowledgeAutoSync } from '../knowledge/auto-sync';
-import { KnowledgeLibraries } from '../knowledge/knowledge-libraries';
+import { armSkillReadHook, KnowledgeLibraries } from '../knowledge/knowledge-libraries';
 import { getSkillSyncIntervalMinutes, SkillLibraries } from '../knowledge/libraries';
 import { KnowledgeStore } from '../knowledge/store';
 import { Scheduler } from '../scheduler/scheduler';
@@ -1469,7 +1469,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Memory and the skill index are read fresh on every run: `/memory add` in
   // the middle of a conversation has to take effect on the next message, not
   // the next restart.
-  const knowledgeContext = knowledge
+  const builtKnowledge = knowledge
     ? await buildKnowledgeContext({ store: knowledge, scopeId: scope }).catch((err: unknown) => {
         log.warn('knowledge', 'build-failed', { scope, err: String(err) });
         return undefined;
@@ -1479,6 +1479,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Changes to the bridge and the agent itself are the owner's alone: other
   // people's runs are told so and fenced off at the tool level.
   const ownerRun = isOwnerBatch(controls, batch, (m) => senderTypeOf(m) === 'bot');
+  // Reading a bound skill (the bot meeting) opens a library's write window —
+  // in the owner's runs only, so that is the only place it is announced.
+  const readHook =
+    ownerRun && knowledge && controls.knowledgeLibraries
+      ? await armSkillReadHook(controls.knowledgeLibraries, knowledge, scope)
+      : undefined;
+  const knowledgeContext = readHook ? builtKnowledge : withoutSkillWrite(builtKnowledge);
   const prompt = buildPrompt(
     batch,
     attachments,
@@ -1594,6 +1601,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     ...(guestGuard ? { guard: guestGuard } : {}),
+    ...(readHook ? { readHook } : {}),
     ...(smartSession
       ? {
           compactWindowTokens: smartSession.compactWindowTokens,

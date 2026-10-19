@@ -9,11 +9,12 @@ import { renderCard, type RunCardRenderOptions } from '../card/run-renderer';
 import type { RunState } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
 import { promptSection } from '../agent/prompt';
-import { buildKnowledgeContext } from '../knowledge/inject';
+import { buildKnowledgeContext, withoutSkillWrite } from '../knowledge/inject';
+import { armSkillReadHook } from '../knowledge/knowledge-libraries';
 import type { Controls } from '../commands';
 import { getMessageReplyMode, getRunIdleTimeoutMs, getShowToolCalls } from '../config/schema';
 import { log } from '../core/logger';
-import { canUseDm, canUseGroup } from '../policy/access';
+import { canUseDm, canUseGroup, isCreator } from '../policy/access';
 import type { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
@@ -90,6 +91,11 @@ export async function runScheduledJob(
   // the work clone.
   const writable = (await deps.controls.knowledgeLibraries?.openForJob(job.id)) ?? [];
   if (writable.length > 0) log.info('scheduler', 'job-knowledge-write', { jobId: job.id, libraries: writable });
+  // The owner's jobs also get the skill Read hook, like the owner's chats.
+  const readHook =
+    deps.controls.knowledgeLibraries && deps.controls.knowledge && isCreator(deps.controls, job.creatorId)
+      ? await armSkillReadHook(deps.controls.knowledgeLibraries, deps.controls.knowledge, scopeId)
+      : undefined;
 
   const flow = await startRunFlow({
     scopeId,
@@ -99,7 +105,7 @@ export async function runScheduledJob(
       chatId: job.chatId,
       ...(job.threadId ? { threadId: job.threadId } : {}),
     },
-    prompt: await buildJobPrompt(deps, job, startedAt),
+    prompt: await buildJobPrompt(deps, job, startedAt, Boolean(readHook)),
     attachments: [],
     access,
     capability,
@@ -109,6 +115,7 @@ export async function runScheduledJob(
     workspaces: deps.workspaces,
     executor: deps.executor,
     now: Date.now(),
+    ...(readHook ? { readHook } : {}),
     observability: {
       profile: deps.controls.profile,
       agent: capability.agentId,
@@ -275,15 +282,17 @@ async function buildJobPrompt(
   deps: JobRunnerDeps,
   job: ScheduledJob,
   firedAt: number,
+  skillHook = false,
 ): Promise<string> {
   const store = deps.controls.knowledge;
   // Chat memory is keyed by the *originating* chat's scope, not the job's own
   // `cron:<id>` scope — the job should inherit what that conversation taught
   // the bot, which is where it was created.
   const originScope = jobOriginScope(job);
-  const knowledge = store
+  const built = store
     ? await buildKnowledgeContext({ store, scopeId: originScope }).catch(() => undefined)
     : undefined;
+  const knowledge = skillHook ? built : withoutSkillWrite(built);
   return [
     ...(knowledge ? [promptSection('bridge_knowledge', knowledge), ''] : []),
     `[定时任务 ${job.id}]`,

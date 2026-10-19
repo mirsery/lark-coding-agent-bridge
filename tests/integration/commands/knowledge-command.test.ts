@@ -469,6 +469,28 @@ describe('/knowledge lib', () => {
     await expect(h.run('/knowledge lib write dept job nope', 'ou-owner')).resolves.toBe(true);
     expect(lastMarkdown(h.channel)).toContain('没有 id 为');
 
+    // A skill binding needs the skill in the index, and keeps the other write settings.
+    await expect(h.run('/knowledge lib write dept skill bot-weekly-meeting', 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('skill 索引里没有');
+    await mkdir(join(h.store.skillsDir, 'bot-weekly-meeting'), { recursive: true });
+    await writeFile(
+      join(h.store.skillsDir, 'bot-weekly-meeting', 'SKILL.md'),
+      '---\nname: bot-weekly-meeting\ndescription: 主持机器人周会\n---\n\n正文\n',
+    );
+    await expect(h.run('/knowledge lib write dept skill bot-weekly-meeting', 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('自动打开');
+    expect((await loadRootConfig(h.controls.configPath))?.profiles.claude?.knowledge?.libraries?.[0]?.write).toEqual({
+      self: 'bots/cc',
+      skills: ['bot-weekly-meeting'],
+    });
+    await expect(h.run('/knowledge', 'ou-owner')).resolves.toBe(true);
+    expect(lastCardJson(h.channel)).toContain('bot-weekly-meeting');
+    await expect(h.run('/knowledge lib write dept skill bot-weekly-meeting', 'ou-owner')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('不再打开');
+    expect((await loadRootConfig(h.controls.configPath))?.profiles.claude?.knowledge?.libraries?.[0]?.write).toEqual({
+      self: 'bots/cc',
+    });
+
     await expect(h.run('/knowledge lib rm dept', 'ou-owner')).resolves.toBe(true);
     expect(lastMarkdown(h.channel)).toContain('已取消订阅');
     expect((await loadRootConfig(h.controls.configPath))?.profiles.claude?.knowledge?.libraries).toBeUndefined();

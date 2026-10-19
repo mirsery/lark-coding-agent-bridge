@@ -2753,7 +2753,7 @@ const KNOWLEDGE_LIB_HELP = [
   '`/knowledge lib` — 已订阅的库、拉取状态、写入窗口',
   '`/knowledge lib add <git 地址> [名字] [--read 规则,规则] [--self 目录] [--ref 分支]` — 订阅一个库并立即拉取；`--read` 选哪些文件进索引（如 `shared/**,bots/*/notes/**`，缺省全部 `.md`），`--self` 是 bot 在库里自己的目录（如 `bots/cc`），不写就是只读',
   '`/knowledge lib sync [名字]` — 立即拉取',
-  `\`/knowledge lib write <名字> [分钟]\` — 打开写入窗口（缺省 ${DEFAULT_WINDOW_MINUTES} 分钟，最长 ${MAX_WINDOW_MINUTES / 60} 小时）；\`off\` 关闭；\`job <任务 id>\` 让这个定时任务（如周会）运行时自动打开，再执行一次取消`,
+  `\`/knowledge lib write <名字> [分钟]\` — 打开写入窗口（缺省 ${DEFAULT_WINDOW_MINUTES} 分钟，最长 ${MAX_WINDOW_MINUTES / 60} 小时）；\`off\` 关闭；\`job <任务 id>\` 让这个定时任务（如周会）运行时自动打开；\`skill <skill 名>\` 让读到这个 skill 时自动打开（手动叫开会也算）；再执行一次取消`,
   '`/knowledge lib rm <名字>` — 取消订阅，本地镜像和未推送的写入一起删掉',
   '',
   '库是只读镜像，跟着远端走，文件标题和第一句话进每一轮的索引（`shared/` 下的标为公共结论，其他 bot 目录下的标为个人笔记）。只有写入窗口开着时 bot 才能在库的工作副本里提交：默认分支上只能改自己的目录，其余走分支 + Draft PR，提交前检查脱敏。私有仓库用本机已配好的 SSH key 访问，不要把 token 写进地址。',
@@ -2812,6 +2812,7 @@ async function knowledgeLibraryViews(ctx: CommandContext): Promise<KnowledgeLibr
     ...(status.window ? { windowUntil: formatClock(status.window.until) } : {}),
     ...(status.weekCommits !== undefined ? { weekCommits: status.weekCommits } : {}),
     ...(status.config.write?.jobs?.length ? { jobs: status.config.write.jobs } : {}),
+    ...(status.config.write?.skills?.length ? { skills: status.config.write.skills } : {}),
   }));
 }
 
@@ -2900,7 +2901,7 @@ async function knowledgeLibraryAdd(tokens: string[], ctx: CommandContext, librar
       `📖 已订阅知识库 \`${library.name}\`（\`${result.commit ?? '?'}\`），索引 ${entries.length} 条，下一条消息起生效。`,
       ...(entries.length === 0 ? ['⚠️ 没有文件进索引：检查 `--read` 规则是否写对（相对仓库根目录，`*` 不跨目录，`**` 跨目录）。'] : []),
       library.write
-        ? `可写目录 \`${library.write.self}/\`：平时只读，\`/knowledge lib write ${library.name}\` 打开写入窗口，或 \`/knowledge lib write ${library.name} job <任务 id>\` 让周会任务运行时自动打开。`
+        ? `可写目录 \`${library.write.self}/\`：平时只读，\`/knowledge lib write ${library.name}\` 打开写入窗口，\`/knowledge lib write ${library.name} skill <skill 名>\` 让读到周会 skill 时自动打开，或 \`job <任务 id>\` 让定时任务运行时打开。`
         : '只读订阅：没有配置 `--self`，bot 不会往这个库写东西。',
       interval > 0 ? `每 ${interval} 分钟自动拉取。` : '自动拉取已关闭，用 `/knowledge lib sync` 拉取。',
     ].join('\n'),
@@ -2970,7 +2971,8 @@ async function knowledgeLibraryWrite(tokens: string[], ctx: CommandContext, libr
       libraries: (knowledge.libraries ?? []).map((item) => {
         if (item.name !== name || !item.write) return item;
         const jobs = bound ? (item.write.jobs ?? []).filter((id) => id !== jobId) : [...(item.write.jobs ?? []), jobId];
-        return { ...item, write: { self: item.write.self, ...(jobs.length > 0 ? { jobs } : {}) } };
+        const { jobs: _jobs, ...rest } = item.write;
+        return { ...item, write: { ...rest, ...(jobs.length > 0 ? { jobs } : {}) } };
       }),
     }));
     await reply(
@@ -2978,6 +2980,31 @@ async function knowledgeLibraryWrite(tokens: string[], ctx: CommandContext, libr
       bound
         ? `✓ 定时任务 \`${jobId}\` 运行时不再打开 \`${name}\` 的写入窗口。`
         : `✓ 定时任务 \`${jobId}\` 每次运行时打开 \`${name}\` 的写入窗口，持续 3 小时。`,
+    );
+    return;
+  }
+  if (action === 'skill') {
+    const skill = jobId;
+    const bound = library.write.skills?.includes(skill) ?? false;
+    const known = (await ctx.controls.knowledge?.listSkills().catch(() => []))?.some((item) => item.name === skill) ?? false;
+    if (!skill || (!known && !bound)) {
+      await reply(ctx, skill ? `skill 索引里没有 \`${skill}\`，\`/skills\` 看看列表。` : '用法：`/knowledge lib write <名字> skill <skill 名>`');
+      return;
+    }
+    await configOps.saveKnowledgeConfig(ctx.controls, (knowledge) => ({
+      ...knowledge,
+      libraries: (knowledge.libraries ?? []).map((item) => {
+        if (item.name !== name || !item.write) return item;
+        const skills = bound ? (item.write.skills ?? []).filter((s) => s !== skill) : [...(item.write.skills ?? []), skill];
+        const { skills: _skills, ...rest } = item.write;
+        return { ...item, write: { ...rest, ...(skills.length > 0 ? { skills } : {}) } };
+      }),
+    }));
+    await reply(
+      ctx,
+      bound
+        ? `✓ 读 \`${skill}\` 不再打开 \`${name}\` 的写入窗口。`
+        : `✓ 主人的会话和定时任务里读到 \`${skill}\` 时，自动打开 \`${name}\` 的写入窗口，持续 3 小时（Claude）。`,
     );
     return;
   }

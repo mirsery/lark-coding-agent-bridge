@@ -360,6 +360,31 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.argv).toContain('--disallowedTools');
   });
 
+  it('adds the knowledge Read hook to the settings file', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-read' }] });
+    cleanup.push(fake.dir);
+
+    await collect(
+      new ClaudeAdapter({ binary: fake.path }).run({
+        runId: 'run-read',
+        prompt: 'x',
+        cwd: fake.dir,
+        readHook: "node /opt/knowledge-hook.mjs skill-read '/p/skill-windows.json'",
+      }).events,
+    );
+    const record = await readRecord(fake.recordPath);
+    expect(record.settings).toEqual({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Read',
+            hooks: [{ type: 'command', command: "node /opt/knowledge-hook.mjs skill-read '/p/skill-windows.json'", timeout: 120 }],
+          },
+        ],
+      },
+    });
+  });
+
   it('keeps a gated run read-only when no approval hook could be set up', async () => {
     const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-ro' }] });
     cleanup.push(fake.dir);

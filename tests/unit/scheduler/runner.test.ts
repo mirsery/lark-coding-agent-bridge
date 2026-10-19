@@ -256,6 +256,34 @@ describe('scheduled runs and knowledge', () => {
     expect(mocks.startRunFlow.mock.calls[0]?.[0]?.prompt as string).toContain('libraryWrite');
   });
 
+  it("gives the owner's job the skill Read hook, and keeps the skill note out of a job without it", async () => {
+    mocks.startRunFlow.mockResolvedValue(flowEmitting(answer));
+    const binding = { library: 'dept', work: '/w', self: 'bots/cc', skills: ['bot-weekly-meeting'] };
+    const knowledge = {
+      listMemories: async () => [],
+      listSkills: async () => [{ name: 'bot-weekly-meeting', description: 'd', path: '/s/SKILL.md' }],
+      listLibraryEntries: async () => [],
+      libraryWriteTargets: async () => [],
+      librarySkillBindings: () => [binding],
+    };
+    const armSkillHook = vi.fn(async () => "'node' 'hook' 'skill-read' '/arm.json'");
+    const deps = makeDeps();
+    const controls = (deps as { controls: Record<string, unknown> }).controls;
+    controls.knowledgeLibraries = { openForJob: async () => [], armSkillHook };
+    controls.knowledge = knowledge;
+
+    await runScheduledJob(deps, job());
+    const owned = mocks.startRunFlow.mock.calls[0]?.[0] as { readHook?: string; prompt: string };
+    expect(owned.readHook).toContain('skill-read');
+    expect(owned.prompt).toContain('libraryWriteOnSkill');
+
+    armSkillHook.mockResolvedValueOnce(undefined as unknown as string);
+    await runScheduledJob(deps, job());
+    const unarmed = mocks.startRunFlow.mock.calls[1]?.[0] as { readHook?: string; prompt: string };
+    expect(unarmed.readHook).toBeUndefined();
+    expect(unarmed.prompt).not.toContain('libraryWriteOnSkill');
+  });
+
   it('runs without a knowledge store at all', async () => {
     mocks.startRunFlow.mockResolvedValue(flowEmitting(answer));
     await runScheduledJob(makeDeps(), job());

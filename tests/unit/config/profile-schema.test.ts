@@ -190,7 +190,7 @@ describe('profile schema', () => {
             name: 'dept',
             url: ' git@github.com:dept/kb.git ',
             read: ['shared/**', ' ', 'bots/*/notes/**'],
-            write: { self: './bots/cc/', jobs: ['w1', 'w1', ''] },
+            write: { self: './bots/cc/', jobs: ['w1', 'w1', ''], skills: [' bot-weekly-meeting ', 'bot-weekly-meeting'] },
           },
           { name: 'dept', url: 'git@github.com:dup/kb.git' },
           { name: 'clash.work', url: 'git@github.com:x/kb.git' },
@@ -205,7 +205,7 @@ describe('profile schema', () => {
           name: 'dept',
           url: 'git@github.com:dept/kb.git',
           read: ['shared/**', 'bots/*/notes/**'],
-          write: { self: 'bots/cc', jobs: ['w1'] },
+          write: { self: 'bots/cc', jobs: ['w1'], skills: ['bot-weekly-meeting'] },
         },
         // A write directory outside the repository makes the library read-only, not invalid.
         { name: 'ro', url: 'git@github.com:x/ro.git', ref: 'main' },

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
-import type { LibraryEntry, LibraryWriteTarget } from './knowledge-libraries';
+import type { LibraryEntry, LibraryWriteTarget, SkillWriteBinding } from './knowledge-libraries';
 
 /**
  * Bridge-managed knowledge for one profile: what the bot should remember, and
@@ -49,6 +49,7 @@ export interface SkillSource {
 export interface LibraryKnowledgeSource {
   listEntries(): Promise<LibraryEntry[]>;
   writeTargets(): Promise<LibraryWriteTarget[]>;
+  skillWriteBindings?(): SkillWriteBinding[];
 }
 
 /** Bullet lines look like `- [a1b2c3] remember this`. */
@@ -79,6 +80,10 @@ export class KnowledgeStore {
 
   async libraryWriteTargets(): Promise<LibraryWriteTarget[]> {
     return (await this.librarySource?.writeTargets()) ?? [];
+  }
+
+  librarySkillBindings(): SkillWriteBinding[] {
+    return this.librarySource?.skillWriteBindings?.() ?? [];
   }
 
   get skillsDir(): string {

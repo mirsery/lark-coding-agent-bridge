@@ -280,6 +280,12 @@ export interface KnowledgeLibraryWrite {
   self: string;
   /** Scheduled jobs (`/cron` ids) whose runs open the write window. */
   jobs?: string[];
+  /**
+   * Skills (names in this profile's skill index) whose reading opens the
+   * window — the meeting skill writes the same way whether the meeting was
+   * scheduled or called by hand.
+   */
+  skills?: string[];
 }
 
 export type LarkCliIdentityPreset = 'bot-only' | 'user-default';
@@ -816,11 +822,12 @@ function normalizeKnowledge(input: unknown): KnowledgeConfig | undefined {
 
 function normalizeKnowledgeWrite(input: unknown): KnowledgeLibraryWrite | undefined {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const raw = input as { self?: unknown; jobs?: unknown };
+  const raw = input as { self?: unknown; jobs?: unknown; skills?: unknown };
   const self = typeof raw.self === 'string' ? normalizeLibraryDir(raw.self) : undefined;
   if (!self) return undefined;
   const jobs = [...new Set(stringArray(raw.jobs).map((job) => job.trim()).filter(Boolean))];
-  return { self, ...(jobs.length > 0 ? { jobs } : {}) };
+  const skills = [...new Set(stringArray(raw.skills).map((skill) => skill.trim()).filter(Boolean))];
+  return { self, ...(jobs.length > 0 ? { jobs } : {}), ...(skills.length > 0 ? { skills } : {}) };
 }
 
 /**
