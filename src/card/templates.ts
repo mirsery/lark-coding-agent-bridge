@@ -293,6 +293,11 @@ export function helpCard(agentName = 'Agent'): object {
       padding: '12px 12px 16px 12px',
       vertical_spacing: '10px',
       elements: [
+        helpSection('yellow-50', '📌 置顶 · eli5 讲给小白听', [
+          '`/eli5 <话题>` — 把话题讲给完全不懂的人：生成一页 HTML 图解，图大、字少，作为附件发回会话',
+          '适合给非技术同事、客户、管理层解释概念，或排障汇报、方案评审前先对齐；讲得刻意浅，不能代替技术文档',
+          '例：`/eli5 DNS 是怎么工作的`、`/eli5 为什么线程池占满会导致 504`',
+        ]),
         helpSection('blue-50', '🗣 会话', [
           '`/new` `/reset` — 清空当前会话',
           '`/new chat [名字]` — 新建群 + 新会话，自动拉你进群',
