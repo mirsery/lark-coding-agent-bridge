@@ -65,8 +65,9 @@ program
 program
   .command('monitor')
   .description('Live terminal dashboard for bots, tasks and recent activity')
+  .option('--no-animation', 'disable the character cat animation')
   .option('--profile <name>', 'show one profile')
-  .option('--interval <seconds>', 'refresh interval (0.5–60)', '2')
+  .option('--interval <seconds>', 'sampling interval (0.5–60 seconds)', '10')
   .option('--once', 'print one snapshot')
   .option('--json', 'print one JSON snapshot')
   .option('--no-color', 'disable colors')

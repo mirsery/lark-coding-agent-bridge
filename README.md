@@ -153,7 +153,7 @@ Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
 ### Live terminal dashboard
 
-See bot availability, current tasks, execution stages and elapsed time alongside CPU, memory, free disk space and host uptime. Runs in a terminal, including macOS Terminal and iTerm2, without opening a browser.
+See bot availability, current tasks, execution stages and elapsed time alongside CPU, memory, free disk space and host uptime. A single TUI uses standard ANSI controls without terminal-specific split panes or APIs. Host metrics and a character cat appear above session tasks.
 
 ![Live terminal dashboard screenshot](docs/images/terminal-monitor.png)
 
@@ -164,19 +164,19 @@ lark-channel-bridge monitor --once
 lark-channel-bridge monitor --json
 ```
 
-The examples above refresh every five seconds; omitting `--interval` uses the two-second default.
+The examples above refresh every five seconds; omitting `--interval` uses a ten-second sampling default. The cat independently updates only its own area at two frames per second, without collecting metrics or reading logs. Use `--no-animation` to disable animation; small viewports hide the cat.
 
 On macOS, physical disk read/write rates and physical network download/upload rates use counter deltas, excluding loopback and tunnel duplicates. Initial or unavailable samples show `—`; I/O sampling runs at most once every five seconds.
 
 On macOS, install `osx-cpu-temp` (`brew install osx-cpu-temp`) to display CPU temperature as `TEMP`, sampled at most once every five seconds. Missing, unsupported or failed sensors show `—`. No sudo is required.
 
-The layout adapts to the viewport: wide windows show bots in two columns, ordinary windows stack them, and narrow windows split host metrics across rows. Resizing immediately reflows the dashboard.
+The layout adapts to the viewport: wide windows show bots in two columns, ordinary windows stack them, and narrow windows split host metrics across rows. Resizing immediately reflows the cached snapshot without another sample.
 
 Each task shows its chat name (or DM) and requester on the right, moving to a separate row in narrow windows. Names are captured when the task starts; refreshing makes no Feishu API calls. Older tasks or unresolved names display a pending label. Restart the bridge after upgrading to record origins for new tasks.
 
 Working bots appear first, task summaries wrap and long URLs collapse to their final path segment. Press `q` to quit, space to pause or `r` to refresh. `--interval <seconds>` supports 0.5–60 seconds and `--no-color` disables colors. Non-interactive terminals print one snapshot; `--json` returns the full state.
 
-The dashboard reads local state without requiring a bot restart. CPU utilization uses successive samples and is unavailable on the first frame. RAM shows non-free memory, including OS cache. Disk statistics are cached for 30 seconds; unchanged logs reuse parsed events, with each tail read capped at 256 KiB. Task stages come from real telemetry rather than estimated completion percentages, and exited or expired tasks are marked as interrupted.
+The dashboard reads local state without requiring a bot restart. CPU utilization uses successive samples and is unavailable on the first frame. RAM shows non-free memory, including OS cache. Disk capacity is cached for 60 seconds; unchanged logs reuse parsed events, with each tail read capped at 256 KiB. Task stages come from real telemetry rather than estimated completion percentages, and exited or expired tasks are marked as interrupted.
 
 ### Web console (`--web-ui`)
 

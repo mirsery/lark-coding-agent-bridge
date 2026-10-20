@@ -19,19 +19,22 @@ export function cpuPercent(previous: CpuTicks, current: CpuTicks): number | null
   if (total <= 0 || idle < 0) return null;
   return Math.max(0, Math.min(100, (1 - idle / total) * 100));
 }
-/** OS counters only; disk stats are cached for 30s. Never spawn top/ps per frame. */
-export function createHostSampler() {
+/** OS counters only; metrics are cached for 10s and disk capacity for 60s. Never spawn top/ps per frame. */
+export function createHostSampler(intervalMs = 10_000) {
   const sampleIo = createIoSampler();
   const sampleTemperature = createTemperatureSampler();
+  let cached: HostMetrics | undefined;
+  let sampledAt = -Infinity;
   let previous: CpuTicks | undefined;
   let disk: HostMetrics['disk'];
   let diskAttempt = -Infinity;
   return async (now = Date.now()): Promise<HostMetrics> => {
+    if (cached && now >= sampledAt && now - sampledAt < intervalMs) return cached;
     const ticks = cpus().reduce((sum, cpu) => ({ idle: sum.idle + cpu.times.idle,
       total: sum.total + Object.values(cpu.times).reduce((a, b) => a + b, 0) }), { idle: 0, total: 0 });
     const percent = previous ? cpuPercent(previous, ticks) : null;
     previous = ticks;
-    if (now - diskAttempt >= 30_000) {
+    if (now - diskAttempt >= 60_000) {
       diskAttempt = now;
       try {
         const fs = await statfs(homedir());
@@ -41,6 +44,8 @@ export function createHostSampler() {
     }
     const memoryTotal = totalmem();
     const [io, temperatureC] = await Promise.all([sampleIo(now), sampleTemperature(now)]);
-    return { io, temperatureC, cpuPercent: percent, memoryTotal, memoryNonFree: memoryTotal - freemem(), uptimeSeconds: uptime(), disk };
+    sampledAt = now;
+    cached = { io, temperatureC, cpuPercent: percent, memoryTotal, memoryNonFree: memoryTotal - freemem(), uptimeSeconds: uptime(), disk };
+    return cached;
   };
 }

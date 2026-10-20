@@ -1,3 +1,5 @@
+import { catPatch } from '../../terminal/dashboard';
+import type { MonitorSnapshot } from '../../terminal/monitor';
 import { resolveAppPaths } from '../../config/app-paths';
 import { createMonitorReader, renderMonitor } from '../../terminal/monitor';
 
@@ -7,10 +9,10 @@ export function monitorFrame(text: string): string {
   return '\x1b[H' + text.replace(/\r?\n/g, '\x1b[K\r\n') + '\x1b[K\x1b[J';
 }
 
-export async function runMonitor(opts: { profile?: string; interval?: string; once?: boolean; json?: boolean; color?: boolean }): Promise<void> {
-  const seconds = Number(opts.interval ?? 2);
+export async function runMonitor(opts: { profile?: string; interval?: string; once?: boolean; json?: boolean; color?: boolean; animation?: boolean }): Promise<void> {
+  const seconds = Number(opts.interval ?? 10);
   if (!Number.isFinite(seconds) || seconds < 0.5 || seconds > 60) throw new Error('--interval must be between 0.5 and 60 seconds');
-  const readMonitor = createMonitorReader();
+  const readMonitor = createMonitorReader(seconds * 1000);
   const root = resolveAppPaths().rootDir;
   if (opts.once || opts.json || !process.stdout.isTTY || !process.stdin.isTTY) {
     const snap = await readMonitor(root, opts.profile);
@@ -18,11 +20,20 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
     return;
   }
   let paused = false; let stopped = false; let timer: NodeJS.Timeout | undefined;
+  let animation: NodeJS.Timeout | undefined;
+  let snapshot: MonitorSnapshot | undefined;
+  let frame = 0;
+  const color = opts.color !== false && !process.env.NO_COLOR;
+  const draw = () => {
+    if (stopped || !snapshot) return;
+    process.stdout.write(monitorFrame(renderMonitor(snapshot, process.stdout.columns, process.stdout.rows, color, frame, paused)));
+  };
   const raw = process.stdin.isRaw;
   const restore = () => {
     if (stopped) return;
     stopped = true;
     if (timer) clearTimeout(timer);
+    if (animation) clearInterval(animation);
     process.stdin.off('data', key); process.stdin.setRawMode(raw); process.stdin.pause();
     process.off('SIGINT', restore); process.off('SIGTERM', restore);
     process.stdout.off('resize', resize);
@@ -34,17 +45,23 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
     refreshing = true;
     try {
       const snap = await readMonitor(root, opts.profile);
-      if (!stopped) process.stdout.write(monitorFrame(renderMonitor(snap, process.stdout.columns, process.stdout.rows, opts.color !== false && !process.env.NO_COLOR) + (paused ? '\nPAUSED' : '')));
+      snapshot = snap;
+      draw();
     } finally { refreshing = false; }
   };
   const tick = async () => {
     try { if (!paused) await refresh(); } catch (err) { restore(); console.error((err as Error).message); }
     if (!stopped) timer = setTimeout(() => void tick(), seconds * 1000);
   };
-  const key = (data: Buffer) => { const text = data.toString(); if (text === 'q' || text === '\x03') restore(); else if (text === ' ') { paused = !paused; void refresh().catch(restore); } else if (text === 'r') void refresh().catch(restore); };
-  const resize = () => { void refresh().catch(restore); };
+  const key = (data: Buffer) => { const text = data.toString(); if (text === 'q' || text === '\x03') restore(); else if (text === ' ') { paused = !paused; draw(); } else if (text === 'r') void refresh().catch(restore); };
+  const resize = () => { draw(); };
   process.stdout.write('\x1b[?1049h\x1b[?25l');
   process.stdin.setRawMode(true); process.stdin.resume(); process.stdin.on('data', key);
   process.on('SIGINT', restore); process.on('SIGTERM', restore); process.stdout.on('resize', resize);
+  if (opts.animation !== false) animation = setInterval(() => {
+    if (stopped || paused || !snapshot) return;
+    frame++;
+    process.stdout.write(catPatch(process.stdout.columns, process.stdout.rows, frame, color));
+  }, 500);
   await tick();
 }

@@ -1,3 +1,4 @@
+import { CAT_WIDTH, catPosition, renderCat } from './dashboard';
 import { createHostSampler, type HostMetrics } from './host';
 import { open, readdir } from 'node:fs/promises';
 import { cpus, hostname, loadavg } from 'node:os';
@@ -47,9 +48,9 @@ async function recentActivity(dir: string, cache: Map<string, LogCache>): Promis
   } catch { return []; }
 }
 
-export function createMonitorReader() {
+export function createMonitorReader(intervalMs = 10_000) {
   const cache = new Map<string, LogCache>();
-  const sampleHost = createHostSampler();
+  const sampleHost = createHostSampler(intervalMs);
   return async (rootDir: string, profile?: string, now = Date.now()): Promise<MonitorSnapshot> => {
   const entries = readAndPrune(join(rootDir, 'registry', 'processes.json'));
   let dirs: string[] = [];
@@ -108,7 +109,7 @@ function summary(text: string, cells: number): string[] {
   if (row) lines.push(row);
   return lines;
 }
-export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, color = true): string {
+export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, color = true, frame = 0, paused = false): string {
   // Leave the last terminal cell and row unused to avoid automatic wrap/scroll.
   const usable = Math.max(1, columns - 1);
   const indent = columns >= 40 ? '  ' : '';
@@ -127,25 +128,52 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     .sort((a, b) => Number(b.runs.some(r => !r.orphan)) - Number(a.runs.some(r => !r.orphan)) || Number(b.online) - Number(a.online));
   const online = s.bots.filter(b => b.online).length;
   const running = s.bots.flatMap(b => b.runs).filter(r => !r.orphan).length;
-  const out = [line(), pair('LARK  /  CONTROL', new Date(s.now).toLocaleTimeString(), 36),
-    pair(`${s.host.replace(/\.local$/, '')}  ·  ${online} bots online  ·  ${running} tasks`, 'LIVE', 90), line()];
+  const cat = catPosition(columns, rows);
+  const titleWidth = cat ? w - CAT_WIDTH - 1 : w;
+  const title = (text: string, right: string, code: number, index: number) => {
+    const content = pair(text, right, code, titleWidth);
+    return cat ? content + ' ' + paint(renderCat(frame)[index]!, 36) : content;
+  };
+  const out = [title('LARK  /  CONTROL', '', 36, 0),
+    title(`${s.host.replace(/\.local$/, '')}  ·  ${online} bots online`, '', 90, 1),
+    title(`${running} tasks  ·  ${s.cores} cores  ·  load ${s.load.toFixed(2)}`, '', 90, 2),
+    title(new Date(s.now).toLocaleTimeString(), paused ? 'PAUSED' : 'LIVE', 90, 3)];
   const m = s.metrics;
   if (m) {
     const gib = (n: number) => (n / 1024 ** 3).toFixed(1);
     const up = Math.floor(m.uptimeSeconds / 86400) + 'd ' + Math.floor(m.uptimeSeconds % 86400 / 3600) + 'h';
-    const metrics = [`CPU ${m.cpuPercent === null ? '—' : m.cpuPercent.toFixed(0) + '%'}`, `RAM ${gib(m.memoryNonFree)}/${gib(m.memoryTotal)}G*`,
-      `DISK ${m.disk ? gib(m.disk.available) + 'G free' : '—'}`, `UP ${up}`];
     const speed = (n: number) => n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + 'M/s' : (n / 1024).toFixed(1) + 'K/s';
+    const bar = (percent: number | null, size = 16) => {
+      if (percent === null) return '─'.repeat(size);
+      const filled = Math.round(Math.max(0, Math.min(100, percent)) / 100 * size);
+      return '━'.repeat(filled) + '─'.repeat(size - filled);
+    };
+    const ram = m.memoryTotal > 0 ? m.memoryNonFree / m.memoryTotal * 100 : null;
+    const disk = m.disk && m.disk.total > 0 ? m.disk.used / m.disk.total * 100 : null;
     const io = m.io;
-    const traffic = [`TEMP ${m.temperatureC == null ? '—' : m.temperatureC.toFixed(1) + '°C'}`, io?.disk ? `IO R ${speed(io.disk.read)} W ${speed(io.disk.write)}` : 'IO —',
-      io?.network ? `NET ↓ ${speed(io.network.read)} ↑ ${speed(io.network.write)}` : 'NET —'];
-    const perRow = w >= 72 ? 4 : w >= 40 ? 2 : 1;
-    for (let i = 0; i < metrics.length; i += perRow) out.push(line(metrics.slice(i, i + perRow).join('    ')));
-    if (cells(traffic.join('    ')) <= w) out.push(line(traffic.join('    ')));
-    else out.push(...traffic.map(text => line(text)));
+    const details = [
+      ['CPU', `${bar(m.cpuPercent)}  ${m.cpuPercent === null ? '—' : m.cpuPercent.toFixed(1) + '%'}`],
+      ['RAM', `${bar(ram)}  ${gib(m.memoryNonFree)}/${gib(m.memoryTotal)}G*`],
+      ['DISK', `${bar(disk)}  ${m.disk ? gib(m.disk.available) + 'G free' : '—'}`],
+      ['TEMP ' + (m.temperatureC == null ? '—' : m.temperatureC.toFixed(1) + '°C'), `UP ${up}`],
+      ['IO', io?.disk ? `IO R ${speed(io.disk.read)} W ${speed(io.disk.write)}` : 'IO —'],
+      ['NET', io?.network ? `NET ↓ ${speed(io.network.read)} ↑ ${speed(io.network.write)}` : 'NET —'],
+    ];
+    // Reserve the lower area for sessions; short terminals use compact metrics.
+    if (w >= 76 && rows >= 30) {
+      const half = Math.floor((w - 4) / 2);
+      for (let i = 0; i < details.length; i += 2) {
+        const left = details[i]!; const right = details[i + 1]!;
+        out.push(line(left[0] + ' ' + '─'.repeat(half), 35, half) + '    ' + line(right[0] + ' ' + '─'.repeat(half), 35, half));
+        out.push(line(left[1]!, 37, half) + '    ' + line(right[1]!, 37, half));
+      }
+    } else {
+      out.push(line(`CPU ${m.cpuPercent === null ? '—' : m.cpuPercent.toFixed(0) + '%'}  RAM ${gib(m.memoryNonFree)}/${gib(m.memoryTotal)}G*  DISK ${m.disk ? gib(m.disk.available) + 'G free' : '—'}`));
+      if (rows >= 24) out.push(line(`${details[3]![0]}  ${details[4]![1]}  ${details[5]![1]}`));
+    }
   }
-  out.push(line(), rule());
-  const footer = [line(), rule(), line('q 退出  ·  空格暂停  ·  r 刷新' + (m ? '    *RAM 含系统缓存' : ''), 90)];
+  out.push(rule());
+  const footer = [line(), rule(), line((paused ? 'PAUSED  ·  ' : '') + 'q 退出  ·  空格暂停  ·  r 刷新' + (m ? '    *RAM 含系统缓存' : ''), 90)];
   const slots = w >= 146 && ordered.length > 1 ? 2 : 1;
   const gap = 4;
   const cardWidth = Math.floor((w - (slots - 1) * gap) / slots);

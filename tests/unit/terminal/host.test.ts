@@ -16,9 +16,10 @@ describe('host metrics', () => {
     expect(first.cpuPercent).toBeNull();
     expect(first.temperatureC).toBe(56.2);
     expect(first.disk).toEqual({ total: 102400, used: 71680, available: 20480, sampledAt: 1000 });
-    await read(3000);
+    expect(await read(3000)).toBe(first);
+    await read(31000);
     expect(statfs).toHaveBeenCalledTimes(1);
-    expect((await read(31000)).disk?.sampledAt).toBe(31000);
+    expect((await read(61000)).disk?.sampledAt).toBe(61000);
     expect(statfs).toHaveBeenCalledTimes(2);
   });
 });
