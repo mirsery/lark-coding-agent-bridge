@@ -761,6 +761,67 @@ describe('markdown stream startup failures', () => {
     await waitFor(() => h.controls.autoResumer?.get('oc_dm') === undefined);
   });
 
+  it('resumes a task whose background turn hit the plan quota', async () => {
+    // The user turn ends normally while a subagent runs on; the quota runs out
+    // in the turn the agent takes when that subagent reports back.
+    const resetsAt = Date.now() + 3_600_000;
+    const streams: Array<{ cards: unknown[]; messageId: string }> = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      messageReply: 'card',
+      events: [
+        [
+          { type: 'system', sessionId: 'sess-bg' },
+          { type: 'background', count: 1 },
+          { type: 'text', delta: 'WAITING_FOR_SUBAGENT' },
+          { type: 'done', sessionId: 'sess-bg', terminationReason: 'normal' },
+        ],
+        [
+          { type: 'text', delta: 'FINISHED_THE_REST' },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+      ],
+      background: {
+        afterMs: 50,
+        events: [
+          { type: 'background', count: 0 },
+          { type: 'rate_limit', blocked: false, limitType: 'five_hour', resetsAt, at: Date.now() },
+          { type: 'rate_limit', blocked: true, message: "You've hit your session limit", at: Date.now() },
+          { type: 'done', sessionId: 'sess-bg', terminationReason: 'normal' },
+        ],
+      },
+      stream: async (_chatId, input) => {
+        const record = { cards: [] as unknown[], messageId: `om_card_${streams.length + 1}` };
+        streams.push(record);
+        await sdkLikeCardStream(async (card) => {
+          record.cards.push(card);
+        }, record.messageId)(_chatId, input);
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_bg_task', 'do the long task'));
+    await waitFor(() => h.controls.autoResumer?.get('oc_dm') !== undefined);
+
+    // The follow-up card promises the resume, and the resume is really there.
+    await waitFor(() => h.channel.sent.length > 0);
+    const pausedCard = JSON.stringify(h.channel.sent.at(-1)?.content);
+    expect(pausedCard).toContain('任务暂停');
+    expect(pausedCard).toContain('自动继续');
+    const resume = h.controls.autoResumer!.get('oc_dm')!;
+    expect(resume.resumeAt).toBe(resetsAt + 60_000);
+    expect(resume).toMatchObject({ kind: 'quota', originMessageId: 'om_bg_task', limitType: 'five_hour' });
+
+    await h.controls.autoResumer!.tick(resetsAt + 60_000);
+    await waitFor(() => JSON.stringify(streams[1]?.cards ?? []).includes('FINISHED_THE_REST'));
+    expect(h.agent.runs).toHaveLength(2);
+    expect(h.agent.runs[1]?.opts.prompt).toContain('[自动续跑]');
+    // The paused follow-up card is updated to point at the new one.
+    const note = h.channel.updated.at(-1);
+    expect(note?.messageId).toBe(resume.cardMessageId);
+    expect(JSON.stringify(note?.card)).toContain('自动继续');
+  });
+
   it("resumes the owner's task from its ledger after the run is killed", async () => {
     const streams: Array<{ cards: unknown[] }> = [];
     const killed: AgentEvent[] = [

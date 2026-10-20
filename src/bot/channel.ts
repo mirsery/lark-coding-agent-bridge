@@ -1813,24 +1813,54 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (cardRenderOptions.meta) cardRenderOptions.meta.sponsor = sponsor;
   });
 
+  // Set once a background turn of this run was stopped by the quota.
+  let backgroundPaused = false;
   // Turns the agent runs on its own after this reply (a background task it
   // started reported back) go out as a follow-up reply to the same message.
   deliverBackgroundTurn = async (turn) => {
+    // How the turn itself ended — `paused` when the quota refused it. Such a
+    // turn is resumed like a paused user turn; claiming it before the send
+    // keeps this run's own `done` (in `finally` below) from cancelling it.
+    const ended = turn.kind === 'turn' ? turn.events.reduce(reduce, initialState) : undefined;
+    if (ended?.terminal === 'paused') backgroundPaused = true;
     const state = backgroundTurnState(turn, filterForPrefs);
-    if (!state) return;
-    // The follow-up's byline reports the background turn's own consumption.
-    const usage = turn.kind === 'turn' ? usageLineOf(turn.events) : undefined;
-    await sendFinalReply({
-      channel,
-      chatId,
-      scope,
-      state: separateFinalReply ? finalAnswerOnlyState(state) : state,
-      replyMode,
-      sendOpts,
-      cardRenderOptions: cardRenderOptions.meta
-        ? { ...cardRenderOptions, meta: { ...cardRenderOptions.meta, usage } }
-        : cardRenderOptions,
-    });
+    let sent: { messageId: string; card: object } | undefined;
+    try {
+      if (!state) return;
+      // The follow-up's byline reports the background turn's own consumption.
+      const usage = turn.kind === 'turn' ? usageLineOf(turn.events) : undefined;
+      sent = await sendFinalReply({
+        channel,
+        chatId,
+        scope,
+        state: separateFinalReply ? finalAnswerOnlyState(state) : state,
+        replyMode,
+        sendOpts,
+        cardRenderOptions: cardRenderOptions.meta
+          ? { ...cardRenderOptions, meta: { ...cardRenderOptions.meta, usage } }
+          : cardRenderOptions,
+      });
+    } finally {
+      if (autoResumer && (ended?.terminal === 'paused' || ended?.terminal === 'done')) {
+        scheduleAutoResume({
+          autoResumer,
+          channel,
+          scope,
+          chatId,
+          mode,
+          ...(threadId ? { threadId } : {}),
+          sendOpts,
+          lastMsg,
+          handle,
+          terminal: ended.terminal,
+          finalState: ended,
+          pausedCard: ended.terminal === 'paused' ? sent : undefined,
+          canAutoResume,
+          resumeAttempt,
+          ownerRun,
+        });
+      }
+    }
   };
 
   // Add a "Typing" reaction to the triggering message as an instant ack that
@@ -2201,7 +2231,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       requesters: humanRequesters(batch),
     });
     if (longRunNotice) void sendLongRunNotice(channel, chatId, longRunNotice, sendOpts, scope);
-    if (autoResumer) {
+    // A background turn may already have been stopped by the quota and
+    // scheduled its resume; this run's own `done` must not cancel that.
+    if (autoResumer && !backgroundPaused) {
       scheduleAutoResume({
         autoResumer,
         channel,
@@ -2616,7 +2648,7 @@ async function sendFinalReply(input: {
   replyMode: ReturnType<typeof getMessageReplyMode>;
   sendOpts: { replyTo: string; replyInThread?: boolean };
   cardRenderOptions: RunCardRenderOptions;
-}): Promise<void> {
+}): Promise<{ messageId: string; card: object } | undefined> {
   const body = renderText(input.state);
 
   // Nothing deliverable to send (agent produced no text on a clean finish;
@@ -2628,13 +2660,11 @@ async function sendFinalReply(input: {
   }
 
   if (input.replyMode === 'card') {
-    const result = await input.channel.send(
-      input.chatId,
-      { card: renderCard(input.state, input.cardRenderOptions) },
-      input.sendOpts,
-    );
+    const card = renderCard(input.state, input.cardRenderOptions);
+    const result = await input.channel.send(input.chatId, { card }, input.sendOpts);
     requireMessageReceipt(result, 'card');
     log.info('outbound', 'sent', outboundLogFields(input, 'card', body, result));
+    return { messageId: result.messageId, card };
   } else if (input.replyMode === 'markdown') {
     if (body.trim()) {
       const result = await input.channel.send(
@@ -2656,7 +2686,10 @@ async function sendFinalReply(input: {
   }
 }
 
-function requireMessageReceipt(result: { messageId?: string }, type: string): void {
+function requireMessageReceipt(
+  result: { messageId?: string },
+  type: string,
+): asserts result is { messageId: string } {
   if (!result.messageId?.trim()) {
     throw new Error(`final ${type} reply missing message receipt`);
   }
