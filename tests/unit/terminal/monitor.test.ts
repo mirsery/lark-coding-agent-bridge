@@ -94,9 +94,10 @@ describe('responsive monitor layout', () => {
 });
 
  it('shows task origin on the right and moves it to its own row in a narrow terminal', () => {
-  const run = { runId: 'id', scope: 'chat', chatId: 'chat', originMessageId: 'msg', promptPreview: '整理接口文档', startedAt: 0, ownerPid: process.pid, orphan: false, chatType: 'group' as const, chatName: '研发交流群', actorName: '张三' };
+  const run = { runId: 'id', scope: 'chat', chatId: 'chat', originMessageId: 'msg', promptPreview: '![image](img_private_token) 整理接口文档', startedAt: 0, ownerPid: process.pid, orphan: false, chatType: 'group' as const, chatName: '研发交流群', actorName: '张三' };
   const snap = { now: 1000, host: 'host', cores: 8, load: 1, bots: [{ profile: 'codex', name: 'Poki', agent: 'agent', online: true, runs: [run] }] };
   const lines = renderMonitor(snap, 110, 36, false).split('\n');
+  expect(lines.join('\n')).not.toContain('img_private_token');
   expect(lines.some(line => line.includes('整理接口文档') && line.includes('研发交流群') && line.includes('张三'))).toBe(true);
   const narrow = renderMonitor(snap, 48, 36, false);
   expect(narrow).toContain('研发交流群');

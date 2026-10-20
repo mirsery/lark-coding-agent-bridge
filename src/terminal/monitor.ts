@@ -102,7 +102,7 @@ function activityLabel(a?: Activity): string {
 }
 /** Wrap by terminal cells, preserving readable task summaries in narrow windows. */
 function summary(text: string, cells: number): string[] {
-  const compact = clean(text).replace(/https?:\/\/[^\s]+/g, url => {
+  const compact = clean(text).replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/https?:\/\/[^\s]+/g, url => {
     try { const u = new URL(url); return `[${u.pathname.split('/').filter(Boolean).at(-1) ?? u.hostname}]`; } catch { return url; }
   }).trim();
   const lines: string[] = []; let row = ''; let used = 0;
