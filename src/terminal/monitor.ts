@@ -9,7 +9,7 @@ import { readRunRecords, RUN_STALE_AFTER_MS, type RunRecord } from '../runtime/r
 
 interface Activity { ts: number; event: string; phase: string; tool?: string; traceId?: string; runId?: string; scope?: string }
 export interface MonitorBot { profile: string; name: string; agent: string; pid?: number; online: boolean; activity?: Activity; runs: Array<RunRecord & { orphan: boolean; activity?: Activity }> }
-export interface MonitorSnapshot { now: number; host: string; cores: number; load: number; bots: MonitorBot[]; metrics?: HostMetrics }
+export interface MonitorSnapshot { now: number; host: string; cores: number; load: number; bots: MonitorBot[]; metrics?: HostMetrics; networkHistory?: Array<{ read: number; write: number }> }
 
 /** Bounded log read: never load a growing multi-gigabyte log into memory. */
 interface LogCache { name: string; size: number; mtime: number; events: Activity[] }
@@ -51,6 +51,8 @@ async function recentActivity(dir: string, cache: Map<string, LogCache>): Promis
 export function createMonitorReader(intervalMs = 10_000) {
   const cache = new Map<string, LogCache>();
   const sampleHost = createHostSampler(intervalMs);
+  const networkHistory: Array<{ read: number; write: number }> = [];
+  let ioSampledAt: number | undefined;
   return async (rootDir: string, profile?: string, now = Date.now()): Promise<MonitorSnapshot> => {
   const entries = readAndPrune(join(rootDir, 'registry', 'processes.json'));
   let dirs: string[] = [];
@@ -70,7 +72,13 @@ export function createMonitorReader(intervalMs = 10_000) {
         return { ...rec, orphan: !isAlive(rec.ownerPid) || now - rec.startedAt > RUN_STALE_AFTER_MS, activity };
       }).sort((a, b) => Number(a.orphan) - Number(b.orphan) || a.startedAt - b.startedAt) };
   }));
-  return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics: await sampleHost(now) };
+  const metrics = await sampleHost(now);
+  if (metrics.io?.network && metrics.io.sampledAt !== ioSampledAt) {
+    ioSampledAt = metrics.io.sampledAt;
+    networkHistory.push({ ...metrics.io.network });
+    if (networkHistory.length > 24) networkHistory.shift();
+  }
+  return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics, networkHistory: [...networkHistory] };
   };
 }
 export async function readMonitor(rootDir: string, profile?: string, now = Date.now()): Promise<MonitorSnapshot> {
@@ -115,7 +123,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   const indent = columns >= 40 ? '  ' : '';
   const w = Math.max(1, usable - indent.length);
   const height = Math.max(1, rows - 1);
-  const paint = (text: string, code: number) => color ? `\x1b[${code}m${text}\x1b[0m` : text;
+  const paint = (text: string, code: number) => color ? `\x1b[${code}m${text}\x1b[0m\x1b[48;5;235m` : text;
   const cells = (text: string) => [...clean(text)].reduce((n, c) => n + width(c), 0);
   const line = (text = '', code = 37, size = w) => paint(fit(text, size), code);
   const pair = (left: string, right: string, code = 37, size = w) => {
@@ -125,58 +133,65 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   };
   const rule = () => line('─'.repeat(w), 90);
   const ordered = [...s.bots].filter(b => b.online || b.runs.length || b.agent !== 'unknown')
-    .sort((a, b) => Number(b.runs.some(r => !r.orphan)) - Number(a.runs.some(r => !r.orphan)) || Number(b.online) - Number(a.online));
+    .sort((a, b) => Number(b.runs.some(r => !r.orphan)) - Number(a.runs.some(r => !r.orphan)) || Number(b.online) - Number(a.online))
+    .flatMap(bot => bot.runs.length ? bot.runs.map(run => ({ ...bot, runs: [run] })) : [bot]);
   const online = s.bots.filter(b => b.online).length;
   const running = s.bots.flatMap(b => b.runs).filter(r => !r.orphan).length;
-  const cat = catPosition(columns, rows);
-  const titleWidth = cat ? w - CAT_WIDTH - 1 : w;
-  const title = (text: string, right: string, code: number, index: number) => {
-    const content = pair(text, right, code, titleWidth);
-    return cat ? content + ' ' + paint(renderCat(frame)[index]!, 36) : content;
-  };
-  const out = [title('LARK  /  CONTROL', '', 36, 0),
-    title(`${s.host.replace(/\.local$/, '')}  ·  ${online} bots online`, '', 90, 1),
-    title(`${running} tasks  ·  ${s.cores} cores  ·  load ${s.load.toFixed(2)}`, '', 90, 2),
-    title(new Date(s.now).toLocaleTimeString(), paused ? 'PAUSED' : 'LIVE', 90, 3)];
+  const out = [pair('LARK  /  CONTROL', paused ? 'PAUSED' : new Date(s.now).toLocaleTimeString(), 35),
+    line(`${s.host.replace(/\.local$/, '')}  ·  ${s.cores} cores  ·  ${online} bots online  ·  ${running} tasks`, 90)];
+  const cat = catPosition(columns, rows, frame);
+  if (cat) {
+    for (const art of renderCat(frame)) out.push(line(' '.repeat(cat.column - 1 - indent.length) + art, 36));
+  }
   const m = s.metrics;
   if (m) {
     const gib = (n: number) => (n / 1024 ** 3).toFixed(1);
-    const up = Math.floor(m.uptimeSeconds / 86400) + 'd ' + Math.floor(m.uptimeSeconds % 86400 / 3600) + 'h';
     const speed = (n: number) => n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + 'M/s' : (n / 1024).toFixed(1) + 'K/s';
-    const bar = (percent: number | null, size = 16) => {
-      if (percent === null) return '─'.repeat(size);
-      const filled = Math.round(Math.max(0, Math.min(100, percent)) / 100 * size);
-      return '━'.repeat(filled) + '─'.repeat(size - filled);
-    };
     const ram = m.memoryTotal > 0 ? m.memoryNonFree / m.memoryTotal * 100 : null;
     const disk = m.disk && m.disk.total > 0 ? m.disk.used / m.disk.total * 100 : null;
     const io = m.io;
-    const details = [
-      ['CPU', `${bar(m.cpuPercent)}  ${m.cpuPercent === null ? '—' : m.cpuPercent.toFixed(1) + '%'}`],
-      ['RAM', `${bar(ram)}  ${gib(m.memoryNonFree)}/${gib(m.memoryTotal)}G*`],
-      ['DISK', `${bar(disk)}  ${m.disk ? gib(m.disk.available) + 'G free' : '—'}`],
-      ['TEMP ' + (m.temperatureC == null ? '—' : m.temperatureC.toFixed(1) + '°C'), `UP ${up}`],
-      ['IO', io?.disk ? `IO R ${speed(io.disk.read)} W ${speed(io.disk.write)}` : 'IO —'],
-      ['NET', io?.network ? `NET ↓ ${speed(io.network.read)} ↑ ${speed(io.network.write)}` : 'NET —'],
-    ];
-    // Reserve the lower area for sessions; short terminals use compact metrics.
+    const percent = (n: number | null) => n === null ? '—' : n.toFixed(1) + '%';
+    // 实心方块比细线有更清楚的长度和颜色区分；未知指标保持空轨道。
+    const bar = (value: number | null, size: number) => {
+      const filled = value === null ? 0 : Math.round(Math.max(0, Math.min(100, value)) / 100 * size);
+      return paint('█'.repeat(filled), value !== null && value >= 90 ? 91 : value !== null && value >= 70 ? 93 : 92)
+        + paint('░'.repeat(size - filled), 90);
+    };
+    const half = Math.floor((w - 4) / 2);
+    const barWidth = Math.max(8, Math.min(22, half - 24));
+    const gauge = (label: string, value: number | null, caption: string) => line(label, 37, 6) + bar(value, barWidth) + line('  ' + caption, 37, Math.max(0, half - 6 - barWidth));
+    const heading = (label: string) => line(label + '  ' + '─'.repeat(half), 35, half);
+    const row = (left: string, right: string) => left + '    ' + right;
+    const spark = (key: 'read' | 'write') => {
+      const values = (s.networkHistory ?? []).map(sample => sample[key]);
+      if (!values.length) return '─'.repeat(12);
+      const max = Math.max(1, ...values);
+      return values.map(value => '▁▂▃▄▅▆▇█'[Math.min(7, Math.floor(value / max * 7))]).join('').padStart(24, ' ');
+    };
     if (w >= 76 && rows >= 30) {
-      const half = Math.floor((w - 4) / 2);
-      for (let i = 0; i < details.length; i += 2) {
-        const left = details[i]!; const right = details[i + 1]!;
-        out.push(line(left[0] + ' ' + '─'.repeat(half), 35, half) + '    ' + line(right[0] + ' ' + '─'.repeat(half), 35, half));
-        out.push(line(left[1]!, 37, half) + '    ' + line(right[1]!, 37, half));
-      }
+      out.push(row(heading('◉ CPU'), heading('▥ Memory')),
+        row(gauge('Total', m.cpuPercent, percent(m.cpuPercent)), gauge('Used', ram, percent(ram))),
+        row(line(`Load  ${s.load.toFixed(2)}  ·  TEMP ${m.temperatureC == null ? '—' : m.temperatureC.toFixed(1) + '°C'}`, 90, half),
+          line(`RAM ${gib(m.memoryNonFree)} / ${gib(m.memoryTotal)}G  ·  free ${gib(m.memoryTotal - m.memoryNonFree)}G*`, 90, half)),
+        row(line('UP ' + Math.floor(m.uptimeSeconds / 86400) + 'd ' + Math.floor(m.uptimeSeconds % 86400 / 3600) + 'h', 90, half), gauge('Free', ram === null ? null : 100 - ram, percent(ram === null ? null : 100 - ram))),
+        row(heading('▥ Disk'), heading('↕ Network')),
+        row(gauge('Used', disk, m.disk ? gib(m.disk.used) + 'G' : '—'),
+          line(io?.network ? `NET ↓ ${speed(io.network.read)} ↑ ${speed(io.network.write)}` : 'NET —', 92, half)),
+        row(line(m.disk ? `DISK ${gib(m.disk.total)}G total · ${gib(m.disk.available)}G free` : 'DISK —', 90, half),
+          line(io?.disk ? `IO R ${speed(io.disk.read)} W ${speed(io.disk.write)}` : 'IO —', 90, half)),
+        row(line('', 90, half), line('Down ' + spark('read'), 92, half)),
+        row(line('', 90, half), line('Up   ' + spark('write'), 92, half)));
     } else {
-      out.push(line(`CPU ${m.cpuPercent === null ? '—' : m.cpuPercent.toFixed(0) + '%'}  RAM ${gib(m.memoryNonFree)}/${gib(m.memoryTotal)}G*  DISK ${m.disk ? gib(m.disk.available) + 'G free' : '—'}`));
-      if (rows >= 24) out.push(line(`${details[3]![0]}  ${details[4]![1]}  ${details[5]![1]}`));
+      out.push(line(`CPU ${percent(m.cpuPercent)}  RAM ${gib(m.memoryNonFree)}/${gib(m.memoryTotal)}G*  DISK ${m.disk ? gib(m.disk.available) + 'G free' : '—'}`));
+      if (rows >= 24) out.push(line(`TEMP ${m.temperatureC == null ? '—' : m.temperatureC.toFixed(1) + '°C'}  ${io?.network ? 'NET ↓ ' + speed(io.network.read) + ' ↑ ' + speed(io.network.write) : 'NET —'}`));
     }
   }
-  out.push(rule());
-  const footer = [line(), rule(), line((paused ? 'PAUSED  ·  ' : '') + 'q 退出  ·  空格暂停  ·  r 刷新' + (m ? '    *RAM 含系统缓存' : ''), 90)];
+  out.push(line('会话  ' + '─'.repeat(Math.max(0, w - 6)), 35));
+  const footer = [rule(), line((paused ? 'PAUSED  ·  ' : '') + 'q 退出  ·  空格暂停  ·  r 刷新' + (m ? '    *RAM 含系统缓存' : ''), 90)];
   const slots = w >= 146 && ordered.length > 1 ? 2 : 1;
   const gap = 4;
-  const cardWidth = Math.floor((w - (slots - 1) * gap) / slots);
+  const outerWidth = Math.floor((w - (slots - 1) * gap) / slots);
+  const cardWidth = Math.max(1, outerWidth - 4);
   const bodyHeight = Math.max(0, height - out.length - footer.length);
   const origin = (run: RunRecord, size: number): string => {
     if (!run.chatType && !run.actorName) return fit('来源待同步', size).trimEnd();
@@ -188,7 +203,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   const block = (bot: MonitorBot, budget: number): string[] => {
     const active = bot.runs.filter(r => !r.orphan).length;
     const state = !bot.online ? 'OFFLINE' : active ? 'WORKING' : 'IDLE';
-    const result = [line('', 37, cardWidth), pair(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}`, state, bot.online ? 36 : 90, cardWidth)];
+    const result = [pair(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}`, state, bot.online ? 36 : 90, cardWidth)];
     let shown = 0;
     for (const run of bot.runs) {
       const side = cardWidth >= 70;
@@ -197,7 +212,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
       const previews = summary(run.promptPreview || '任务执行中', Math.max(1, cardWidth - 4 - (side ? cells(source) + 2 : 0)));
       const sourceRows = side ? 0 : 1;
       // Keep one row available for the hidden-task count.
-      if (result.length + 1 + previews.length + sourceRows + Number(shown + 1 < bot.runs.length) > budget) break;
+      if (result.length + 1 + previews.length + sourceRows + Number(shown + 1 < bot.runs.length) > budget - 2) break;
       result.push(pair('    ' + (run.orphan ? '已中断 / 过期' : activityLabel(run.activity)), age(s.now - run.startedAt), run.orphan ? 33 : 90, cardWidth));
       result.push(...previews.map((text, i) => side
         ? pair('    ' + text, i === 0 ? source : '', 37, cardWidth)
@@ -205,24 +220,26 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
       if (!side) result.push(line('    ' + source, 90, cardWidth));
       shown++;
     }
-    if (!bot.runs.length && result.length < budget) result.push(line('    等待新任务', 90, cardWidth));
-    if (shown < bot.runs.length && result.length < budget) result.push(line(`    +${bot.runs.length - shown} more tasks`, 90, cardWidth));
-    return result.slice(0, budget);
+    if (!bot.runs.length && result.length < budget - 2) result.push(line('    等待新任务', 90, cardWidth));
+    if (shown < bot.runs.length && result.length < budget - 2) result.push(line(`    +${bot.runs.length - shown} more tasks`, 90, cardWidth));
+    const inside = result.slice(0, Math.max(0, budget - 2));
+    const border = (left: string, right: string) => paint(left + '─'.repeat(outerWidth - 2) + right, bot.online ? 36 : 90);
+    return [border('╭', '╮'), ...inside.map(text => paint('│ ', 90) + text + paint(' │', 90)), border('╰', '╯')];
   };
   let hidden = 0; let used = 0;
   for (let i = 0; i < ordered.length; i += slots) {
     const remaining = bodyHeight - used;
-    if (remaining < 3) { hidden += ordered.length - i; break; }
+    if (remaining < 4) { hidden += ordered.length - i; break; }
     const group = ordered.slice(i, i + slots);
     const later = ordered.length > i + slots;
     // Distribute height between bot rows, letting a sole row use all remaining space.
-    const budget = later ? Math.min(remaining - 1, Math.max(5, Math.floor((remaining - 1) / Math.ceil((ordered.length - i) / slots)))) : remaining;
+    const budget = later ? Math.min(remaining - 1, Math.max(6, Math.floor((remaining - 1) / Math.ceil((ordered.length - i) / slots)))) : remaining;
     const blocks = group.map(bot => block(bot, budget));
     const groupHeight = Math.max(...blocks.map(b => b.length));
     for (let r = 0; r < groupHeight; r++) {
       out.push(blocks.map(b => {
         const text = b[r] ?? '';
-        return text + ' '.repeat(Math.max(0, cardWidth - cells(text)));
+        return text + ' '.repeat(Math.max(0, outerWidth - cells(text)));
       }).join(' '.repeat(gap)));
     }
     used += groupHeight;
@@ -230,5 +247,5 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   if (!ordered.length && bodyHeight) out.push(line('等待 bot 上线', 90));
   if (hidden && out.length < height - footer.length) out.push(line(`+${hidden} bots · enlarge window or use --profile`, 90));
   out.push(...footer);
-  return out.slice(0, height).map(text => indent + text).join('\n');
+  return out.slice(0, height).map(text => (color ? '\x1b[48;5;235m' : '') + indent + text).join('\n');
 }

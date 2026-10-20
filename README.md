@@ -153,7 +153,7 @@ Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
 ### Live terminal dashboard
 
-See bot availability, current tasks, execution stages and elapsed time alongside CPU, memory, free disk space and host uptime. A single TUI uses standard ANSI controls without terminal-specific split panes or APIs. Host metrics and a character cat appear above session tasks.
+See bot availability, current tasks, execution stages and elapsed time alongside CPU, memory, free disk space and host uptime. A single TUI uses standard ANSI controls without terminal-specific split panes or APIs. Purple section titles and solid green/yellow/red bars show CPU, memory and disk, with the latest 24 network samples as sparklines. A character cat walks left to right in its own lane. Each session has a bordered card showing its bot, state, summary, origin and elapsed time. Color mode uses a dark gray surface and restores terminal colors on exit.
 
 ![Live terminal dashboard screenshot](docs/images/terminal-monitor.png)
 
@@ -164,13 +164,13 @@ lark-channel-bridge monitor --once
 lark-channel-bridge monitor --json
 ```
 
-The examples above refresh every five seconds; omitting `--interval` uses a ten-second sampling default. The cat independently updates only its own area at two frames per second, without collecting metrics or reading logs. Use `--no-animation` to disable animation; small viewports hide the cat.
+The examples above refresh every five seconds; omitting `--interval` uses a ten-second sampling default. The walking cat independently clears its previous position and updates only its own area at two frames per second, without collecting metrics or reading logs. Use `--no-animation` to disable animation; small viewports hide the cat.
 
 On macOS, physical disk read/write rates and physical network download/upload rates use counter deltas, excluding loopback and tunnel duplicates. Initial or unavailable samples show `—`; I/O sampling runs at most once every five seconds.
 
 On macOS, install `osx-cpu-temp` (`brew install osx-cpu-temp`) to display CPU temperature as `TEMP`, sampled at most once every five seconds. Missing, unsupported or failed sensors show `—`. No sudo is required.
 
-The layout adapts to the viewport: wide windows show bots in two columns, ordinary windows stack them, and narrow windows split host metrics across rows. Resizing immediately reflows the cached snapshot without another sample.
+The layout adapts to the viewport: wide windows show session cards in two columns, ordinary windows stack them, and narrow windows compact host metrics. Resizing immediately reflows the cached snapshot without another sample.
 
 Each task shows its chat name (or DM) and requester on the right, moving to a separate row in narrow windows. Names are captured when the task starts; refreshing makes no Feishu API calls. Older tasks or unresolved names display a pending label. Restart the bridge after upgrading to record origins for new tasks.
 

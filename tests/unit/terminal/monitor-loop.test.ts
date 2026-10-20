@@ -55,7 +55,7 @@ it('keeps 2 fps animation and resize separate from 10 second sampling, pauses, a
   process.stdin.emit('data', Buffer.from('q'));
   expect(process.listenerCount('SIGTERM')).toBe(signals);
   expect(vi.getTimerCount()).toBe(0);
-  expect(write).toHaveBeenLastCalledWith('\x1b[?25h\x1b[?1049l');
+  expect(write).toHaveBeenLastCalledWith('\x1b[0m\x1b[?25h\x1b[?1049l');
 });
 it('supports disabling animation without disabling sampling', async () => {
   vi.useFakeTimers(); const write = terminal();

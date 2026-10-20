@@ -3,10 +3,10 @@ import type { MonitorSnapshot } from '../../terminal/monitor';
 import { resolveAppPaths } from '../../config/app-paths';
 import { createMonitorReader, renderMonitor } from '../../terminal/monitor';
 
-export function monitorFrame(text: string): string {
+export function monitorFrame(text: string, dark = false): string {
   // Overwrite in place: ED2 may archive the cleared screen in iTerm scrollback.
   // Explicit CRLF also works when raw mode disables output newline translation.
-  return '\x1b[H' + text.replace(/\r?\n/g, '\x1b[K\r\n') + '\x1b[K\x1b[J';
+  return (dark ? '\x1b[48;5;235m' : '') + '\x1b[H' + text.replace(/\r?\n/g, '\x1b[K\r\n') + '\x1b[K\x1b[J' + (dark ? '\x1b[0m' : '');
 }
 
 export async function runMonitor(opts: { profile?: string; interval?: string; once?: boolean; json?: boolean; color?: boolean; animation?: boolean }): Promise<void> {
@@ -26,7 +26,7 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
   const color = opts.color !== false && !process.env.NO_COLOR;
   const draw = () => {
     if (stopped || !snapshot) return;
-    process.stdout.write(monitorFrame(renderMonitor(snapshot, process.stdout.columns, process.stdout.rows, color, frame, paused)));
+    process.stdout.write(monitorFrame(renderMonitor(snapshot, process.stdout.columns, process.stdout.rows, color, frame, paused), color));
   };
   const raw = process.stdin.isRaw;
   const restore = () => {
@@ -37,7 +37,7 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
     process.stdin.off('data', key); process.stdin.setRawMode(raw); process.stdin.pause();
     process.off('SIGINT', restore); process.off('SIGTERM', restore);
     process.stdout.off('resize', resize);
-    process.stdout.write('\x1b[?25h\x1b[?1049l');
+    process.stdout.write('\x1b[0m\x1b[?25h\x1b[?1049l');
   };
   let refreshing = false;
   const refresh = async () => {
