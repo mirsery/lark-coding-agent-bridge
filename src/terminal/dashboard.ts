@@ -1,3 +1,5 @@
+import { foreground, type MonitorTheme } from './theme';
+
 /** 通用终端字符动画：独立占用四行，不依赖图片或终端专属接口。 */
 export const CAT_WIDTH = 16;
 export function renderCat(frame: number): string[] {
@@ -11,11 +13,11 @@ export function catPosition(columns: number, rows: number, frame = 0): { row: nu
   return { row: 3, column: 3 + ((Math.max(0, Math.floor(frame)) * 2) % travel) };
 }
 /** 先擦除上一帧的猫，再画新位置；所有写入严格限制在动画区域。 */
-export function catPatch(columns: number, rows: number, frame: number, color = true): string {
+export function catPatch(columns: number, rows: number, frame: number, color = true, theme: MonitorTheme = 'terminal'): string {
   const at = catPosition(columns, rows, frame);
   const previous = catPosition(columns, rows, frame - 1);
   if (!at || !previous) return '';
   const erase = renderCat(frame).map((_, i) => `\x1b[${previous.row + i};${previous.column}H${' '.repeat(CAT_WIDTH)}`).join('');
   const art = renderCat(frame).map((line, i) => `\x1b[${at.row + i};${at.column}H${line}`).join('');
-  return color ? '\x1b[48;5;235m\x1b[38;5;116m' + erase + art + '\x1b[0m' : erase + art;
+  return color ? `\x1b[${foreground(36, theme)}m` + erase + art + '\x1b[0m' : erase + art;
 }

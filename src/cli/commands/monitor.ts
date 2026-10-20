@@ -1,17 +1,22 @@
+import { TerminalTheme, type MonitorTheme } from '../../terminal/theme';
 import { catPatch } from '../../terminal/dashboard';
 import type { MonitorSnapshot } from '../../terminal/monitor';
 import { resolveAppPaths } from '../../config/app-paths';
 import { createMonitorReader, renderMonitor } from '../../terminal/monitor';
 
-export function monitorFrame(text: string, dark = false): string {
+export function monitorFrame(text: string): string {
   // Overwrite in place: ED2 may archive the cleared screen in iTerm scrollback.
   // Explicit CRLF also works when raw mode disables output newline translation.
-  return (dark ? '\x1b[48;5;235m' : '') + '\x1b[H' + text.replace(/\r?\n/g, '\x1b[K\r\n') + '\x1b[K\x1b[J' + (dark ? '\x1b[0m' : '');
+  return '\x1b[H' + text.replace(/\r?\n/g, '\x1b[K\r\n') + '\x1b[K\x1b[J';
 }
 
-export async function runMonitor(opts: { profile?: string; interval?: string; once?: boolean; json?: boolean; color?: boolean; animation?: boolean }): Promise<void> {
+export async function runMonitor(opts: { profile?: string; interval?: string; once?: boolean; json?: boolean; color?: boolean; animation?: boolean; theme?: string }): Promise<void> {
   const seconds = Number(opts.interval ?? 10);
   if (!Number.isFinite(seconds) || seconds < 0.5 || seconds > 60) throw new Error('--interval must be between 0.5 and 60 seconds');
+  const requestedTheme = opts.theme ?? 'auto';
+  if (!['auto', 'light', 'dark'].includes(requestedTheme)) throw new Error('--theme must be auto, light or dark');
+  const terminalTheme = new TerminalTheme();
+  const theme = (): MonitorTheme => requestedTheme === 'auto' ? terminalTheme.mode : requestedTheme as MonitorTheme;
   const readMonitor = createMonitorReader(seconds * 1000);
   const root = resolveAppPaths().rootDir;
   if (opts.once || opts.json || !process.stdout.isTTY || !process.stdin.isTTY) {
@@ -26,7 +31,7 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
   const color = opts.color !== false && !process.env.NO_COLOR;
   const draw = () => {
     if (stopped || !snapshot) return;
-    process.stdout.write(monitorFrame(renderMonitor(snapshot, process.stdout.columns, process.stdout.rows, color, frame, paused), color));
+    process.stdout.write(monitorFrame(renderMonitor(snapshot, process.stdout.columns, process.stdout.rows, color, frame, paused, theme())));
   };
   const raw = process.stdin.isRaw;
   const restore = () => {
@@ -50,10 +55,11 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
     } finally { refreshing = false; }
   };
   const tick = async () => {
+    if (color && requestedTheme === 'auto') process.stdout.write('\x1b]11;?\x07');
     try { if (!paused) await refresh(); } catch (err) { restore(); console.error((err as Error).message); }
     if (!stopped) timer = setTimeout(() => void tick(), seconds * 1000);
   };
-  const key = (data: Buffer) => { const text = data.toString(); if (text === 'q' || text === '\x03') restore(); else if (text === ' ') { paused = !paused; draw(); } else if (text === 'r') void refresh().catch(restore); };
+  const key = (data: Buffer) => { const before = terminalTheme.mode; const text = terminalTheme.input(data.toString()); if (before !== terminalTheme.mode) draw(); if (text === 'q' || text === '\x03') restore(); else if (text === ' ') { paused = !paused; draw(); } else if (text === 'r') void refresh().catch(restore); };
   const resize = () => { draw(); };
   process.stdout.write('\x1b[?1049h\x1b[?25l');
   process.stdin.setRawMode(true); process.stdin.resume(); process.stdin.on('data', key);
@@ -61,7 +67,7 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
   if (opts.animation !== false) animation = setInterval(() => {
     if (stopped || paused || !snapshot) return;
     frame++;
-    process.stdout.write(catPatch(process.stdout.columns, process.stdout.rows, frame, color));
+    process.stdout.write(catPatch(process.stdout.columns, process.stdout.rows, frame, color, theme()));
   }, 500);
   await tick();
 }

@@ -43,7 +43,7 @@ it('moves left to right, clears the previous cat, and wraps inside the animation
     expect(patch).toContain(`\x1b[3;${first.column}H${' '.repeat(16)}`);
   }
 });
-it('gives each session its own closed card and uses a dark surface only in color mode', () => {
+it('gives each session its own closed card and preserves the terminal background in every theme', () => {
   const run = { runId: 'a', scope: 'a', chatId: 'chat', originMessageId: 'msg', promptPreview: '第一会话', startedAt: 0, ownerPid: process.pid, orphan: false };
   const snap = { now: 1000, host: 'host', cores: 8, load: 1, bots: [{ profile: 'test', name: 'Bot', agent: 'agent', online: true, runs: [run, { ...run, runId: 'b', scope: 'b', promptPreview: '第二会话' }] }] };
   const view = renderMonitor(snap, 160, 36, false);
@@ -52,5 +52,10 @@ it('gives each session its own closed card and uses a dark surface only in color
   expect(view).toContain('第一会话');
   expect(view).toContain('第二会话');
   expect(view).not.toContain('\x1b');
-  expect(renderMonitor(snap, 160, 36, true)).toContain('\x1b[48;5;235m');
+  for (const theme of ['light', 'dark', 'terminal'] as const) {
+    const colored = renderMonitor(snap, 160, 36, true, 0, false, theme);
+    expect(colored).not.toMatch(/\x1b\[(?:48|4[0-7]|10[0-7])[;m]/);
+    expect(colored).toContain('\x1b[39m');
+    expect(catPatch(160, 36, 1, true, theme)).not.toContain('48;');
+  }
 });

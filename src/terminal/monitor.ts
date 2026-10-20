@@ -1,3 +1,4 @@
+import { foreground, type MonitorTheme } from './theme';
 import { CAT_WIDTH, catPosition, renderCat } from './dashboard';
 import { createHostSampler, type HostMetrics } from './host';
 import { open, readdir } from 'node:fs/promises';
@@ -117,14 +118,13 @@ function summary(text: string, cells: number): string[] {
   if (row) lines.push(row);
   return lines;
 }
-export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, color = true, frame = 0, paused = false): string {
+export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, color = true, frame = 0, paused = false, theme: MonitorTheme = 'terminal'): string {
   // Leave the last terminal cell and row unused to avoid automatic wrap/scroll.
   const usable = Math.max(1, columns - 1);
   const indent = columns >= 40 ? '  ' : '';
   const w = Math.max(1, usable - indent.length);
   const height = Math.max(1, rows - 1);
-  const palette: Record<number, string> = { 35: '38;5;182', 36: '38;5;116', 90: '38;5;245', 91: '38;5;203', 92: '38;5;151', 93: '38;5;222' };
-  const paint = (text: string, code: number) => color ? `\x1b[${palette[code] ?? code}m${text}\x1b[0m\x1b[48;5;235m` : text;
+  const paint = (text: string, code: number) => color ? `\x1b[${foreground(code, theme)}m${text}\x1b[0m` : text;
   const cells = (text: string) => [...clean(text)].reduce((n, c) => n + width(c), 0);
   const line = (text = '', code = 37, size = w) => paint(fit(text, size), code);
   const pair = (left: string, right: string, code = 37, size = w) => {
@@ -248,5 +248,5 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   if (!ordered.length && bodyHeight) out.push(line('等待 bot 上线', 90));
   if (hidden && out.length < height - footer.length) out.push(line(`+${hidden} bots · enlarge window or use --profile`, 90));
   out.push(...footer);
-  return out.slice(0, height).map(text => (color ? '\x1b[48;5;235m' : '') + indent + text).join('\n');
+  return out.slice(0, height).map(text => indent + text).join('\n');
 }

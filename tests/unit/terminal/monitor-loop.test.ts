@@ -1,8 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ read: vi.fn() }));
+const mocks = vi.hoisted(() => ({ read: vi.fn(), render: vi.fn((..._args: unknown[]) => 'CPU\n会话') }));
 vi.mock('../../../src/terminal/monitor', () => ({
   createMonitorReader: () => mocks.read,
-  renderMonitor: () => 'CPU\n会话',
+  renderMonitor: mocks.render,
 }));
 import { runMonitor } from '../../../src/cli/commands/monitor';
 
@@ -14,7 +14,7 @@ function property(target: object, key: string, value: unknown) {
 }
 afterEach(() => {
   process.stdin.emit('data', Buffer.from('q'));
-  vi.useRealTimers(); vi.restoreAllMocks();
+  vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs();
   for (const [id, descriptor] of originals) {
     const target = id.startsWith('in:') ? process.stdin : process.stdout;
     const key = id.split(':')[1]!;
@@ -66,4 +66,32 @@ it('supports disabling animation without disabling sampling', async () => {
   expect(write).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(500);
   expect(mocks.read).toHaveBeenCalledTimes(2);
+});
+
+it('queries themes without blocking sampling and redraws split replies without treating them as keys', async () => {
+  vi.useFakeTimers(); vi.stubEnv('NO_COLOR', '');
+  const write = terminal();
+  mocks.read.mockReset().mockResolvedValue({ now: 0 }); mocks.render.mockClear();
+  await runMonitor({ animation: false });
+  expect(write).toHaveBeenCalledWith('\x1b]11;?\x07');
+  expect(mocks.read).toHaveBeenCalledTimes(1);
+  process.stdin.emit('data', Buffer.from('\x1b]11;rgb:ffff/'));
+  process.stdin.emit('data', Buffer.from('ffff/ffff\x07'));
+  expect(mocks.render.mock.calls.at(-1)?.[6]).toBe('light');
+  expect(mocks.read).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(mocks.read).toHaveBeenCalledTimes(2);
+  process.stdin.emit('data', Buffer.from('\x1b]11;rgb:0000/0000/0000\x1b\\'));
+  expect(mocks.render.mock.calls.at(-1)?.[6]).toBe('dark');
+});
+it('does not query background with explicit themes or colors disabled', async () => {
+  vi.useFakeTimers(); vi.stubEnv('NO_COLOR', '');
+  const write = terminal();
+  mocks.read.mockReset().mockResolvedValue({ now: 0 });
+  await runMonitor({ animation: false, theme: 'light' });
+  expect(write).not.toHaveBeenCalledWith('\x1b]11;?\x07');
+  expect(mocks.render.mock.calls.at(-1)?.[6]).toBe('light');
+  process.stdin.emit('data', Buffer.from('q')); write.mockClear();
+  await runMonitor({ color: false });
+  expect(write).not.toHaveBeenCalledWith('\x1b]11;?\x07');
 });

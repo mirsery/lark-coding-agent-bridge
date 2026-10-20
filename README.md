@@ -153,7 +153,7 @@ Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
 ### Live terminal dashboard
 
-See bot availability, current tasks, execution stages and elapsed time alongside CPU, memory, free disk space and host uptime. A single TUI uses standard ANSI controls without terminal-specific split panes or APIs. Purple section titles and solid green/yellow/red bars show CPU, memory and disk, with the latest 24 network samples as sparklines. A character cat walks left to right in its own lane. Each session has a bordered card showing its bot, state, summary, origin and elapsed time. Color mode uses a dark gray surface and restores terminal colors on exit.
+See bot availability, current tasks, execution stages and elapsed time alongside CPU, memory, free disk space and host uptime. A single TUI uses standard ANSI controls without terminal-specific split panes or APIs. Purple section titles and solid green/yellow/red bars show CPU, memory and disk, with the latest 24 network samples as sparklines. A character cat walks left to right in its own lane. Each session has a bordered card showing its bot, state, summary, origin and elapsed time. The background and body text follow the terminal settings. Background detection automatically selects light or dark foreground colors for charts, headings and borders. Terminals without background queries use their native ANSI palette; `--theme light` / `--theme dark` overrides foreground colors without changing the terminal theme.
 
 ![Live terminal dashboard with demonstration data](docs/images/terminal-monitor.png)
 

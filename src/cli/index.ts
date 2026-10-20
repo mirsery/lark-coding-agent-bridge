@@ -65,6 +65,7 @@ program
 program
   .command('monitor')
   .description('Live terminal dashboard for bots, tasks and recent activity')
+  .option('--theme <mode>', 'foreground palette: auto, light or dark (background follows terminal)', 'auto')
   .option('--no-animation', 'disable the character cat animation')
   .option('--profile <name>', 'show one profile')
   .option('--interval <seconds>', 'sampling interval (0.5–60 seconds)', '10')
