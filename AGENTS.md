@@ -23,7 +23,7 @@
 1. **独立 worktree**：`git -C ~/workspace/lark-coding-agent-bridge worktree add ~/workspace/.worktrees/bridge-<topic> -b <type>/<topic> main`，再 `ln -s ~/workspace/lark-coding-agent-bridge/node_modules node_modules`。不在主 checkout 上直接改。
 2. **先读再改**：读受影响模块和离它最近的测试。bug 先复现——agent CLI 的行为以真实输出为准，抓一份真实 stream 样本（Claude：`claude -p --output-format stream-json --verbose --model haiku`；Codex：`codex exec --json`），不要凭文档猜协议。
 3. **测试先行**：回归测试要能在修复前失败；新行为配 unit / integration 测试（工具见「测试」）。
-4. **门禁**：`pnpm ci:local`（= `git diff --check` + `pnpm test` + `pnpm typecheck` + `pnpm build`），全绿才算过。
+4. **门禁**：`pnpm ci:local`（= `git diff --check` + `pnpm test` + `pnpm typecheck` + `pnpm build`），全绿才算过。改了访客 guard 的，另按 [`docs/dev/guard-replay.md`](docs/dev/guard-replay.md) 跑回放。
 5. **提交**：格式见「提交规范」。
 6. **合入与构建**：按 [`docs/dev/ship.md`](docs/dev/ship.md)——ff 合回 main、push origin、在主 checkout 构建、清理 worktree。
 7. **汇报**：改了什么、门禁结果（失败就贴失败）、是否需要重启。
@@ -101,9 +101,11 @@
 5. 如果新 agent 需要自己的配置段（像 `codex.binaryPath`），在 `src/config/profile-schema.ts` 加类型、校验和默认值，bootstrap 在 `src/cli/profile-bootstrap.ts`。
 6. Web 控制台的 agent 选择框和 effort 提示从后端读（`/api/onboard/state` 的 `agents`、配置里的 `effortHint`），不用改前端。
 
+- **访客 guard**（`bin/bridge-guard.mjs`，配置由 `src/policy/owner-guard.ts` 的 `ownerOnlyGuard` / `claudeGuardArgs` 生成）：非主人发起的 Claude run 的 PreToolUse 钩子。命令按 shell 引号解析（`parseList`），`cd` 只在它所在的 shell 里生效（`$( … )`、`sh -c` 里的 cd 不影响外层，`eval` 会），解释器内联代码（`python3 - <<'EOF'`、`-c`、`node -e`）按写文件调用判写入。钩子每次调用从主 checkout 现读，合入即生效、不等重启。**改完必须按 [`docs/dev/guard-replay.md`](docs/dev/guard-replay.md) 回放本机历史调用**，新拦的逐条确认、新放行的抽查漏拦，结果写进提交信息。被拦的操作记入审计（`blocked`），主人私聊 `/audit 拦截` 查看误判。
+
 ## 测试
 
-- 分层：`tests/unit/`（纯逻辑）、`tests/integration/`（命令 / 消息流 / 存储，走 fake channel 与 fake agent）、`tests/process/`（真实 spawn 的 adapter 契约）、`tests/static/`（架构契约）。
+- 分层：`tests/unit/`（纯逻辑）、`tests/integration/`（命令 / 消息流 / 存储，走 fake channel 与 fake agent）、`tests/process/`（真实 spawn 的 adapter 契约）、`tests/static/`（架构契约）、`tests/replay/`（读本机转录与配置的回放，默认跳过，`GUARD_REPLAY=1` 才跑，不在门禁里）。
 - 常用工具（`tests/helpers/`）：`createFakeChannel`（记录发出的消息 / 卡片）、`createFakeAgent`（脚本化事件流）、`createTmpProfile`（临时 profile 目录）、`fake-executable`（假 CLI 二进制）。命令类测试照 `tests/integration/commands/commands-v1.test.ts` 的 harness 写。
 - 断言用户可见文案时只断言关键短语，避免把整句文案钉死。
 
