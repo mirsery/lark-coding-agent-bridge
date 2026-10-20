@@ -1,15 +1,24 @@
 /**
  * Long tasks keep a ledger: a file with the plan, what is done and what comes
  * next (see the system prompt). The agent names it in its reply with one line
- * such as `📒 任务台账：/abs/path.md`. Knowing it lets the bridge pick the task
- * up again after the run dies halfway, instead of leaving the work stranded.
+ * such as `📒 任务台账：~/.lark-channel/tasks/x.md`. Knowing it lets the bridge
+ * pick the task up again after the run dies halfway, instead of leaving the
+ * work stranded.
  */
+
+import { homedir } from 'node:os';
 
 const LEDGER_RE = /(?:📒\s*)?(?:任务台账|[Tt]ask ledger)\s*[:：]\s*`?((?:~|\/)[^\s`，。）)]+)`?/;
 
-/** The ledger path a reply announces, if any. */
-export function findLedger(text: string): string | undefined {
-  return LEDGER_RE.exec(text)?.[1];
+/**
+ * The ledger path a reply announces, if any. A path under the home directory
+ * comes back as `~/…`: it is shown in chat, where the host's home path stays hidden.
+ */
+export function findLedger(text: string, home: string = homedir()): string | undefined {
+  const path = LEDGER_RE.exec(text)?.[1];
+  if (!path || !home || home === '/') return path;
+  if (path === home) return '~';
+  return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
 
 /**

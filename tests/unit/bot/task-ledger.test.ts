@@ -14,6 +14,14 @@ describe('task ledger', () => {
     expect(findLedger('任务台账：docs/progress/x.md')).toBeUndefined();
   });
 
+  it('hides the home directory behind ~', () => {
+    expect(findLedger('📒 任务台账：/Users/a/.lark-channel/tasks/x.md', '/Users/a')).toBe(
+      '~/.lark-channel/tasks/x.md',
+    );
+    expect(findLedger('📒 任务台账：/Users/ab/tasks/x.md', '/Users/a')).toBe('/Users/ab/tasks/x.md');
+    expect(findLedger('📒 任务台账：/tmp/l.md', '/Users/a')).toBe('/tmp/l.md');
+  });
+
   it('tells a kill from outside apart from a real failure', () => {
     expect(isKilledExit('claude exited with code 143')).toBe(true);
     expect(isKilledExit('claude exited with code 137')).toBe(true);
