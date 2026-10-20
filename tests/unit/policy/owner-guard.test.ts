@@ -142,6 +142,13 @@ describe('guest runs: file scope', () => {
     expect(bash(command).code).toBe(2);
   });
 
+  it('reads a lone / inside quoted code as an operator, but not as a word of its own', () => {
+    expect(bash("jq -r '.a // .b | (.x / 1000)' /tmp/a.json").code).toBe(0);
+    expect(bash(`python3 -c "print('/'.join(['a', 'b']))"`).code).toBe(0);
+    expect(bash("find '/' -name '*.pem'").code).toBe(2);
+    expect(bash('ls //').code).toBe(2);
+  });
+
   it('applies the same scope to file tools', () => {
     expect(hook('Read', { file_path: `${HOME}/Desktop/coding/lark/thing-hub/CLAUDE.md` }).code).toBe(2);
     expect(hook('Grep', { pattern: 'x', path: `${HOME}/Desktop` }).code).toBe(2);
@@ -178,7 +185,43 @@ describe('guest runs: read-only roots', () => {
   ])('refuses %s', (_label, command) => {
     const res = bash(command);
     expect(res.code).toBe(2);
-    expect(res.stderr).toContain(`会改动 ${READ_ONLY}`);
+    expect(res.stderr).toContain(`会改动只读目录 ${READ_ONLY}`);
+    // Reading stays open, so the agent must not tell the user it is closed to them.
+    expect(res.stderr).not.toContain('不对外开放');
+  });
+
+  // Quoted text is an argument, not shell syntax: `>` in a format string or
+  // `|` in a grep pattern neither redirects nor starts another command.
+  it.each([
+    ['a git format with an email in angle brackets', `cd ${READ_ONLY} && F=logic/a.c; git log --format='%h %an <%ae> %s' -- $F | head -20`],
+    ['generics in a grep pattern', `cd ${READ_ONLY} && grep -rn 'List<Device>' --include='*.java' . | head`],
+    ['an alternation naming a write verb', `cd ${READ_ONLY} && grep -rE 'import|cp' . | head`],
+    ['an awk comparison', `cd ${READ_ONLY} && awk -F, '$3 > 100' a.csv`],
+    ['git status and ref listings', `cd ${READ_ONLY} && git status -sb && git branch -av && git remote -v && git tag -l 'v1.*'`],
+    ['git reads inside a command substitution', `cd ${READ_ONLY} && echo "tags: $(git tag --contains 6de9 --sort=creatordate | head -1)"`],
+    ['fd redirections to /dev/null and stdout', `cd ${READ_ONLY} && ls 2>/dev/null; git log -1 2>&1 | head`],
+    ['a quoted heredoc with an apostrophe before reading', `cat > /tmp/x.md <<'EOF'\nit's > fine\nEOF\ncd ${READ_ONLY} && git log -1`],
+  ])('allows %s', (_label, command) => {
+    expect(bash(command).code).toBe(0);
+  });
+
+  it.each([
+    ['stderr to a file', `cd ${READ_ONLY} && ls 2> err.log`],
+    ['stdout and stderr to a file', `cd ${READ_ONLY} && ls &> out.log`],
+    ['a write inside sh -c', `cd ${READ_ONLY} && bash -c 'echo x > f'`],
+    ['cd and write inside sh -c', `bash -c 'cd ${READ_ONLY} && echo x > f'`],
+    ['a write inside a command substitution', `cd ${READ_ONLY} && x=$(echo > f)`],
+    ['a write inside a quoted command substitution', `cd ${READ_ONLY} && echo "$(echo hi > f)"`],
+    ['a write through eval', `cd ${READ_ONLY} && eval 'echo hi > f'`],
+    ['a quoted absolute target', `echo x > '${READ_ONLY}/a.txt'`],
+    ['creating a branch', `cd ${READ_ONLY} && git branch -v newb`],
+    ['tagging', `cd ${READ_ONLY} && git tag -a v1 -m 'x'`],
+    ['stashing', `cd ${READ_ONLY} && git stash`],
+    ['moving a symbolic ref', `cd ${READ_ONLY} && git symbolic-ref HEAD refs/heads/x`],
+    ['an apostrophe in a heredoc pairing with a later quote', `cat <<EOF\nit's\nEOF\ncd ${READ_ONLY} && echo hi > f #'`],
+    ['an unterminated quote', `cd ${READ_ONLY}; echo 'x > a.txt`],
+  ])('still refuses %s', (_label, command) => {
+    expect(bash(command).code).toBe(2);
   });
 
   it('lets file tools read but not edit', () => {
