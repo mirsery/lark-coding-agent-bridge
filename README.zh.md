@@ -156,7 +156,7 @@ daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
 
 在宿主机终端查看 bot 工作状态、当前任务、执行阶段和耗时，以及 CPU、内存、磁盘可用空间与运行时间。单个 TUI 使用通用 ANSI 终端能力，不依赖终端软件的分屏或专属接口。上方使用紫色分区标题、绿黄红实心条形图展示 CPU / 内存 / 磁盘，网络展示最近 24 次采样趋势；小猫在独立区域从左向右行走。下方每个会话一张带边框卡片，展示机器人、状态、摘要、来源和耗时。彩色模式使用深灰背景，退出恢复终端颜色。
 
-![终端实时面板实际运行截图](docs/images/terminal-monitor.png)
+![终端实时面板示例（演示数据）](docs/images/terminal-monitor.png)
 
 ```bash
 lark-channel-bridge monitor --interval 5

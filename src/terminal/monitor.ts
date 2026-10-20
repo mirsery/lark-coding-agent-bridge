@@ -123,7 +123,8 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   const indent = columns >= 40 ? '  ' : '';
   const w = Math.max(1, usable - indent.length);
   const height = Math.max(1, rows - 1);
-  const paint = (text: string, code: number) => color ? `\x1b[${code}m${text}\x1b[0m\x1b[48;5;235m` : text;
+  const palette: Record<number, string> = { 35: '38;5;182', 36: '38;5;116', 90: '38;5;245', 91: '38;5;203', 92: '38;5;151', 93: '38;5;222' };
+  const paint = (text: string, code: number) => color ? `\x1b[${palette[code] ?? code}m${text}\x1b[0m\x1b[48;5;235m` : text;
   const cells = (text: string) => [...clean(text)].reduce((n, c) => n + width(c), 0);
   const line = (text = '', code = 37, size = w) => paint(fit(text, size), code);
   const pair = (left: string, right: string, code = 37, size = w) => {

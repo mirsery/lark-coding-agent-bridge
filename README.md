@@ -155,7 +155,7 @@ Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
 See bot availability, current tasks, execution stages and elapsed time alongside CPU, memory, free disk space and host uptime. A single TUI uses standard ANSI controls without terminal-specific split panes or APIs. Purple section titles and solid green/yellow/red bars show CPU, memory and disk, with the latest 24 network samples as sparklines. A character cat walks left to right in its own lane. Each session has a bordered card showing its bot, state, summary, origin and elapsed time. Color mode uses a dark gray surface and restores terminal colors on exit.
 
-![Live terminal dashboard screenshot](docs/images/terminal-monitor.png)
+![Live terminal dashboard with demonstration data](docs/images/terminal-monitor.png)
 
 ```bash
 lark-channel-bridge monitor --interval 5

@@ -17,5 +17,5 @@ export function catPatch(columns: number, rows: number, frame: number, color = t
   if (!at || !previous) return '';
   const erase = renderCat(frame).map((_, i) => `\x1b[${previous.row + i};${previous.column}H${' '.repeat(CAT_WIDTH)}`).join('');
   const art = renderCat(frame).map((line, i) => `\x1b[${at.row + i};${at.column}H${line}`).join('');
-  return color ? '\x1b[48;5;235m\x1b[36m' + erase + art + '\x1b[0m' : erase + art;
+  return color ? '\x1b[48;5;235m\x1b[38;5;116m' + erase + art + '\x1b[0m' : erase + art;
 }
