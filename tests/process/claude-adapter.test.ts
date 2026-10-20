@@ -160,6 +160,31 @@ describe('ClaudeAdapter process contract', () => {
     ]);
   });
 
+  it('does not report the exit that follows a quota refusal as a failure', async () => {
+    // Claude ends a refused turn with an error result, then exits 1. The turn
+    // already ended (the run pauses); the exit is not a second failure.
+    const refusal = "You've hit your session limit · resets 7:50pm";
+    const fake = await createFakeClaude({
+      lines: [
+        { type: 'assistant', error: 'rate_limit', message: { content: [{ type: 'text', text: refusal }] } },
+        { type: 'result', subtype: 'success', is_error: true, result: refusal, session_id: 'sess-quota' },
+      ],
+      exitCode: 1,
+    });
+    cleanup.push(fake.dir);
+
+    const run = new ClaudeAdapter({ binary: fake.path }).run({
+      runId: 'run-quota',
+      prompt: 'go on',
+      cwd: fake.dir,
+    });
+
+    const events = await collect(run.events);
+    expect(events).toContainEqual(expect.objectContaining({ type: 'rate_limit', blocked: true, message: refusal }));
+    expect(events.at(-1)).toEqual({ type: 'done', sessionId: 'sess-quota', terminationReason: 'normal' });
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+  });
+
   it('surfaces spawn errors as stream error events', async () => {
     let run: ReturnType<ClaudeAdapter['run']>;
     if (process.platform === 'win32') {

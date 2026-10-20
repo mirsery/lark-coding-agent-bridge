@@ -360,6 +360,8 @@ async function* createEventStream(
   const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
   let sawStdout = false;
   let turnTerminal = false;
+  // The last turn was refused by the plan quota (cleared once a turn does work).
+  let refused = false;
   let silentExitTimer: ReturnType<typeof setTimeout> | undefined;
   const closeSilentStdout = (): void => {
     silentExitTimer = setTimeout(() => {
@@ -457,7 +459,10 @@ async function* createEventStream(
           deferredDone = undefined;
         }
         if (evt.type === 'done' || evt.type === 'error') turnTerminal = true;
-        else if (evt.type === 'text' || evt.type === 'thinking' || evt.type === 'tool_use') turnTerminal = false;
+        else if (evt.type === 'text' || evt.type === 'thinking' || evt.type === 'tool_use') {
+          turnTerminal = false;
+          refused = false;
+        } else if (evt.type === 'rate_limit' && evt.blocked) refused = true;
         onEvent(evt);
         yield evt;
       }
@@ -500,6 +505,13 @@ async function* createEventStream(
   const runtimeError = getError();
   if (wasStopped()) {
     if (!turnTerminal) yield { type: 'done', terminationReason: 'interrupted' };
+    return;
+  }
+  // Claude exits 1 after a turn the quota refused. That turn already ended
+  // with its own result and the run shows as paused; a trailing error would
+  // only post a misleading "agent 失败" after the pause notice.
+  if (turnTerminal && refused && exitCode === 1 && child.signalCode === null) {
+    log.info('agent', 'exit-after-refusal', { pid: child.pid ?? null, exitCode });
     return;
   }
   if ((exitCode !== 0 && exitCode !== null) || child.signalCode !== null) {
