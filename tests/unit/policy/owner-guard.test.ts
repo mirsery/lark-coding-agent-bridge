@@ -202,6 +202,10 @@ describe('guest runs: read-only roots', () => {
     ['git reads inside a command substitution', `cd ${READ_ONLY} && echo "tags: $(git tag --contains 6de9 --sort=creatordate | head -1)"`],
     ['fd redirections to /dev/null and stdout', `cd ${READ_ONLY} && ls 2>/dev/null; git log -1 2>&1 | head`],
     ['a quoted heredoc with an apostrophe before reading', `cat > /tmp/x.md <<'EOF'\nit's > fine\nEOF\ncd ${READ_ONLY} && git log -1`],
+    ['a cd that ends with its command substitution', `for t in $(cd ${READ_ONLY} && git tag | head -3); do echo $t; done > tags.txt`],
+    ['inline code that only reads', `cd ${READ_ONLY} && python3 - <<'EOF'\nimport json\nprint(json.load(open('a.json'))['v'])\nEOF`],
+    ['a script module that reads', `cd ${READ_ONLY} && python3 -m json.tool a.json`],
+    ['inline code writing its results to /tmp', `cd ${READ_ONLY} && python3 - <<'EOF'\nimport json\nout='/tmp/r.json'\njson.dump(json.load(open('a.json')), open(out, 'w'))\nopen('/tmp/r.txt','w').write('x')\nEOF`],
   ])('allows %s', (_label, command) => {
     expect(bash(command).code).toBe(0);
   });
@@ -214,6 +218,13 @@ describe('guest runs: read-only roots', () => {
     ['a write inside a command substitution', `cd ${READ_ONLY} && x=$(echo > f)`],
     ['a write inside a quoted command substitution', `cd ${READ_ONLY} && echo "$(echo hi > f)"`],
     ['a write through eval', `cd ${READ_ONLY} && eval 'echo hi > f'`],
+    ['a cd through eval, which stays in the shell', `eval "cd ${READ_ONLY}"; echo x > a.txt`],
+    ['inline python writing through a heredoc', `cd ${READ_ONLY} && python3 - <<'EOF'\np='src/a.ts'\ns=open(p).read()\nopen(p,'w').write(s.replace('a','b'))\nEOF`],
+    ['inline python naming the place in its heredoc', `python3 - <<'EOF'\nfrom pathlib import Path\nPath('${READ_ONLY}/a.txt').write_text('x')\nEOF`],
+    ['python -c removing a file', `cd ${READ_ONLY} && python3 -c "import os; os.remove('a.c')"`],
+    ['inline code writing /tmp and a relative file', `cd ${READ_ONLY} && python3 -c "open('/tmp/a','w'); open('b.txt','w')"`],
+    ['node -e writing a file', `node -e "require('fs').writeFileSync('${READ_ONLY}/a.txt', 'x')"`],
+    ['inline code running git', `cd ${READ_ONLY} && python3 -c "import subprocess; subprocess.run(['git', 'checkout', '-b', 'x'])"`],
     ['a quoted absolute target', `echo x > '${READ_ONLY}/a.txt'`],
     ['creating a branch', `cd ${READ_ONLY} && git branch -v newb`],
     ['tagging', `cd ${READ_ONLY} && git tag -a v1 -m 'x'`],

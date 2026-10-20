@@ -25,7 +25,9 @@
 // it, and the agent is told the same rules in its system prompt. Shell
 // commands are read with their quoting (see parseList) so quoted arguments
 // aren't taken for redirections; when the quoting can't be followed the
-// raw text is matched as before.
+// raw text is matched as before. Code handed to an interpreter inline is
+// scanned for writing calls (CODE_WRITES). Before changing this file, replay
+// the local transcripts through it: docs/dev/guard-replay.md.
 
 import { homedir } from 'node:os';
 import { isAbsolute, resolve, sep } from 'node:path';
@@ -49,6 +51,47 @@ const REF_LIST_MODE = {
   tag: /^(?:-l|-n\d*|--(?:list|(?:no-)?contains|(?:no-)?merged|points-at)(?:=.*)?)$/,
 };
 const IN_PLACE = /\bsed\s+(?:-[a-zA-Z]*i|--in-place)|\bperl\s+-[a-zA-Z]*i/;
+// Code an interpreter runs inline (`python3 - <<'EOF'`, `python3 -c …`,
+// `node -e …`) writes files the shell never sees: a writing call in it, or a
+// writing command it runs, makes it a write.
+const INTERPRETER = /^(?:.*\/)?(?:python[\d.]*|node|perl|ruby|php|deno|bun)$/;
+const CODE_WRITES = new RegExp(
+  [
+    String.raw`\bopen\s*\([^)]*?,\s*(?:mode\s*=\s*)?['"][^'"]*[wax+]`,
+    String.raw`\bopen\s*\(?\s*(?:my\s+)?[$\w]+\s*,\s*['"]\+?>`,
+    String.raw`\.(?:write_text|write_bytes|touch|unlink|rmdir|mkdir|rename|symlink_to|hardlink_to)\s*\(`,
+    String.raw`\bos\.(?:remove|unlink|rename|renames|replace|makedirs|mkdir|rmdir|removedirs|truncate|symlink|link|chmod|chown)\b`,
+    String.raw`\bshutil\.(?:copy\w*|move|rmtree|make_archive|unpack_archive|chown)\b`,
+    String.raw`\b(?:writeFile|appendFile|rm|rmdir|unlink|rename|copyFile|cp|mkdir|truncate|symlink|createWriteStream)(?:Sync)?\s*\(`,
+    String.raw`\bFile\.(?:write|delete|rename|unlink)\b|\bFileUtils\b|\bfile_put_contents\b`,
+  ].join('|'),
+);
+const CODE_RUNS = /\b(?:subprocess|os\.(?:system|popen|exec\w*|spawn\w*)|child_process|(?:exec|execFile|spawn)Sync)\b/;
+const CODE_RUNS_WRITE =
+  /['"[,\s](?:rm|mv|cp|rmdir|ln|chmod|chown|touch|mkdir|truncate|rsync|unlink|tee|patch|dd)['"\s]|\bsed['"]?(?:\s*,\s*['"]|\s+)-i|['"\s]git['"]?(?:\s*,\s*['"]|\s+)(?:checkout|switch|commit|reset|pull|fetch|merge|rebase|push|clean|stash|branch|tag|apply|am|cherry-pick|revert|restore|rm|mv|add|worktree|init|clone|gc|prune|update-ref|config)\b/;
+
+const codeWrites = (code) => CODE_WRITES.test(code) || (CODE_RUNS.test(code) && CODE_RUNS_WRITE.test(code));
+const OPEN_FOR_WRITE = /\bopen\s*\(\s*([^,()]+?)\s*,\s*(?:mode\s*=\s*)?['"][^'"]*[wax+]/g;
+
+/**
+ * Does inline code write only outside `rule`? Only when its sole writing calls
+ * are `open(…, 'w')` on absolute paths — written out, or a variable set once
+ * to one (`p = '/tmp/x'`): `cd <read-only> && python3 …` writing results to /tmp.
+ */
+function writesElsewhere(code, rule) {
+  if (codeWrites(code.replace(OPEN_FOR_WRITE, ''))) return false;
+  const targets = [...code.matchAll(OPEN_FOR_WRITE)].map(([, arg]) => {
+    const literal = /^f?(['"])([^'"]*)\1$/.exec(arg);
+    if (literal) return literal[2];
+    if (!/^\w+$/.test(arg)) return null;
+    const sets = [...code.matchAll(new RegExp(`(?:^|[\\s;])${arg}\\s*=\\s*f?(['"])([^'"]*)\\1`, 'gm'))];
+    return sets.length === 1 ? sets[0][2] : null;
+  });
+  return (
+    targets.length > 0 &&
+    targets.every((t) => t?.startsWith('/') && t !== rule.path && !t.startsWith(`${rule.path}/`))
+  );
+}
 const RELATIVE_REDIRECT = /(?:^|[^<>&\d])>{1,2}\s*(?!\/|&|\$|~)\S/;
 const BARE_CD = /(?:^|[;&|]\s*)cd\s*(?:$|[;&|])/;
 const ROOT_ONLY = /^\/+$/;
@@ -141,8 +184,17 @@ function isWriteVerb(seg) {
   return WRITE_VERB.test(cmd) && !GIT_READ.test(cmd) && !listsRefs(seg.args ?? cmd.split(/\s+/));
 }
 
-function writesInto(seg, rule) {
-  if (isWriteVerb(seg)) return true;
+/** An interpreter given its code inline: `-c` / `-e` / `-`, or no script file (stdin). */
+function runsInlineCode(seg) {
+  const args = seg.args ?? seg.command.split(/\s+/);
+  const at = args.findIndex((a) => !/^\w+=/.test(a) && a !== 'sudo' && a !== 'env');
+  if (at === -1 || !INTERPRETER.test(args[at])) return false;
+  const rest = args.slice(at + 1);
+  return rest.some((a) => /^(?:-[a-zA-Z]*[ce]|--eval|-p|-)$/.test(a)) || rest.every((a) => a.startsWith('-'));
+}
+
+function writesInto(seg, rule, verb = isWriteVerb(seg)) {
+  if (verb) return true;
   if (seg.targets?.some((target) => target.startsWith(rule.path))) return true;
   return new RegExp(`>{1,2}\\s*['"]?${escapeRe(rule.path)}`).test(seg.text);
 }
@@ -186,21 +238,31 @@ function writesFile(op, word) {
   return ['>', '>>', '>|', '&>', '&>>', '<>'].includes(op);
 }
 
-/** Scripts a command hands to another shell: `sh -c '…'`, `eval …`. */
+/**
+ * Scripts a command hands on: `sh -c '…'` to another shell, `eval …` to the
+ * current one (`here`), where a `cd` outlives the script.
+ */
 function innerScripts(values) {
   const scripts = [];
   values.forEach((value, k) => {
-    if (value === 'eval') scripts.push(values.slice(k + 1).join(' '));
+    if (value === 'eval') scripts.push({ script: values.slice(k + 1).join(' '), here: true });
     if (SHELL.test(value) || value === 'su') {
       const flag = values.findIndex((v, n) => n > k && SHELL_SCRIPT_FLAG.test(v));
-      if (flag !== -1 && flag + 1 < values.length) scripts.push(values[flag + 1]);
+      if (flag !== -1 && flag + 1 < values.length) scripts.push({ script: values[flag + 1], here: false });
     }
   });
   return scripts;
 }
 
+// Each segment records the shell it runs in: `0`, and `0.1`, `0.1.2`… for
+// subshells (`$( … )`, backticks, process substitution, `sh -c`, heredoc
+// bodies). A subshell inherits the directory, but its own `cd` ends with it.
+let shellSeq = 0;
+const subshell = (scope) => `${scope}.${++shellSeq}`;
+const runsIn = (scope, shell) => scope === shell || scope.startsWith(`${shell}.`);
+
 /** The old reading: split the raw text at every `;` `|` `&&` `||` and newline. */
-function plainSegments(text) {
+function plainSegments(text, scope = '0') {
   return text.split(/&&|\|\||;|\||\n/).map((part) => ({
     text: part,
     command: part.trim(),
@@ -208,16 +270,17 @@ function plainSegments(text) {
     args: null,
     targets: null,
     words: null,
+    scope,
   }));
 }
 
-function scriptSegments(script, out, depth) {
+function scriptSegments(script, out, depth, scope) {
   const segments = [];
   try {
-    parseList(script, 0, '', segments, depth + 1);
+    parseList(script, 0, '', segments, depth + 1, scope);
   } catch (err) {
     if (!(err instanceof Unparsed)) throw err;
-    out.push(...plainSegments(script));
+    out.push(...plainSegments(script, scope));
     return;
   }
   out.push(...segments);
@@ -231,7 +294,7 @@ function scriptSegments(script, out, depth) {
  * commands of their own. Returns the index after `closer`; throws Unparsed
  * when the quoting can't be followed.
  */
-function parseList(src, start, closer, out, depth) {
+function parseList(src, start, closer, out, depth, scope) {
   if (depth > 8) throw new Unparsed();
   let i = start;
   let segStart = start;
@@ -258,7 +321,7 @@ function parseList(src, start, closer, out, depth) {
       argv.push(raw);
       values.push(value);
     } else if (redirect.heredoc !== undefined) {
-      heredocs.push({ delim: value, strip: redirect.heredoc });
+      heredocs.push({ delim: value, strip: redirect.heredoc, owner: null });
     } else if (writesFile(redirect.op, value)) {
       targets.push(value);
     }
@@ -268,15 +331,22 @@ function parseList(src, start, closer, out, depth) {
     endWord();
     if (redirect) throw new Unparsed();
     if (words.length) {
-      out.push({
+      const seg = {
         text: src.slice(segStart, end),
         command: argv.join(' '),
         relative: targets.some((t) => !/^[/$~]/.test(t)),
         args: values,
         targets,
         words,
-      });
-      for (const script of innerScripts(values)) scriptSegments(script, out, depth);
+        scope,
+        // What its heredocs feed it, filled in once the bodies are read.
+        input: '',
+      };
+      out.push(seg);
+      for (const heredoc of heredocs) heredoc.owner ??= seg;
+      for (const { script, here } of innerScripts(values)) {
+        scriptSegments(script, out, depth, here ? scope : subshell(scope));
+      }
     }
     argv = [];
     values = [];
@@ -285,11 +355,15 @@ function parseList(src, start, closer, out, depth) {
   };
   // Heredoc bodies start on the line after their `<<`; each runs to its delimiter line.
   const readHeredocs = (pos) => {
-    for (const { delim, strip } of heredocs.splice(0)) {
+    for (const { delim, strip, owner } of heredocs.splice(0)) {
       let at = pos;
+      const body = (text) => {
+        if (owner) owner.input += text;
+        scriptSegments(text, out, depth, subshell(scope));
+      };
       for (;;) {
         if (at >= src.length) {
-          scriptSegments(src.slice(pos), out, depth);
+          body(src.slice(pos));
           pos = src.length;
           break;
         }
@@ -297,7 +371,7 @@ function parseList(src, start, closer, out, depth) {
         const end = nl === -1 ? src.length : nl;
         const line = src.slice(at, end);
         if ((strip ? line.replace(/^\t+/, '') : line) === delim) {
-          scriptSegments(src.slice(pos, at), out, depth);
+          body(src.slice(pos, at));
           pos = end + 1;
           break;
         }
@@ -306,7 +380,7 @@ function parseList(src, start, closer, out, depth) {
     }
     return Math.min(pos, src.length);
   };
-  const nested = (from, close) => parseList(src, from, close, out, depth + 1);
+  const nested = (from, close) => parseList(src, from, close, out, depth + 1, subshell(scope));
 
   while (i < src.length) {
     const c = src[i];
@@ -411,8 +485,9 @@ function parseList(src, start, closer, out, depth) {
 /** Simple commands of `cmd`, or null when its quoting can't be followed. */
 function parseShell(cmd) {
   const out = [];
+  shellSeq = 0;
   try {
-    parseList(cmd, 0, '', out, 0);
+    parseList(cmd, 0, '', out, 0, '0');
   } catch (err) {
     if (err instanceof Unparsed) return null;
     throw err;
@@ -428,16 +503,26 @@ function decideBash(command, cfg, cwd) {
   }
   const cmd = stripDataHeredocs(full);
   const segments = parseShell(cmd) ?? plainSegments(cmd);
-  let cdInto = null;
+  const cds = [];
   for (const seg of segments) {
     if (!seg.text.trim()) continue;
-    // `cd <protected> && echo x > file` writes there without naming it again.
-    if (cdInto && (isWriteVerb(seg) || seg.relative)) return changes(cdInto, cfg);
+    // Inline code is the `-c` argument or the heredoc fed to it; with the
+    // quoting lost, anything in the command.
+    const code = runsInlineCode(seg) ? (seg.words ? `${seg.text}\n${seg.input}` : cmd) : null;
+    const inline = code !== null && codeWrites(code);
+    const verb = inline || isWriteVerb(seg);
+    // `cd <protected> && echo x > file` writes there without naming it again;
+    // `$(cd <protected> && git tag) > file` does not.
+    const cdInto = cds.findLast((cd) => runsIn(seg.scope, cd.scope))?.rule;
+    if (cdInto && (isWriteVerb(seg) || seg.relative || (inline && !writesElsewhere(code, cdInto)))) {
+      return changes(cdInto, cfg);
+    }
+    const text = inline ? code : seg.text;
     for (const rule of cfg.rules ?? []) {
-      if (!mentions(seg.text, rule)) continue;
+      if (!mentions(text, rule)) continue;
       if (rule.bash === 'any') return `这条命令会读取或改动 ${rule.path}`;
-      if (/^(?:cd|pushd)\s/.test(seg.command)) cdInto = rule;
-      else if (writesInto(seg, rule)) return changes(rule, cfg);
+      if (/^(?:cd|pushd)\s/.test(seg.command)) cds.push({ scope: seg.scope, rule });
+      else if (writesInto(seg, rule, verb)) return changes(rule, cfg);
     }
   }
   if (BARE_CD.test(cmd)) return '这条命令会进入主人的主目录';
