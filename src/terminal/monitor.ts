@@ -142,7 +142,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     line(`${s.host.replace(/\.local$/, '')}  ·  ${s.cores} cores  ·  ${online} bots online  ·  ${running} tasks`, 90)];
   const cat = catPosition(columns, rows, frame);
   if (cat) {
-    for (const art of renderCat(frame)) out.push(line(' '.repeat(cat.column - 1 - indent.length) + art, 36));
+    for (const art of renderCat(frame, cat.direction)) out.push(line(' '.repeat(cat.column - 1 - indent.length) + art, 36));
   }
   const m = s.metrics;
   if (m) {

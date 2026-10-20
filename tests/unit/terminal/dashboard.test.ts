@@ -29,15 +29,26 @@ it('keeps metrics above sessions, with bars in roomy terminals and compact small
   expect(renderMonitor(snap, 110, 36, false, 1)).not.toEqual(view);
 });
 
-it('moves left to right, clears the previous cat, and wraps inside the animation lane', () => {
+it('turns at both edges without jumping and faces its direction of travel', () => {
   for (const columns of [80, 110, 238]) {
     const first = catPosition(columns, 36, 0)!;
     expect(catPosition(columns, 36, 1)!.column).toBeGreaterThan(first.column);
-    for (let frame = 0; frame < 250; frame++) {
+    const steps = Math.ceil((columns - 16 - 4) / 2);
+    expect(catPosition(columns, 36, steps)!.column).toBe(columns - 17);
+    expect(catPosition(columns, 36, steps)!.direction).toBe('left');
+    expect(catPosition(columns, 36, steps * 2)!.column).toBe(first.column);
+    expect(catPosition(columns, 36, steps * 2)!.direction).toBe('right');
+    let previous = first;
+    for (let frame = 1; frame < 500; frame++) {
       const at = catPosition(columns, 36, frame)!;
       expect(at.column).toBeGreaterThanOrEqual(3);
       expect(at.column + 16).toBeLessThan(columns);
+      expect(Math.abs(at.column - previous.column)).toBeLessThanOrEqual(2);
       expect(at.row).toBe(3);
+      const direction = catPosition(columns, 36, frame + 1)!.column < at.column ? 'left' : 'right';
+      expect(at.direction).toBe(direction);
+      expect(catPatch(columns, 36, frame, false)).toContain(renderCat(frame, direction)[1]);
+      previous = at;
     }
     const patch = catPatch(columns, 36, 1, false);
     expect(patch).toContain(`\x1b[3;${first.column}H${' '.repeat(16)}`);
@@ -57,5 +68,12 @@ it('gives each session its own closed card and preserves the terminal background
     expect(colored).not.toMatch(/\x1b\[(?:48|4[0-7]|10[0-7])[;m]/);
     expect(colored).toContain('\x1b[39m');
     expect(catPatch(160, 36, 1, true, theme)).not.toContain('48;');
+  }
+});
+
+it('mirrors the cat when walking back to the left', () => {
+  expect(renderCat(0, 'left')).not.toEqual(renderCat(0, 'right'));
+  for (const direction of ['left', 'right'] as const) {
+    expect(renderCat(1, direction).every(row => row.length === 16)).toBe(true);
   }
 });
