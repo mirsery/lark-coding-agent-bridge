@@ -1811,8 +1811,9 @@ function clipDiff(diff: string, max: number): string {
 
 /**
  * `/audit [N]`: the latest side-effecting steps (commands, file writes,
- * external tools) and approval decisions, newest first. Private chat only —
- * it spans every chat of the profile.
+ * external tools) and approval decisions, newest first. `/audit 拦截 [N]`:
+ * only the steps the guest guard refused, to spot misjudged read-only ones.
+ * Private chat only — it spans every chat of the profile.
  */
 async function handleAudit(args: string, ctx: CommandContext): Promise<void> {
   if (ctx.chatMode !== 'p2p') {
@@ -1824,13 +1825,16 @@ async function handleAudit(args: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, '当前 profile 没有开启审计记录。');
     return;
   }
-  const n = Number.parseInt(args.trim(), 10);
+  const words = args.trim().split(/\s+/).filter(Boolean);
+  const blockedOnly = words[0] === '拦截' || words[0] === 'blocked';
+  const n = Number.parseInt(words[blockedOnly ? 1 : 0] ?? '', 10);
   const limit = Number.isFinite(n) && n > 0 ? Math.min(n, 100) : 20;
-  const entries = (await audit.query({ limit: limit * 3 }))
-    .filter((e) => e.kind === 'tool' || (e.event && e.event in AUDIT_EVENT_LABELS))
+  // Refusals are rare among all steps: scan the whole retained log for them.
+  const entries = (await audit.query({ limit: blockedOnly ? Number.MAX_SAFE_INTEGER : limit * 3 }))
+    .filter((e) => (blockedOnly ? Boolean(e.blocked) : e.kind === 'tool' || (e.event && e.event in AUDIT_EVENT_LABELS)))
     .slice(0, limit);
   if (entries.length === 0) {
-    await reply(ctx, '还没有审计记录。');
+    await reply(ctx, blockedOnly ? '还没有被拦截的访客操作。' : '还没有审计记录。');
     return;
   }
   const chats = new Map((ctx.controls.knownChats ?? []).map((c) => [c.id, c.name]));
@@ -1840,16 +1844,19 @@ async function handleAudit(args: string, ctx: CommandContext): Promise<void> {
     const when = `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     const who = e.actorId === ctx.msg.senderId ? '你' : (e.actorName ?? `…${e.actorId.slice(-6)}`);
     const where = e.chatId ? (chats.get(e.chatId) ?? '会话') : e.source;
-    const what = `${toolLabel(e.tool)} \`${e.summary.replace(/`/g, "'").slice(0, 80)}\``;
-    const outcome =
-      e.kind === 'approval'
+    // A refusal is judged by the whole command, so show more of it.
+    const what = `${toolLabel(e.tool)} \`${e.summary.replace(/`/g, "'").slice(0, blockedOnly ? 300 : 80)}\``;
+    const outcome = e.blocked
+      ? ` · 已拦截：${e.blocked}`
+      : e.kind === 'approval'
         ? ` · ${AUDIT_EVENT_LABELS[e.event!]}`
         : e.gated
           ? ' · 非管理员会话'
           : '';
     return `- ${when} ${who}（${where}）${what}${outcome}`;
   });
-  await reply(ctx, [`**最近 ${entries.length} 条操作记录**`, ...lines].join('\n'));
+  const title = blockedOnly ? `**最近 ${entries.length} 次被拦截的访客操作**` : `**最近 ${entries.length} 条操作记录**`;
+  await reply(ctx, [title, ...lines].join('\n'));
 }
 
 async function handleCoffee(_args: string, ctx: CommandContext): Promise<void> {

@@ -159,6 +159,16 @@ function skillTargets(skillsDir: string): string[] {
   return [...roots];
 }
 
+/**
+ * The guard's reason when a tool result is its refusal. Claude reports a
+ * blocking hook as `PreToolUse:Bash hook error: ["node" ".../bridge-guard.mjs"]:
+ * <stderr>`; the reason is the stderr's first sentence.
+ */
+export function guardRefusal(output: string): string | undefined {
+  const match = /bridge-guard\.mjs"?\]:\s*([^。\n]+)/.exec(output);
+  return match?.[1]?.trim() || undefined;
+}
+
 /** Claude Code settings that carry PreToolUse hooks. */
 export interface ClaudeHookSettings {
   hooks: { PreToolUse: unknown[] };

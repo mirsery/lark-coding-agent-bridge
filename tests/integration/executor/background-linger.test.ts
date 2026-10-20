@@ -565,6 +565,34 @@ describe('RunExecutor background tasks', () => {
     expect(h.audited[0]).toMatchObject({ kind: 'tool', actorId: 'ou_a', tool: 'Bash', summary: 'npm test', gated: true });
   });
 
+  it('audits the steps the guard hook refuses in a guest run, read-only tools included', async () => {
+    const h = harness({ noApprovals: true });
+    const refusal = (reason: string) =>
+      `PreToolUse:Bash hook error: ["/usr/bin/node" "/repo/bin/bridge-guard.mjs"]: ${reason}。本次任务不是 bot 主人发起的…\n`;
+    const run = await h.executor.submit({
+      scopeId: 'chat-1',
+      policy: policy(),
+      guard: ownerOnlyGuard({ larkChannelHome: '/home/o/.lark-channel', home: '/home/o', root: '/opt/bridge' }),
+      actor: { id: 'ou_guest', name: 'Guest' },
+      chatId: 'chat-1',
+    });
+    h.agent.runs[0]!.emit(
+      { type: 'tool_use', id: 't1', name: 'Bash', input: { command: "git log --format='%an <%ae>'" } },
+      { type: 'tool_result', id: 't1', output: refusal('这条命令会改动只读目录 /repo'), isError: true },
+      { type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/home/x/.ssh/id_rsa' } },
+      { type: 'tool_result', id: 't2', output: refusal('访问的位置未对外开放：/home/x/.ssh/id_rsa'), isError: true },
+      { type: 'tool_use', id: 't3', name: 'Bash', input: { command: 'false' } },
+      { type: 'tool_result', id: 't3', output: 'exit 1', isError: true },
+      done(),
+    );
+    await collect(run.subscribe());
+
+    expect(h.audited.filter((e) => e.blocked)).toEqual([
+      expect.objectContaining({ actorId: 'ou_guest', actorName: 'Guest', tool: 'Bash', summary: "git log --format='%an <%ae>'", blocked: '这条命令会改动只读目录 /repo' }),
+      expect.objectContaining({ tool: 'Read', summary: 'Read /home/x/.ssh/id_rsa', blocked: '访问的位置未对外开放：/home/x/.ssh/id_rsa' }),
+    ]);
+  });
+
   it('runs a gated turn read-only when there is no approval channel', async () => {
     const h = harness({ noApprovals: true });
     await h.executor.submit({ scopeId: 'chat-1', policy: policy(), gate: gate('ou_a') });

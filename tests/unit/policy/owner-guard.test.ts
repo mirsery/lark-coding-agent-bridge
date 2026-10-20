@@ -6,6 +6,7 @@ import {
   bridgeRoot,
   claudeGuardArgs,
   grantedToolsFor,
+  guardRefusal,
   isOwnerBatch,
   ownerOnlyGuard,
 } from '../../../src/policy/owner-guard';
@@ -281,6 +282,26 @@ describe('guest runs: Claude flags', () => {
     expect(guard.allowedRoots).toContain(OPEN);
     expect(guard.allowedRoots).toContain(WORKSPACE);
     expect(guard.hookScript).toBe(join(ROOT, 'bin', 'bridge-guard.mjs'));
+  });
+});
+
+describe('guardRefusal', () => {
+  /** The tool result Claude reports when the hook blocks a call. */
+  const reported = (tool: string, stderr: string) =>
+    `PreToolUse:${tool} hook error: ["${process.execPath}" "${guard.hookScript}"]: ${stderr}`;
+
+  it("reads the hook's reason back from the tool result Claude reports", () => {
+    const refused = bash(`cat ${LC}/config.json`);
+    expect(refused.code).toBe(2);
+    expect(guardRefusal(reported('Bash', refused.stderr))).toBe(`这条命令会读取或改动 ${LC}`);
+
+    const edit = hook('Edit', { file_path: `${READ_ONLY}/src/Main.java`, old_string: 'a', new_string: 'b' });
+    expect(guardRefusal(reported('Edit', edit.stderr))).toContain(READ_ONLY);
+  });
+
+  it('ignores other failures', () => {
+    expect(guardRefusal('Exit code 1\nfatal: not a git repository')).toBeUndefined();
+    expect(guardRefusal('PreToolUse:Bash hook error: ["node" "/x/other-hook.mjs"]: no')).toBeUndefined();
   });
 });
 

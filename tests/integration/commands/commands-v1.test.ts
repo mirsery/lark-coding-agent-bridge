@@ -374,6 +374,27 @@ describe('Bridge command contracts', () => {
     expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
   });
 
+  it('/audit 拦截 lists only the steps the guest guard refused', async () => {
+    const h = await createHarness();
+    const audit = new AuditLog(join(h.tmp.profile, 'audit.jsonl'));
+    audit.append({ kind: 'tool', actorId: 'ou-other', actorName: 'Colleague', source: 'im', scopeId: 'chat-2', tool: 'Bash', summary: 'npm test' });
+    audit.append({ kind: 'tool', actorId: 'ou-other', actorName: 'Colleague', source: 'im', scopeId: 'chat-2', tool: 'Bash', summary: "git log --format='%an <%ae>'", blocked: '这条命令会改动只读目录 /repo' });
+    await audit.flush();
+    (h.controls as Controls).audit = audit;
+
+    await h.run('/audit 拦截');
+    const listing = lastMarkdown(h.channel);
+    expect(listing).toContain('最近 1 次被拦截的访客操作');
+    expect(listing).toContain("git log --format='%an <%ae>'");
+    expect(listing).toContain('已拦截：这条命令会改动只读目录 /repo');
+    expect(listing).not.toContain('npm test');
+
+    await h.run('/audit blocked 5');
+    expect(lastMarkdown(h.channel)).toContain('最近 1 次被拦截的访客操作');
+    await h.run('/audit');
+    expect(lastMarkdown(h.channel)).toContain('最近 2 条操作记录');
+  });
+
   it('rejects admin-only commands for non owner/admin users', async () => {
     const h = await createHarness();
 

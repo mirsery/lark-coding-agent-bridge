@@ -6,7 +6,7 @@ import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
 import { agentDescriptor, isAgentKind } from '../agent/registry';
 import { RunRejected, SpawnFailed } from './errors';
-import type { RunGuard } from '../policy/owner-guard';
+import { guardRefusal, type RunGuard } from '../policy/owner-guard';
 import { isTerminalEvent, ProcessSession } from './process-session';
 import type { UsageEntry } from './usage-ledger';
 import { needsApproval, summarizeToolCall, type AuditSink, type GateContext } from './approvals';
@@ -100,6 +100,8 @@ export interface RunExecution {
 }
 
 const DEFAULT_MAX_BACKGROUND_LINGER_MS = 30 * 60 * 1000;
+/** Unanswered tool calls a guarded run keeps for `auditRefusal`. */
+const MAX_PENDING_TOOLS = 200;
 
 /** A spawned process, tracked per scope while it may still serve turns. */
 interface LiveProcess {
@@ -113,6 +115,10 @@ interface LiveProcess {
   actor: { id: string; name?: string } | undefined;
   /** The process's approval channel, when it runs gated. */
   gateToken: string | undefined;
+  /** Runs under the guest guard hook (`bin/bridge-guard.mjs`). */
+  guarded: boolean;
+  /** A guarded run's tool calls awaiting their result, to audit the ones the guard refuses. */
+  pendingTools: Map<string, { tool: string; summary: string }>;
   chatId: string | undefined;
   source: string;
   lingerTimer: NodeJS.Timeout | undefined;
@@ -295,6 +301,8 @@ export class RunExecutor {
         onBackgroundTurn: undefined,
         actor: undefined,
         gateToken,
+        guarded: Boolean(input.guard),
+        pendingTools: new Map(),
         chatId: undefined,
         source: 'unknown',
         lingerTimer: undefined,
@@ -355,6 +363,7 @@ export class RunExecutor {
       observeRunEvents(turnEvents, { dimensions, startedAt, now: this.now }, (event) => {
         if (event.type === 'usage') this.bookUsage(owner, event);
         else if (event.type === 'tool_use') this.auditTool(owner, event);
+        else if (event.type === 'tool_result') this.auditRefusal(owner, event);
         else terminal = event;
       }),
       async () => {
@@ -484,12 +493,18 @@ export class RunExecutor {
 
   /** Record a side-effecting step (command, file write, MCP call) against the person behind it. */
   private auditTool(live: LiveProcess, event: Extract<AgentEvent, { type: 'tool_use' }>): void {
-    if (!this.audit || !live.actor || !needsApproval(event.name)) return;
+    if (!this.audit || !live.actor) return;
     const input = event.input && typeof event.input === 'object' ? (event.input as Record<string, unknown>) : {};
     const summary =
       event.name === 'file_change' && Array.isArray(input.paths)
         ? `修改文件：${(input.paths as unknown[]).join(', ')}`
         : summarizeToolCall(event.name, input);
+    if (live.guarded) {
+      live.pendingTools.set(event.id, { tool: event.name, summary });
+      const oldest = live.pendingTools.keys().next().value;
+      if (live.pendingTools.size > MAX_PENDING_TOOLS && oldest !== undefined) live.pendingTools.delete(oldest);
+    }
+    if (!needsApproval(event.name)) return;
     this.audit.append({
       kind: 'tool',
       actorId: live.actor.id,
@@ -504,10 +519,36 @@ export class RunExecutor {
     });
   }
 
+  /**
+   * Record a step the guard hook refused in a guest run, read-only ones
+   * included, so the owner can spot misjudgments with `/audit 拦截`.
+   */
+  private auditRefusal(live: LiveProcess, event: Extract<AgentEvent, { type: 'tool_result' }>): void {
+    const call = live.pendingTools.get(event.id);
+    if (!call) return;
+    live.pendingTools.delete(event.id);
+    const reason = event.isError ? guardRefusal(event.output) : undefined;
+    if (!this.audit || !live.actor || !reason) return;
+    this.audit.append({
+      kind: 'tool',
+      actorId: live.actor.id,
+      ...(live.actor.name ? { actorName: live.actor.name } : {}),
+      source: live.source,
+      scopeId: live.scopeId,
+      ...(live.chatId ? { chatId: live.chatId } : {}),
+      agent: String(live.dimensions.agent ?? ''),
+      tool: call.tool,
+      summary: call.summary,
+      gated: Boolean(live.gateToken),
+      blocked: reason,
+    });
+  }
+
   private deliverBackgroundTurn(live: LiveProcess, events: AgentEvent[]): void {
     for (const event of events) {
       if (event.type === 'usage') this.bookUsage(live, event);
       if (event.type === 'tool_use') this.auditTool(live, event);
+      if (event.type === 'tool_result') this.auditRefusal(live, event);
     }
     log.info('run', 'background-turn', {
       ...live.dimensions,
@@ -641,7 +682,8 @@ function observeRunEvents(
   return {
     async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
       for await (const event of events) {
-        if (isTerminalEvent(event) || event.type === 'usage' || event.type === 'tool_use') onEvent(event);
+        if (isTerminalEvent(event) || event.type === 'usage' || event.type === 'tool_use' || event.type === 'tool_result')
+          onEvent(event);
         if (event.type === 'done') {
           log.info('run', 'completed', {
             ...opts.dimensions,

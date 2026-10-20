@@ -320,7 +320,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/reconnect` | 强制 WebSocket 重连 |
 | `/doctor [描述]` | 执行低敏诊断 |
 | `/usage [today\|week\|month]` | 用量统计（token 与估算费用）；每个人看自己的，管理员私聊可看所有人 |
-| `/audit [N]` | 最近谁让 bot 执行了什么命令、改了哪些文件、审批结果（管理员，私聊） |
+| `/audit [拦截] [N]` | 最近谁让 bot 执行了什么命令、改了哪些文件、审批结果；`/audit 拦截` 只看访客任务里被拦下的操作，用来发现误判（管理员，私聊） |
 | `/help` | 帮助卡片 |
 
 私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。

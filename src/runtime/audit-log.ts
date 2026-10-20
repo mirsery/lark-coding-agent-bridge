@@ -16,6 +16,8 @@ export interface AuditEntry {
   tool: string;
   summary: string;
   gated?: boolean;
+  /** The guard hook refused the step in a guest run; its reason. */
+  blocked?: string;
   approvalId?: string;
   decidedBy?: string;
   allowTurn?: boolean;
