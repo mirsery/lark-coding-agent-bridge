@@ -114,6 +114,7 @@ import {
   lastRunLine,
   parseAdd,
   scheduleSummary,
+  scheduleSummaryPlain,
   truncate,
 } from '../scheduler/command';
 import { formatTime, jobScopeId } from '../scheduler/runner';
@@ -3109,7 +3110,7 @@ async function cronList(ctx: CommandContext, scheduler: Scheduler): Promise<void
   const card = cronCard(
     jobs.map((job) => ({
       id: job.id,
-      schedule: scheduleSummary(job),
+      schedule: scheduleSummaryPlain(job),
       status: jobStatusLine(job),
       ...(lastRunLine(job) ? { lastRun: lastRunLine(job)! } : {}),
       prompt: truncate(job.prompt, 120),
