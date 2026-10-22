@@ -339,15 +339,16 @@ Each profile owns a knowledge directory the bot carries across sessions, so a ru
 Every run injects a `<bridge_knowledge>` block containing:
 
 - **Profile memory** — notes that apply to every chat this profile serves.
-- **Chat memory** — notes scoped to the current chat or topic. On a conflict, the chat's notes win.
+- **Chat memory** — notes scoped to the current chat or topic. A topic in a topic group also gets its group's notes (written with `/memory add --group`); topics never see each other's. On a conflict, the chat's notes win.
 - **A skill index** — name, one-line description, and the path of every `SKILL.md`. Only the index. The agent opens a skill's body itself when the task calls for it, so a dozen skills cost a few dozen tokens per turn instead of thousands.
 
 ```text
 /memory                       # what is in effect here
 /memory add <text>            # remember it for this chat
+/memory add --group <text>    # in a topic: remember it for the whole group
 /memory add --global <text>   # remember it profile-wide (admins)
 /memory forget <id>
-/memory clear [--global]
+/memory clear [--group|--global]
 /skills                       # the skill index
 /skills show <name>
 ```

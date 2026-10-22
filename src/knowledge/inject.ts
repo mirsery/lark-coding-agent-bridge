@@ -4,7 +4,7 @@ import type { KnowledgeStore, MemoryEntry, SkillSummary } from './store';
 export interface KnowledgeContext {
   /** Notes that apply to every chat in this profile. */
   profileMemory?: string[];
-  /** Notes recorded for this chat / topic only. */
+  /** Notes recorded for this chat / topic only (a topic also gets its group's). */
   chatMemory?: string[];
   /** Index only — the agent reads a skill's body itself when it needs it. */
   skills?: SkillRef[];
@@ -87,11 +87,26 @@ const LIBRARY_INDEX_MAX_CHARS = 8000;
  * on demand: a dozen skills would otherwise cost thousands of tokens on every
  * single turn, most of them irrelevant to the message at hand.
  */
+/**
+ * The group a topic scope (`<chatId>:<threadId>`) belongs to; undefined for a
+ * plain chat scope and for bridge-internal scopes such as `cron:<id>`.
+ */
+export function topicGroupScope(scopeId: string): string | undefined {
+  const colon = scopeId.indexOf(':');
+  if (colon <= 0) return undefined;
+  const chatId = scopeId.slice(0, colon);
+  return chatId.startsWith('oc_') ? chatId : undefined;
+}
+
 export async function buildKnowledgeContext(
   input: BuildKnowledgeContextInput,
 ): Promise<KnowledgeContext | undefined> {
-  const [profile, chat, skills, entries, targets] = await Promise.all([
+  // A topic (`oc_xxx:omt_yyy`) also sees its group's notes (`oc_xxx`), so a
+  // topic group keeps one shared set of rules instead of one per topic.
+  const groupScope = topicGroupScope(input.scopeId);
+  const [profile, group, topic, skills, entries, targets] = await Promise.all([
     input.store.listMemories({ kind: 'profile' }),
+    groupScope ? input.store.listMemories({ kind: 'chat', scopeId: groupScope }) : Promise.resolve([]),
     input.store.listMemories({ kind: 'chat', scopeId: input.scopeId }),
     input.store.listSkills(),
     // A library that cannot be read must not cost the run its own memory.
@@ -99,6 +114,7 @@ export async function buildKnowledgeContext(
     input.store.libraryWriteTargets().catch((): LibraryWriteTarget[] => []),
   ]);
 
+  const chat = [...group, ...topic];
   const budgeted = applyBudget(profile, chat, input.maxChars ?? DEFAULT_MAX_CHARS);
   const trimmedSkills = budgetSkills(skills.slice(0, MAX_SKILLS).map(toSkillRef));
   const libraryKnowledge = budgetLibraryEntries(entries.slice(0, MAX_LIBRARY_ENTRIES).map(toLibraryEntryRef));

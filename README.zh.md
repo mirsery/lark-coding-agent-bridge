@@ -340,15 +340,16 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 每轮运行都会注入一个 `<bridge_knowledge>` 块：
 
 - **全局记忆**：这个 profile 下所有会话共享的约定。
-- **会话记忆**：只属于当前会话／话题的上下文。两者冲突时以会话记忆为准。
+- **会话记忆**：只属于当前会话／话题的上下文。话题群里的话题还会读到所在群的记忆（`/memory add --group` 记的），话题之间互不可见。两者冲突时以会话记忆为准。
 - **skill 索引**：每个 `SKILL.md` 的名字、一句话描述和路径——**只有索引**。正文由 agent 在需要时自己打开，所以十几个 skill 每轮只花几十 token，而不是几千。
 
 ```text
 /memory                       # 当前生效的记忆
 /memory add <内容>            # 记到本会话
+/memory add --group <内容>    # 话题里用：记到所在群，群里所有话题生效
 /memory add --global <内容>   # 记到全局（管理员）
 /memory forget <id>
-/memory clear [--global]
+/memory clear [--group|--global]
 /skills                       # skill 索引
 /skills show <名字>
 ```

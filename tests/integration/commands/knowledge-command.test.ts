@@ -76,12 +76,12 @@ async function createHarness(
     controls.knowledgeLibraries = knowledgeLibraries;
   }
 
-  const run = (content: string, senderId = 'ou-admin'): Promise<boolean> =>
+  const run = (content: string, senderId = 'ou-admin', scope = 'chat-1'): Promise<boolean> =>
     tryHandleCommand({
       channel: channel as unknown as CommandContext['channel'],
       msg: {
         messageId: `om-${Math.random().toString(16).slice(2)}`,
-        chatId: 'chat-1',
+        chatId: scope.split(':')[0]!,
         chatType: 'group',
         senderId,
         senderName: 'User',
@@ -90,8 +90,8 @@ async function createHarness(
         mentions: [],
         mentionedBot: false,
       } as unknown as NormalizedMessage,
-      scope: 'chat-1',
-      chatMode: 'group',
+      scope,
+      chatMode: scope.includes(':') ? 'topic' : 'group',
       sessions,
       workspaces,
       agent,
@@ -172,6 +172,37 @@ describe('/memory', () => {
     await expect(h.run('/memory clear')).resolves.toBe(true);
     expect(lastMarkdown(h.channel)).toContain('已清空 2 条');
     expect(await h.store.listMemories({ kind: 'profile' })).toHaveLength(1);
+  });
+
+  it('lets a topic write, list, forget and clear its group notes with --group', async () => {
+    const h = await createHarness();
+    const topic = 'oc_g:omt_a';
+
+    await expect(h.run('/memory add --group 群里 deploy 指 staging', 'ou-member', topic)).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('本群');
+    const [note] = await h.store.listMemories({ kind: 'chat', scopeId: 'oc_g' });
+    expect(note?.text).toBe('群里 deploy 指 staging');
+    expect(await h.store.listMemories({ kind: 'chat', scopeId: topic })).toHaveLength(0);
+
+    await h.run('/memory', 'ou-member', 'oc_g:omt_b');
+    expect(lastCardJson(h.channel)).toContain('本群记忆');
+    expect(lastCardJson(h.channel)).toContain('deploy');
+
+    await h.run(`/memory forget ${note!.id}`, 'ou-member', 'oc_g:omt_b');
+    expect(await h.store.listMemories({ kind: 'chat', scopeId: 'oc_g' })).toHaveLength(0);
+
+    await h.run('/memory add --group 一', 'ou-member', topic);
+    await h.run('/memory add 话题自己的', 'ou-member', topic);
+    await h.run('/memory clear --group', 'ou-member', topic);
+    expect(await h.store.listMemories({ kind: 'chat', scopeId: 'oc_g' })).toHaveLength(0);
+    expect(await h.store.listMemories({ kind: 'chat', scopeId: topic })).toHaveLength(1);
+  });
+
+  it('turns --group away outside a topic', async () => {
+    const h = await createHarness();
+    await h.run('/memory add --group 一');
+    expect(lastMarkdown(h.channel)).toContain('只在话题群的话题里用');
+    expect(await h.store.listMemories({ kind: 'chat', scopeId: 'chat-1' })).toHaveLength(0);
   });
 
   it('says so when the bridge has no knowledge store', async () => {

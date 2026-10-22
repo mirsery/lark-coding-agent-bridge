@@ -630,6 +630,8 @@ export interface MemoryEntryView {
 
 export interface MemoryCardView {
   chat: MemoryEntryView[];
+  /** In a topic: the notes of the group it belongs to, which every topic there sees. */
+  group?: MemoryEntryView[];
   profile: MemoryEntryView[];
   /** Where the notes live on disk, so a power user can edit them directly. */
   dir: string;
@@ -654,6 +656,10 @@ export function memoryCard(view: MemoryCardView): object {
 
   section('本会话记忆', view.chat, '用 `/memory add <内容>` 添加。');
   elements.push(HR);
+  if (view.group) {
+    section('本群记忆（群里所有话题生效）', view.group, '在话题里用 `/memory add --group <内容>` 添加。');
+    elements.push(HR);
+  }
   section('全局记忆', view.profile, '管理员可用 `/memory add --global <内容>` 添加。');
   elements.push(HR);
   elements.push(divMd(`<font color='grey'>存放在 \`${escapeCode(view.dir)}\`，可直接用编辑器改</font>`));

@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildKnowledgeContext } from '../../../src/knowledge/inject';
+import { buildKnowledgeContext, topicGroupScope } from '../../../src/knowledge/inject';
 import {
   KnowledgeStore,
   isSafeSkillName,
@@ -180,6 +180,26 @@ describe('prompt injection', () => {
     expect(context?.skills?.[0]).toMatchObject({ name: 'deploy', description: '发布步骤' });
     // Bodies stay on disk; only the path is injected.
     expect(JSON.stringify(context)).not.toContain('很长的正文');
+  });
+
+  it('gives a topic its group notes plus its own, and keeps topics apart', async () => {
+    await store.addMemory({ kind: 'chat', scopeId: 'oc_g' }, 'group note');
+    await store.addMemory({ kind: 'chat', scopeId: 'oc_g:omt_a' }, 'topic a note');
+
+    const a = await buildKnowledgeContext({ store, scopeId: 'oc_g:omt_a' });
+    expect(a?.chatMemory).toEqual(['group note', 'topic a note']);
+    const b = await buildKnowledgeContext({ store, scopeId: 'oc_g:omt_b' });
+    expect(b?.chatMemory).toEqual(['group note']);
+    const group = await buildKnowledgeContext({ store, scopeId: 'oc_g' });
+    expect(group?.chatMemory).toEqual(['group note']);
+  });
+
+  it('does not read a bridge-internal scope prefix as a group', async () => {
+    await store.addMemory({ kind: 'chat', scopeId: 'cron' }, 'stray');
+    expect(topicGroupScope('cron:abc123')).toBeUndefined();
+    expect(topicGroupScope('oc_g')).toBeUndefined();
+    expect(topicGroupScope('oc_g:omt_a')).toBe('oc_g');
+    await expect(buildKnowledgeContext({ store, scopeId: 'cron:abc123' })).resolves.toBeUndefined();
   });
 
   it('keeps the newest notes and prefers chat scope when the budget is tight', async () => {

@@ -45,6 +45,7 @@ import {
   type LibrarySyncResult,
   type SkillLibraries,
 } from '../knowledge/libraries';
+import { topicGroupScope } from '../knowledge/inject';
 import type { KnowledgeStore, MemoryScope } from '../knowledge/store';
 import {
   DEFAULT_WINDOW_MINUTES,
@@ -2164,20 +2165,22 @@ async function knowledgeStatusLine(ctx: CommandContext): Promise<{ knowledge?: s
   const store = ctx.controls.knowledge;
   if (!store) return {};
   try {
-    const [chat, profile, skills, repo] = await Promise.all([
+    const groupScope = topicGroupScope(ctx.scope);
+    const [chat, group, profile, skills, repo] = await Promise.all([
       store.listMemories({ kind: 'chat', scopeId: ctx.scope }),
+      groupScope ? store.listMemories({ kind: 'chat', scopeId: groupScope }) : Promise.resolve([]),
       store.listMemories({ kind: 'profile' }),
       store.listSkills(),
       knowledgeRepoStatus(store),
     ]);
-    if (chat.length + profile.length + skills.length === 0 && !repo) return {};
+    if (chat.length + group.length + profile.length + skills.length === 0 && !repo) return {};
     const sync = repo?.upstream
       ? `同步 ↑${repo.upstream.ahead} ↓${repo.upstream.behind}`
       : repo
         ? '未绑定远端'
         : '未启用同步';
     return {
-      knowledge: `记忆 ${chat.length}(本会话)/${profile.length}(全局) · skills ${skills.length} · ${sync}`,
+      knowledge: `记忆 ${chat.length}(本会话)${groupScope ? `/${group.length}(本群)` : ''}/${profile.length}(全局) · skills ${skills.length} · ${sync}`,
     };
   } catch (err) {
     log.warn('knowledge', 'status-line-failed', { err: String(err) });
@@ -2214,31 +2217,40 @@ async function handleMemory(args: string, ctx: CommandContext): Promise<void> {
           '',
           '`/memory` — 看当前生效的记忆',
           '`/memory add <内容>` — 记到本会话',
+          '`/memory add --group <内容>` — 话题里用：记到所在群，群里所有话题都生效',
           '`/memory add --global <内容>` — 记到全局（管理员）',
           '`/memory forget <id>` — 删一条',
-          '`/memory clear [--global]` — 清空一个范围',
+          '`/memory clear [--group|--global]` — 清空一个范围',
         ].join('\n'),
       );
   }
 }
 
 async function memoryList(ctx: CommandContext, store: KnowledgeStore): Promise<void> {
-  const [chat, profile] = await Promise.all([
+  const groupScope = topicGroupScope(ctx.scope);
+  const [chat, group, profile] = await Promise.all([
     store.listMemories({ kind: 'chat', scopeId: ctx.scope }),
+    groupScope ? store.listMemories({ kind: 'chat', scopeId: groupScope }) : Promise.resolve(undefined),
     store.listMemories({ kind: 'profile' }),
   ]);
   await ctx.channel.send(
     ctx.msg.chatId,
-    { card: memoryCard({ chat, profile, dir: store.dir }) },
+    { card: memoryCard({ chat, ...(group ? { group } : {}), profile, dir: store.dir }) },
     commandReplyOptions(ctx),
   );
 }
 
 async function memoryAdd(args: string, ctx: CommandContext, store: KnowledgeStore): Promise<void> {
   const global = /^--global\b/.test(args);
-  const text = global ? args.replace(/^--global\b/, '').trim() : args.trim();
+  const toGroup = /^--group\b/.test(args);
+  const text = global || toGroup ? args.replace(/^--(global|group)\b/, '').trim() : args.trim();
   if (!text) {
-    await reply(ctx, '用法：`/memory add <要记住的内容>`（加 `--global` 记到全局）');
+    await reply(ctx, '用法：`/memory add <要记住的内容>`（话题里加 `--group` 记到所在群，加 `--global` 记到全局）');
+    return;
+  }
+  const groupScope = topicGroupScope(ctx.scope);
+  if (toGroup && !groupScope) {
+    await reply(ctx, '`--group` 只在话题群的话题里用；这里直接 `/memory add <内容>` 就是记到本群。');
     return;
   }
   // Global memory reaches every chat this profile serves, so it is an admin
@@ -2248,13 +2260,12 @@ async function memoryAdd(args: string, ctx: CommandContext, store: KnowledgeStor
     return;
   }
 
-  const scope: MemoryScope = global ? { kind: 'profile' } : { kind: 'chat', scopeId: ctx.scope };
+  const chatScope = toGroup && groupScope ? groupScope : ctx.scope;
+  const scope: MemoryScope = global ? { kind: 'profile' } : { kind: 'chat', scopeId: chatScope };
   const entry = await store.addMemory(scope, text);
-  log.info('knowledge', 'memory-added', { scope: global ? 'profile' : ctx.scope, id: entry.id });
-  await reply(
-    ctx,
-    `🧠 已记住（${global ? '全局' : '本会话'}）：${entry.text}\n\n\`/memory forget ${entry.id}\` 可以撤销。`,
-  );
+  log.info('knowledge', 'memory-added', { scope: global ? 'profile' : chatScope, id: entry.id });
+  const where = global ? '全局' : toGroup ? '本群，所有话题生效' : '本会话';
+  await reply(ctx, `🧠 已记住（${where}）：${entry.text}\n\n\`/memory forget ${entry.id}\` 可以撤销。`);
 }
 
 async function memoryForget(id: string, ctx: CommandContext, store: KnowledgeStore): Promise<void> {
@@ -2264,6 +2275,13 @@ async function memoryForget(id: string, ctx: CommandContext, store: KnowledgeSto
   }
   if (await store.removeMemory({ kind: 'chat', scopeId: ctx.scope }, id)) {
     await reply(ctx, `🗑 已删除本会话记忆 \`${id}\`。`);
+    return;
+  }
+  // A topic sees its group's notes, so it may remove them too — the same
+  // reach as `/memory forget` sent in a plain group.
+  const groupScope = topicGroupScope(ctx.scope);
+  if (groupScope && (await store.removeMemory({ kind: 'chat', scopeId: groupScope }, id))) {
+    await reply(ctx, `🗑 已删除本群记忆 \`${id}\`。`);
     return;
   }
   // Falling through to profile scope only for admins keeps a group member from
@@ -2279,13 +2297,22 @@ async function memoryForget(id: string, ctx: CommandContext, store: KnowledgeSto
 
 async function memoryClear(args: string, ctx: CommandContext, store: KnowledgeStore): Promise<void> {
   const global = /^--global\b/.test(args.trim());
+  const toGroup = /^--group\b/.test(args.trim());
   if (global && !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) {
     await reply(ctx, '❌ 全局记忆仅管理员可改。');
     return;
   }
-  const scope: MemoryScope = global ? { kind: 'profile' } : { kind: 'chat', scopeId: ctx.scope };
+  const groupScope = topicGroupScope(ctx.scope);
+  if (toGroup && !groupScope) {
+    await reply(ctx, '`--group` 只在话题群的话题里用；这里直接 `/memory clear` 就是清空本群。');
+    return;
+  }
+  const scope: MemoryScope = global
+    ? { kind: 'profile' }
+    : { kind: 'chat', scopeId: toGroup && groupScope ? groupScope : ctx.scope };
   const removed = await store.clearMemories(scope);
-  await reply(ctx, removed === 0 ? '本来就没有记忆。' : `🗑 已清空 ${removed} 条${global ? '全局' : '本会话'}记忆。`);
+  const where = global ? '全局' : toGroup ? '本群' : '本会话';
+  await reply(ctx, removed === 0 ? '本来就没有记忆。' : `🗑 已清空 ${removed} 条${where}记忆。`);
 }
 
 async function handleSkills(args: string, ctx: CommandContext): Promise<void> {
