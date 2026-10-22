@@ -312,8 +312,8 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/diff [staged\|<ref>]` | Show the working tree's changes, with the full patch attached when long |
 | `/worktree [add\|use\|remove]` | Manage task worktrees; the session follows the new one |
 | `/pr [number\|url]` | Pull request, CI and review status for the current branch |
-| `/cron add <when> \| <task>` | Create a scheduled job |
-| `/cron list\|show\|run\|pause\|resume\|remove` | Manage scheduled jobs |
+| `/cron add [--name <name>] <when> \| <task>` | Create a scheduled job |
+| `/cron list\|show\|run\|pause\|resume\|rename\|remove` | Manage scheduled jobs |
 | `/ps` | List local bridge processes |
 | `/exit <id\|#>` | Stop a bridge process |
 | `/reconnect` | Force a WebSocket reconnect |
@@ -528,6 +528,7 @@ Refs that arrive from chat are validated before they reach git, so a message can
 /cron add @daily | sweep the error log and flag anything new
 /cron add in 30m | check whether the deploy finished
 /cron add at 2026-10-01 09:30 | draft the monthly report
+/cron add --name "CI daily" 0 9 * * 1-5 | summarize yesterday's CI failures
 ```
 
 - **Schedule syntax**: standard 5-field cron (`minute hour day-of-month month day-of-week`, with lists, ranges and `*/step`), the `@hourly` / `@daily` / `@weekly` / `@monthly` aliases, plus `in <duration>` and `at <time>` for one-shots. Everything is evaluated in the host machine's local timezone. `|` separates the schedule from the task.

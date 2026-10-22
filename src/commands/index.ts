@@ -112,7 +112,9 @@ import type { Scheduler } from '../scheduler/scheduler';
 import {
   CRON_USAGE,
   jobStatusLine,
+  jobTitleMd,
   lastRunLine,
+  normalizeJobName,
   parseAdd,
   scheduleSummary,
   scheduleSummaryPlain,
@@ -3106,6 +3108,8 @@ async function handleCron(args: string, ctx: CommandContext): Promise<void> {
       return cronToggle(rest[0] ?? '', false, ctx, scheduler);
     case 'resume':
       return cronToggle(rest[0] ?? '', true, ctx, scheduler);
+    case 'rename':
+      return cronRename(rest[0] ?? '', restText.slice((rest[0] ?? '').length).trim(), ctx, scheduler);
     case 'remove':
     case 'rm':
       return cronRemove(rest[0] ?? '', ctx, scheduler);
@@ -3137,6 +3141,7 @@ async function cronList(ctx: CommandContext, scheduler: Scheduler): Promise<void
   const card = cronCard(
     jobs.map((job) => ({
       id: job.id,
+      ...(job.name ? { name: job.name } : {}),
       schedule: scheduleSummaryPlain(job),
       status: jobStatusLine(job),
       ...(lastRunLine(job) ? { lastRun: lastRunLine(job)! } : {}),
@@ -3161,6 +3166,7 @@ async function cronAdd(args: string, ctx: CommandContext, scheduler: Scheduler):
 
   const cwd = effectiveWorkspaceCwd(ctx);
   const job = scheduler.jobs.add({
+    ...(parsed.value.name ? { name: parsed.value.name } : {}),
     prompt: parsed.value.prompt,
     schedule: parsed.value.schedule,
     session: parsed.value.session,
@@ -3183,7 +3189,7 @@ async function cronAdd(args: string, ctx: CommandContext, scheduler: Scheduler):
   await reply(
     ctx,
     [
-      `✅ 已创建定时任务 \`${armed.id}\``,
+      `✅ 已创建定时任务 ${jobTitleMd(armed)}`,
       `- 计划：${scheduleSummary(armed)}`,
       `- 下次运行：${armed.nextRunAt ? formatTime(armed.nextRunAt) : '未排期'}`,
       `- 工作目录：\`${armed.cwd ?? '(profile 默认)'}\``,
@@ -3201,7 +3207,8 @@ async function cronShow(id: string, ctx: CommandContext, scheduler: Scheduler): 
     return;
   }
   const lines = [
-    `**定时任务 \`${job.id}\`**`,
+    `**定时任务 ${jobTitleMd(job)}**`,
+    `- 名称：${job.name ?? '（未命名，可用 \`/cron rename ' + job.id + ' <名称>\` 设置）'}`,
     `- 计划：${scheduleSummary(job)}`,
     `- 状态：${jobStatusLine(job)}`,
     `- 工作目录：\`${job.cwd ?? '(profile 默认)'}\``,
@@ -3222,7 +3229,7 @@ async function cronRun(id: string, ctx: CommandContext, scheduler: Scheduler): P
   }
   // The run posts its own result when it finishes; a test run of a real job
   // can take minutes, and blocking the command reply on it would look hung.
-  await reply(ctx, `▶️ 已触发 \`${job.id}\`，结果会单独发出来。`);
+  await reply(ctx, `▶️ 已触发 ${jobTitleMd(job)}，结果会单独发出来。`);
   void scheduler.runNow(job.id).catch((err: unknown) => {
     log.fail('scheduler', err, { jobId: job.id, step: 'manual-run' });
   });
@@ -3249,8 +3256,8 @@ async function cronToggle(
   await reply(
     ctx,
     enabled
-      ? `▶️ 已恢复 \`${job.id}\`，下次运行：${armed?.nextRunAt ? formatTime(armed.nextRunAt) : '未排期'}`
-      : `⏸ 已暂停 \`${job.id}\`${stopped ? '，并中断了正在执行的那次运行' : ''}。`,
+      ? `▶️ 已恢复 ${jobTitleMd(job)}，下次运行：${armed?.nextRunAt ? formatTime(armed.nextRunAt) : '未排期'}`
+      : `⏸ 已暂停 ${jobTitleMd(job)}${stopped ? '，并中断了正在执行的那次运行' : ''}。`,
   );
 }
 
@@ -3263,7 +3270,32 @@ async function cronRemove(id: string, ctx: CommandContext, scheduler: Scheduler)
   scheduler.jobs.remove(job.id);
   const stopped = ctx.activeRuns.interrupt(jobScopeId(job.id));
   log.info('scheduler', 'job-removed', { jobId: job.id, scope: ctx.scope, stoppedRun: stopped });
-  await reply(ctx, `🗑 已删除 \`${job.id}\`${stopped ? '，并中断了正在执行的那次运行' : ''}。`);
+  await reply(ctx, `🗑 已删除 ${jobTitleMd(job)}${stopped ? '，并中断了正在执行的那次运行' : ''}。`);
+}
+
+async function cronRename(
+  id: string,
+  rawName: string,
+  ctx: CommandContext,
+  scheduler: Scheduler,
+): Promise<void> {
+  const job = cronJobInScope(id, ctx, scheduler);
+  if (!job) {
+    await reply(ctx, id ? '未找到该任务（只能管理当前会话创建的任务）。' : '用法：`/cron rename <id> <名称>`');
+    return;
+  }
+  const parsed = normalizeJobName(rawName.replace(/^["“](.*)["”]$/, '$1'));
+  if (!parsed.ok) {
+    await reply(ctx, `❌ ${parsed.error}`);
+    return;
+  }
+  // An undefined name is dropped when the store serialises, which clears it.
+  scheduler.jobs.update(job.id, { name: parsed.value });
+  log.info('scheduler', 'job-renamed', { jobId: job.id, scope: ctx.scope });
+  await reply(
+    ctx,
+    parsed.value ? `✏️ 已把 \`${job.id}\` 命名为「${parsed.value}」。` : `✏️ 已清除 \`${job.id}\` 的名称。`,
+  );
 }
 
 // ─── /account ─────────────────────────────────────────────────────────────

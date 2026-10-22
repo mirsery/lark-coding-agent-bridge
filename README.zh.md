@@ -313,8 +313,8 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/diff [staged\|<ref>]` | 查看工作目录的改动，patch 过长时附带完整文件 |
 | `/worktree [add\|use\|remove]` | 管理任务级 worktree，会话自动跟着切 |
 | `/pr [编号\|链接]` | 当前分支的 PR、CI 与评审状态 |
-| `/cron add <时间> \| <任务>` | 新建定时任务 |
-| `/cron list\|show\|run\|pause\|resume\|remove` | 管理定时任务 |
+| `/cron add [--name <名称>] <时间> \| <任务>` | 新建定时任务 |
+| `/cron list\|show\|run\|pause\|resume\|rename\|remove` | 管理定时任务 |
 | `/ps` | 列出本机 bridge 进程 |
 | `/exit <id\|#>` | 停止指定 bridge 进程 |
 | `/reconnect` | 强制 WebSocket 重连 |
@@ -534,6 +534,7 @@ Web 控制台「配置」页有「梦境整理」卡片：显示目标仓库、�
 /cron add @daily | 扫一遍 error 日志，挑出新增的问题
 /cron add in 30m | 看看那次部署完成没有
 /cron add at 2026-10-01 09:30 | 起草月报
+/cron add --name "CI 日报" 0 9 * * 1-5 | 总结昨天 CI 的失败
 ```
 
 - **时间写法**：标准 5 字段 cron（分 时 日 月 周，支持列表、区间和 `*/步长`）、`@hourly` / `@daily` / `@weekly` / `@monthly` 别名，以及一次性的 `in <时长>` 和 `at <时刻>`。全部按宿主机本地时区计算。`|` 用来分隔时间和任务内容。

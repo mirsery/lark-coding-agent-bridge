@@ -140,6 +140,30 @@ describe('/cron', () => {
     expect(h.store.get(created.id)).toBeUndefined();
   });
 
+  it('names a job on creation, renames it and clears the name', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('/cron add --name "储能 周报" 0 6 * * 6 | 汇总本周告警')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('「储能 周报」');
+    const job = h.store.list()[0]!;
+    expect(job).toMatchObject({ name: '储能 周报', prompt: '汇总本周告警' });
+
+    await h.run('/cron list');
+    // The name is in the card, and the cron expression survives as plain text.
+    expect(lastCardJson(h.channel)).toContain('储能 周报');
+    expect(lastCardJson(h.channel)).toContain('0 6 * * 6');
+
+    await expect(h.run(`/cron rename ${job.id} 告警周报`)).resolves.toBe(true);
+    expect(h.store.get(job.id)?.name).toBe('告警周报');
+
+    await h.run(`/cron rename ${job.id} ${'长'.repeat(41)}`);
+    expect(lastMarkdown(h.channel)).toContain('名称太长');
+    expect(h.store.get(job.id)?.name).toBe('告警周报');
+
+    await h.run(`/cron rename ${job.id}`);
+    expect(h.store.get(job.id)?.name).toBeUndefined();
+  });
+
   it('explains itself instead of creating a job it cannot schedule', async () => {
     const h = await createHarness();
 
