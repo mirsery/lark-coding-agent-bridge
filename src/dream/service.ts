@@ -203,6 +203,8 @@ export class DreamService {
   /** A start is between its first check and owning {@link current}. */
   private starting = false;
   private reverting = false;
+  /** 自动整理 is opening PRs earlier runs could not ({@link resumeForAuto}). */
+  private resuming = false;
   private checking: Promise<DreamAutoCheck> | undefined;
   private lastCheck: DreamAutoCheck | undefined;
   private autoTimer: NodeJS.Timeout | undefined;
@@ -467,17 +469,19 @@ export class DreamService {
     if (!this.readOnlyPolicy('自动整理预检', AUTO_ACTOR, this.deps.workDir)) {
       return this.noteCheck({ at: now, block: 'restricted', reason: '当前 agent 配置无法保证只读执行，不开放自动整理' });
     }
+    await this.resumeForAuto(url);
     this.noteCatalog();
     const measured = await measureNewInput({ records: this.state.sessions(), settings, read: this.reader() });
     const material = { scopes: measured.scopes, sessions: measured.sessions, chars: measured.chars };
     const gate = materialGate({ now, auto, material, since: this.state.autoLedger().lastCompletedAt ?? measured.oldestAt });
     if (!gate.ok) return this.noteCheck({ at: now, block: 'material', reason: gate.reason, material });
-    const openPrs = await this.openDreamPrs(url);
+    const { open: openPrs, unopened } = await this.openDreamPrs(url);
     if (openPrs >= auto.maxOpenPrs) {
+      const pending = unopened > 0 ? `，其中 ${unopened} 个还没开成，每次检查都会重试` : '';
       return this.noteCheck({
         at: now,
         block: 'backlog',
-        reason: `待审积压：还有 ${openPrs} 个梦境 Draft PR 没合并或关闭（上限 ${auto.maxOpenPrs}），暂停自动整理`,
+        reason: `待审积压：还有 ${openPrs} 个梦境 Draft PR 没合并或关闭${pending}（上限 ${auto.maxOpenPrs}），暂停自动整理`,
         material: gate.material,
         openPrs,
       });
@@ -519,10 +523,11 @@ export class DreamService {
     return check;
   }
 
-  private async openDreamPrs(knowledgeUrl: string): Promise<number> {
+  /** The fullest target repository: its open dream PRs, `unopened` of them still local drafts. */
+  private async openDreamPrs(knowledgeUrl: string): Promise<{ open: number; unopened: number }> {
     const count = this.deps.countOpenPrs ?? ((url: string) => countOpenDreamPullRequests(this.deps.workDir, url));
     const runs = this.state.runs();
-    let worst = 0;
+    let worst = { open: 0, unopened: 0 };
     for (const repo of this.repoTargets(knowledgeUrl)) {
       const live = await count(repo.url).catch(() => undefined);
       // Drafts of ours still waiting to be pushed / opened are part of the
@@ -530,9 +535,38 @@ export class DreamService {
       const waiting = runs
         .flatMap((run) => run.targets)
         .filter((target) => target.repo === repo.repo && (target.phase === 'committed' || target.phase === 'pushed')).length;
-      worst = Math.max(worst, (live ?? 0) + waiting);
+      const open = (live ?? 0) + waiting;
+      if (open > worst.open) worst = { open, unopened: waiting };
     }
     return worst;
+  }
+
+  /**
+   * Unopened drafts count as backlog, and only a starting run used to retry
+   * them — one failed `gh pr create` then held 自动整理 back for good. So the
+   * check retries them itself, under the same repository locks as a run; a
+   * draft that still fails stays in the backlog until the next check.
+   */
+  private async resumeForAuto(knowledgeUrl: string): Promise<void> {
+    const pending = this.state
+      .runs()
+      .some((run) => run.targets.some((target) => target.checkoutDir && (target.phase === 'committed' || target.phase === 'pushed')));
+    if (!pending || this.busy()) return;
+    this.resuming = true;
+    let locks: HeldDreamLocks | undefined;
+    try {
+      const held = await acquireDreamLocks(this.lockDir(), this.repoTargets(knowledgeUrl).map((item) => item.url), {
+        profile: this.deps.profile,
+        batch: '补开 PR',
+      });
+      if ('error' in held) return;
+      locks = held;
+      const note = await this.resumePendingTargets(new AbortController().signal);
+      if (note) log.info('dream', 'auto-resumed', { note });
+    } finally {
+      this.resuming = false;
+      await locks?.release().catch(() => undefined);
+    }
   }
 
   private async readQuota(): Promise<{ percent: number; label: string } | { unknown: true }> {
@@ -574,6 +608,7 @@ export class DreamService {
   private busy(): { error: string; code: 'running' } | undefined {
     if (this.current) return { error: `已经有一轮整理在进行（批次 \`${this.current.id}\`）。`, code: 'running' };
     if (this.starting) return { error: '已经有一轮整理正在启动。', code: 'running' };
+    if (this.resuming) return { error: '自动整理正在补开之前没开成的 PR，稍后再试。', code: 'running' };
     return undefined;
   }
 

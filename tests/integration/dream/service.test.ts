@@ -391,6 +391,41 @@ describe('DreamService', { timeout: TIMEOUT }, () => {
     await h.service.idle();
   });
 
+  it('opens a PR an earlier run could not before counting the backlog, instead of waiting on it forever', async () => {
+    let live = 0;
+    const h = await harness({
+      auto: { minScopes: 1 },
+      openPrs: () => live,
+      answer: () => JSON.stringify({ memory: [{ action: 'add', target: 'chat', text: '一条事实', reason: 'r', sources: ['S1#1'] }] }),
+    });
+    talk(h, 'sess-1');
+    process.env.FAKE_GH_CREATE_FAIL = '1';
+    await h.service.start({ id: 'ou-admin' });
+    await h.service.idle();
+    const stuck = h.service.runs()[0]!;
+    expect(stuck.targets[0]).toMatchObject({ phase: 'pushed' });
+
+    h.clock.now = NOW + 3 * 24 * HOUR;
+    talk(h, 'sess-2', 'oc_other');
+    // still failing: the draft stays a draft, and the check says so
+    expect(await h.service.checkAuto()).toMatchObject({ block: 'backlog', openPrs: 1, reason: expect.stringContaining('没开成') });
+    expect(h.service.runs()[0]!.targets[0]).toMatchObject({ phase: 'pushed' });
+
+    // gh is back: the check itself opens the PR, which now waits for review like any other
+    delete process.env.FAKE_GH_CREATE_FAIL;
+    live = 1;
+    const check = await h.service.checkAuto();
+    expect(check).toMatchObject({ block: 'backlog', openPrs: 1 });
+    expect(check.reason).not.toContain('没开成');
+    expect(h.service.runs().find((run) => run.id === stuck.id)!.targets[0]).toMatchObject({ phase: 'pr-created', prNumber: 7 });
+    expect(h.submits).toHaveLength(1);
+
+    // reviewed and merged: automatic runs go on
+    live = 0;
+    expect((await h.service.checkAuto()).started).toBeDefined();
+    await h.service.idle();
+  });
+
   it('runs on a little input once the longest interval has passed, and on half the budget without a quota reading', async () => {
     const h = await harness({
       auto: { minScopes: 5 },
