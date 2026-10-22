@@ -584,6 +584,17 @@ For big tasks (likely over 30 minutes, or split into subtasks) the agent first w
 
 For tasks the **bot owner started in person** only: when one is interrupted unexpectedly (process killed, bridge restarted or crashed), after 30 seconds the bridge has the agent read the ledger and `git log` and continue from the next step, without redoing finished work — at most 3 times per task. A run stopped with `/stop` is not resumed, and neither is anyone else's.
 
+### Kickoff inbox: a new topic starts without waiting for a reply
+
+When a skill opens a topic and wants the bot to get going right away, it writes the task as a JSON file into `~/.lark-channel/profiles/<profile>/kickoffs/` (write `<name>.tmp`, then rename it to `<name>.json`):
+
+```json
+{ "chatId": "oc_…", "chatType": "group", "threadId": "omt_…",
+  "senderId": "ou_…", "originMessageId": "om_…", "prompt": "…" }
+```
+
+Every 3 seconds the bridge takes one: it checks `senderId`'s access again, treats the prompt as if they had sent it in that conversation, replies under `originMessageId`, and queues it like any message. The file is deleted when taken; a failure is not retried. Claude runs someone else started can't reach the bridge directory, so they can't leave one.
+
 ## lark-cli identity policy
 
 Each profile uses a profile-local lark-cli directory at `~/.lark-channel/profiles/<profile>/lark-cli`. The agent process receives `LARKSUITE_CLI_CONFIG_DIR` for that directory, so personal authorization in one profile is not shared with another profile.
@@ -643,6 +654,8 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/profiles/<profile>/skill-libraries/` | Read-only mirrors of shared skill libraries (`/skills lib`) |
 | `~/.lark-channel/profiles/<profile>/knowledge-libraries/` | Read-only mirrors of subscribed knowledge libraries, and work clones while a write window is open (`/knowledge lib`) |
 | `~/.lark-channel/profiles/<profile>/jobs.json` | Scheduled jobs (`/cron`) |
+| `~/.lark-channel/profiles/<profile>/kickoffs/` | Kickoff inbox, files deleted when taken |
+| `~/.lark-channel/profiles/<profile>/code-snippets.json` | Code behind cards' copy buttons (up to 500) |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |

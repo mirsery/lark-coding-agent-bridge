@@ -590,6 +590,17 @@ Claude 订阅额度（5 小时、7 天窗口）用完时，任务不算失败：
 
 只有 **bot 主人本人发起**的任务：如果中途被意外中断（进程被杀、bridge 重启或崩溃），bridge 会在 30 秒后让 agent 读台账和 `git log`，从「下一步」接着做，不重做已完成的部分；同一个任务最多自动接 3 次。主动 `/stop` 的任务不会续跑。其他人发起的任务中断后不会自动继续。
 
+### 开场任务收件箱：新开的话题不用等回复就开跑
+
+skill 新开一个话题、想让 bot 直接开始做时，把任务写成一个 JSON 文件放进 `~/.lark-channel/profiles/<profile>/kickoffs/`（先写 `<名字>.tmp` 再改名成 `<名字>.json`）：
+
+```json
+{ "chatId": "oc_…", "chatType": "group", "threadId": "omt_…",
+  "senderId": "ou_…", "originMessageId": "om_…", "prompt": "…" }
+```
+
+bridge 每 3 秒取走一份：重新校验 `senderId` 的权限，当作他在这个会话里发了这条 prompt，回复挂在 `originMessageId` 下，和普通消息一样排队。文件取走即删，失败不重试。其他人发起的 Claude 任务碰不到 bridge 目录，写不进来。
+
 ## lark-cli 身份策略
 
 每个 profile 都使用当前 profile 的 lark-cli 目录：`~/.lark-channel/profiles/<profile>/lark-cli`。agent 子进程会收到指向这个目录的 `LARKSUITE_CLI_CONFIG_DIR`，所以一个 profile 里的个人授权不会共享给另一个 profile。
@@ -649,6 +660,8 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/profiles/<profile>/skill-libraries/` | 共享 skill 库的只读镜像（`/skills lib`） |
 | `~/.lark-channel/profiles/<profile>/knowledge-libraries/` | 订阅的知识库的只读镜像，以及写入窗口期间的工作副本（`/knowledge lib`） |
 | `~/.lark-channel/profiles/<profile>/jobs.json` | 定时任务（`/cron`） |
+| `~/.lark-channel/profiles/<profile>/kickoffs/` | 开场任务收件箱，取走即删 |
+| `~/.lark-channel/profiles/<profile>/code-snippets.json` | 卡片「复制代码」按钮背后的代码（最多 500 条） |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |

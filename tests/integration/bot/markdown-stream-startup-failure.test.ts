@@ -1,5 +1,5 @@
 import { LarkChannelError, type NormalizedMessage } from '@larksuite/channel';
-import { mkdir, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../../src/agent/types.js';
@@ -574,6 +574,28 @@ describe('markdown stream startup failures', () => {
     expect(opts.guard?.deniedCommands).toContain('(^|\\s)kubectl(\\s|$)');
     expect(opts.prompt).toContain('本会话是受限会话');
   });
+
+  it('starts a task left in the kickoff inbox as if its sender wrote it, once, and only for someone allowed', async () => {
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [{ type: 'done', terminationReason: 'normal' }],
+      stream: async () => {},
+    });
+    const kickoffDir = join(h.tmp.profile, 'kickoffs');
+    await mkdir(kickoffDir, { recursive: true });
+    const kickoff = (senderId: string, prompt: string) =>
+      JSON.stringify({ chatId: 'oc_dm', chatType: 'p2p', senderId, originMessageId: 'om_brief', prompt });
+    await writeFile(join(kickoffDir, '1-stranger.json'), kickoff('ou_stranger', '陌生人的任务'));
+    await writeFile(join(kickoffDir, '2-user.json'), kickoff('ou_user', '开场任务：整理本周周报'));
+    await startTestBridge(h, { ...testAppPaths(h.tmp), kickoffDir });
+
+    await waitFor(() => h.agent.runOptions.length === 1, 6000);
+    expect(h.agent.runOptions[0]?.prompt).toContain('开场任务：整理本周周报');
+    expect(await readdir(kickoffDir)).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    expect(h.agent.runOptions).toHaveLength(1);
+    expect(h.agent.runOptions.some((o) => o.prompt.includes('陌生人的任务'))).toBe(false);
+  }, 10_000);
 
   describe('recalled messages', () => {
     const recall = async (h: { channel: FakeLarkChannel }, messageId: string): Promise<void> => {

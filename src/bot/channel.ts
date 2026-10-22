@@ -103,6 +103,7 @@ import {
   resumePromptFor,
   type PendingResume,
 } from './auto-resume';
+import { KickoffInbox, kickoffScope, type Kickoff } from './kickoff-inbox';
 import { INTERRUPT_RESUME_DELAY_MS, MAX_INTERRUPT_RESUMES, isKilledExit } from './task-ledger';
 import {
   grantedToolsFor,
@@ -311,6 +312,7 @@ export interface StartChannelDeps {
         | 'knowledgeLibrariesDir'
         | 'userLockDir'
         | 'autoResumeFile'
+        | 'kickoffDir'
       >
     >;
 }
@@ -637,6 +639,26 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     pending.push(resume.scope, autoResumeMessage(resume));
   };
 
+  // Opening tasks left by skills (a new topic's brief): started on the
+  // writer's behalf, with their access checked again now, as if they had
+  // written the prompt in that conversation.
+  const kickoffs = deps.appPaths?.kickoffDir
+    ? new KickoffInbox({
+        dir: deps.appPaths.kickoffDir,
+        fire: async (kickoff) => {
+          const access =
+            kickoff.chatType === 'p2p'
+              ? canUseDm(controls.profileConfig, controls, kickoff.senderId)
+              : canUseGroup(controls.profileConfig, controls, kickoff.chatId, kickoff.senderId);
+          if (!access.ok) {
+            log.warn('kickoff', 'access-denied', { chatId: kickoff.chatId, reason: access.reason });
+            return;
+          }
+          pending.push(kickoffScope(kickoff), kickoffMessage(kickoff));
+        },
+      })
+    : undefined;
+
   // Counter for stdout reconnect escalation; reset on `reconnected`.
   let consecutiveReconnects = 0;
 
@@ -860,6 +882,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // Same reason as the scheduler: only resume once the channel can deliver.
   autoResumer.start();
   controls.autoResumer = autoResumer;
+  kickoffs?.start();
 
   // 梦境整理: runs when an admin asks (`/dream run`, Web console) or, with
   // 自动整理 on, when its gates pass — never while the profile has anything
@@ -983,6 +1006,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       controls.scheduler = undefined;
       autoResumer.stop();
       controls.autoResumer = undefined;
+      kickoffs?.stop();
       await dream?.dispose().catch((err: unknown) => log.fail('dream', err, { step: 'dispose' }));
       controls.dream = undefined;
       controls.meeting = undefined;
@@ -2520,6 +2544,25 @@ function autoResumeMessage(resume: PendingResume): NormalizedMessage {
 }
 
 const AUTO_RESUME_CONTENT_TYPE = 'auto_resume';
+
+/** The message a kickoff stands in for: its sender writing the prompt there. */
+function kickoffMessage(kickoff: Kickoff): NormalizedMessage {
+  return {
+    messageId: kickoff.originMessageId,
+    chatId: kickoff.chatId,
+    chatType: kickoff.chatType,
+    ...(kickoff.threadId ? { threadId: kickoff.threadId } : {}),
+    senderId: kickoff.senderId,
+    ...(kickoff.senderName ? { senderName: kickoff.senderName } : {}),
+    content: kickoff.prompt,
+    rawContentType: 'text',
+    resources: [],
+    mentions: [],
+    mentionAll: false,
+    mentionedBot: true,
+    createTime: Date.now(),
+  } as NormalizedMessage;
+}
 
 /** The paused card, with a line saying the task went on in a new card. */
 function withResumedNote(card: object, at: number): object {
