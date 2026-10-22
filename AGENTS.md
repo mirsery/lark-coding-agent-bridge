@@ -86,6 +86,8 @@
 
 - **终止任务**（#15）：`/stop` 与卡片按钮共用 `canStopRun`：发起人、owner、管理员与 `access.stoppers` 可终止；后台任务保留最后一轮发起人。按钮确认后执行，无权点击不消耗令牌。Claude stop 先快照子进程树（ps 最多 5 秒），SIGTERM 后宽限期仍存活则 SIGKILL；重复 stop 复用同一次清理。主动停止报告 interrupted，外部信号报告 failed。卡片 final 日志记录 user / shutdown / timeout 的 `stopCause`。
 
+- **多账户额度切换**（#30，`src/agent/claude/accounts.ts` + `account-failover.ts`，仅 Claude）：清单 `profiles/<p>/claude-accounts.json`（`default` = CLI 自己的登录，恒在；其余是 `claude setup-token` 令牌，存 profile keystore `claude-oauth-<id>`，以 `CLAUDE_CODE_OAUTH_TOKEN` 注入单次进程——**不换 `CLAUDE_CONFIG_DIR`**，否则会话转录分家、`--resume` 和 bridge 自己读转录的地方全断），宿主 CLI `claude-account list|add|set|lines|order|switch|remove`，飞书 `/accounts`（管理员）。`ClaudeAccountPool` 每个 profile 目录一个（`claudeAccountPool(profileDir)`，adapter 与额度读取共用），`prepareRun` 里按 mtime 重读清单，增删不用重启。每轮 `rate_limit_event`（`translateEvent` 带 `windows`）经 `observe` 记进 `claude-accounts-state.json`。切换线按窗口（`five_hour` / `seven_day`）设：配置的 `lines` 是默认（98 / 98），账户的 `lines` 覆盖，旧的 `switchAtPercent` / `reservePercent` 仍能读。选号分轮次：`pickReady`（都在线下）→ `pickRunnable`（加上到线但没被拒的，都到线后按顺序用到耗尽）→ `pick` 兜底最早解除拒绝的。`runWithAccountFailover` 包住每次 spawn：blocked 的 `rate_limit` 与随后的 `done` / `error` 先扣下，有 `pickRunnable` 的账户就等旧进程退出、在新账户上 `--resume` 同一会话（`failoverPrompt` 附原消息），没有就原样放出（照旧 `paused`，`resetsAt` 取最早恢复的账户）。Claude 每条消息只在第一次请求后报一次用量，中途超线且有 `pickReady` 的账户时，在下一个 `tool_result` 且无在途工具 / 子 agent / 后台任务时停掉旧进程，以 `SWITCH_LINE_PROMPT` 续接。被 `/stop` 的、`done` 之后的后台续跑轮都不换。多账户时每次尝试先发 `account` 事件（`RunState.sponsor` 覆盖卡片 Sponsor，切换时正文插一行原因）。`readClaudeQuota` 多账户时逐个读 `/usage`（读不到用状态快照）、取余量最大的——自动整理的额度门槛看整个账户池。测试：`tests/unit/agent/claude-accounts.test.ts`、`tests/process/claude-account-failover.test.ts`、`commands-v1.test.ts` 的 `/accounts`。
+
 ## 新增一种 agent
 
 注册表 `src/agent/registry.ts` 是唯一名单。步骤：

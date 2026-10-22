@@ -321,6 +321,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/reconnect` | 强制 WebSocket 重连 |
 | `/doctor [描述]` | 执行低敏诊断 |
 | `/usage [today\|week\|month]` | 用量统计（token 与估算费用）；每个人看自己的，管理员私聊可看所有人 |
+| `/accounts` | Claude 订阅账户表：各账户 5 小时 / 本周用量、重置时间、切换线、得分；`/accounts switch [名字或 id]` 切换新任务用的账户（不带名字时选得分最高的可用账户）。仅管理员 |
 | `/audit [拦截] [N]` | 最近谁让 bot 执行了什么命令、改了哪些文件、审批结果；`/audit 拦截` 只看访客任务里被拦下的操作，用来发现误判（管理员，私聊） |
 | `/help` | 帮助卡片 |
 
@@ -584,6 +585,31 @@ Claude 订阅额度（5 小时、7 天窗口）用完时，任务不算失败：
 - 续跑以原发起人的身份进行，到点时会重新检查他的访问权限。
 - 待续跑的任务记在 profile 目录的 `auto-resume.json`，bridge 重启不丢。`/status` 能看到续跑时间；发起人、管理员或 `access.stoppers` 里的人发 `/stop` 可以取消。
 
+### 多个订阅账户：额度用尽自动切换（Claude）
+
+Claude profile 可以挂多个订阅账户。当前账户到了切换线或额度用完时，正在跑的任务换到下一个账户、续接同一个会话接着做；主账户额度重置后，新任务自动回到主账户。
+
+- **账户**：`default` 是本机 claude CLI 自己的登录；备用账户是 `claude setup-token` 生成的长期令牌，运行时以 `CLAUDE_CODE_OAUTH_TOKEN` 注入该次 claude 进程。只有凭据不同，配置目录、会话转录、设置、技能都还是 `~/.claude` 那一份，所以 `--resume` 能跨账户续接。
+- **添加与管理**：先在终端执行 `claude setup-token`，在浏览器里用**备用账户**登录拿到令牌，再执行：
+
+  ```bash
+  lark-channel-bridge claude-account add <id> --label <名字> --profile claude   # 不回显地粘贴令牌，或用管道 + --token-stdin
+  lark-channel-bridge claude-account list --profile claude
+  lark-channel-bridge claude-account set <id> [--label <名字>] [--five-hour <百分比>] [--weekly <百分比>]   # 0 表示跟默认
+  lark-channel-bridge claude-account lines --five-hour 98 --weekly 90   # 默认切换线
+  lark-channel-bridge claude-account order <id> <id> …   # 调顺序，第一个是主账户
+  lark-channel-bridge claude-account switch [id]          # 同 /accounts switch
+  lark-channel-bridge claude-account remove <id> --profile claude
+  ```
+
+  `add` 先用 haiku 发一条极短的请求验证令牌（`--no-verify` 跳过）。令牌加密存在 profile 的 keystore，清单在 `claude-accounts.json`（顺序即优先级）。运行中的 bridge 每次开跑前按文件修改时间重读，**增删账户不用重启**。
+- **怎么选账户**：每个账户在 5 小时窗口和本周窗口各有一条切换线（账户自己设的优先，否则用默认，默认都是 98%）。先按顺序用还没到线的账户；都到线后再从主账户开始按顺序把每个账户用到被拒；全部耗尽才暂停，在最早恢复的账户重置时自动续跑（见上一节）。
+- **跑到一半时**：被拒（额度用尽）就换下一个可用账户、`--resume` 同一会话继续。Claude 每条消息只在第一次请求后报一次用量，若这次已超线、且还有没到线的账户，就在下一个没有工具、子 agent、后台任务在跑的间隙换过去；单条消息跑得很长时可能略微超线。换过去后新账户要把整段对话重读一遍（缓存不跨账户），这部分算新账户的。`/stop` 停掉的和后台任务的续跑轮不换号。
+- **展示**：回复卡的 `Sponsor:` 是实际付费的账户；中途切换时正文里插一行说明原因（如「5 小时窗口用量到了 80% 的切换线」）。管理员发 `/accounts` 看账户表，`/accounts switch` 手动切换。
+- **自动整理的额度门槛**取余量最大的账户：只要还有账户有余量，就不算额度紧张。
+
+只有一个账户（没有 `claude-accounts.json`）时不会换号，额度用完照旧暂停、自动续跑；`/accounts` 仍能看到这个账户最近一次报告的用量。
+
 ### 任务台账：长任务中断后自动继续
 
 预计超过 30 分钟、或要拆子任务的大任务，agent 开始前会先在 `~/.lark-channel/tasks/<任务名>.md` 建一份任务台账（目标、里程碑、每步状态和产出、下一步），并在回复里单独一行写出 `📒 任务台账：<路径>`。
@@ -662,6 +688,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/profiles/<profile>/jobs.json` | 定时任务（`/cron`） |
 | `~/.lark-channel/profiles/<profile>/kickoffs/` | 开场任务收件箱，取走即删 |
 | `~/.lark-channel/profiles/<profile>/code-snippets.json` | 卡片「复制代码」按钮背后的代码（最多 500 条） |
+| `~/.lark-channel/profiles/<profile>/claude-accounts.json` | Claude 订阅账户清单与切换线（`claude-account`）；`claude-accounts-state.json` 是各账户最近一次报告的用量 |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |

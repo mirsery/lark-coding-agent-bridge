@@ -320,6 +320,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/reconnect` | Force a WebSocket reconnect |
 | `/doctor [description]` | Run low-sensitive diagnostics |
 | `/usage [today\|week\|month]` | Token and estimated-cost usage; everyone sees their own, admins see everyone in a private chat |
+| `/accounts` | Claude subscription accounts: 5-hour / weekly usage, resets, switch lines and score per account; `/accounts switch [name or id]` changes which account new runs use (the best-scoring one with room when no name is given). Admins only |
 | `/audit [blocked] [N]` | Who had the bot run which commands / change which files, and approval outcomes; `/audit blocked` lists only the steps the guest guard refused, to catch misjudgments (admins, private chat) |
 | `/help` | Help card |
 
@@ -578,6 +579,31 @@ When the Claude plan's quota (5-hour or 7-day window) runs out, the run isn't a 
 - The resume runs on behalf of whoever started the task, and their access is checked again when it fires.
 - Pending resumes are kept in the profile's `auto-resume.json` and survive a restart. `/status` shows the resume time; the starter, admins and `access.stoppers` can cancel it with `/stop`.
 
+### Several subscription accounts: switch when the quota runs out (Claude)
+
+A Claude profile can hold several subscription accounts. When the current one reaches its switch line or runs out, the run moves to the next account and resumes the same conversation; once the main account resets, new runs go back to it.
+
+- **Accounts**: `default` is the local claude CLI's own login; extra accounts are long-lived `claude setup-token` tokens, passed to that one claude process as `CLAUDE_CODE_OAUTH_TOKEN`. Only the credentials differ — config directory, transcripts, settings and skills are still the one `~/.claude`, so `--resume` works across accounts.
+- **Adding and managing**: run `claude setup-token` in a terminal and log in with the **extra account** in the browser to get a token, then:
+
+  ```bash
+  lark-channel-bridge claude-account add <id> --label <name> --profile claude   # paste the token without echo, or pipe it with --token-stdin
+  lark-channel-bridge claude-account list --profile claude
+  lark-channel-bridge claude-account set <id> [--label <name>] [--five-hour <percent>] [--weekly <percent>]   # 0 follows the default
+  lark-channel-bridge claude-account lines --five-hour 98 --weekly 90   # default switch lines
+  lark-channel-bridge claude-account order <id> <id> …   # preference order; the first is the main account
+  lark-channel-bridge claude-account switch [id]          # same as /accounts switch
+  lark-channel-bridge claude-account remove <id> --profile claude
+  ```
+
+  `add` checks the token with a tiny haiku request first (`--no-verify` skips it). Tokens are stored encrypted in the profile keystore; the list is `claude-accounts.json` (order = preference). A running bridge re-reads it by mtime before each run, so **adding or removing accounts needs no restart**.
+- **Which account**: each account has a switch line for the 5-hour and the weekly window (its own, else the default; both 98% by default). Accounts below their lines are used first, in order; once all are past their lines, each is used in order until it is refused; only when all are exhausted does the run pause, resuming when the earliest account resets (see the previous section).
+- **Mid-run**: when refused, the run moves to the next usable account and `--resume`s the conversation. Claude reports usage once per message, after its first request; if that shows the line crossed and another account is below its lines, the switch happens at the next gap with no tool, subagent or background task in flight, so a very long message may go slightly past the line. The new account re-reads the whole conversation (caches don't cross accounts) and pays for that. Runs stopped with `/stop` and background follow-up turns never switch.
+- **Display**: the reply card's `Sponsor:` is the account actually paying; a switch adds a line to the answer saying why (e.g. the 5-hour window reached its 80% line). Admins see the table with `/accounts` and switch by hand with `/accounts switch`.
+- **The auto-dream quota gate** reads the account with the most room: as long as one account has room, the quota isn't tight.
+
+With a single account (no `claude-accounts.json`) nothing switches: a run that runs out pauses and auto-resumes as before, and `/accounts` still shows that account's last reported usage.
+
 ### Task ledger: long tasks continue after an interruption
 
 For big tasks (likely over 30 minutes, or split into subtasks) the agent first writes a task ledger at `~/.lark-channel/tasks/<task>.md` — goal, milestones, each one's status and output, next step — and puts `📒 任务台账：<path>` on a line of its own in the reply.
@@ -656,6 +682,7 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/profiles/<profile>/jobs.json` | Scheduled jobs (`/cron`) |
 | `~/.lark-channel/profiles/<profile>/kickoffs/` | Kickoff inbox, files deleted when taken |
 | `~/.lark-channel/profiles/<profile>/code-snippets.json` | Code behind cards' copy buttons (up to 500) |
+| `~/.lark-channel/profiles/<profile>/claude-accounts.json` | Claude subscription accounts and switch lines (`claude-account`); `claude-accounts-state.json` holds each account's last reported usage |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |
