@@ -474,6 +474,34 @@ describe('markdown stream startup failures', () => {
       expect(h.agent.runOptions[1]?.prompt).toContain('顺便看下 AUS');
     });
 
+    it('folds a plain follow-up in the same topic into that topic\'s running task', async () => {
+      const h = await createHarness({ ...paused(), chatMode: 'topic' });
+      h.profileConfig.access.allowedChats.push('oc_topic');
+      await startTestBridge(h);
+      await h.channel.handlers.message?.(topicMessage('om_task', '查一下 EUR 的日志'));
+      await waitFor(() => h.agent.runs.length === 1);
+
+      await h.channel.handlers.message?.(topicMessage('om_more', '只看最近一小时'));
+      const run = h.agent.runs[0]!;
+      await waitFor(() => run.injected.length === 1);
+      expect(run.injected[0]).toContain('只看最近一小时');
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(h.agent.runs).toHaveLength(1);
+    });
+
+    it('still queues a plain message in another topic of the same group', async () => {
+      const h = await createHarness({ ...paused(), chatMode: 'topic' });
+      h.profileConfig.access.allowedChats.push('oc_topic');
+      await startTestBridge(h);
+      await h.channel.handlers.message?.(topicMessage('om_task', '查一下 EUR 的日志'));
+      await waitFor(() => h.agent.runs.length === 1);
+
+      await h.channel.handlers.message?.(topicMessage('om_other_topic', '另一个问题', 'omt_2'));
+      // A different topic is its own scope: it starts its own run.
+      await waitFor(() => h.agent.runs.length === 2);
+      expect(h.agent.runs[0]!.injected).toHaveLength(0);
+    });
+
     it('queues a message without a supplement signal', async () => {
       const h = await createHarness(paused());
       await startTestBridge(h);
@@ -1131,6 +1159,8 @@ async function createHarness(options: {
   background?: FakeBackgroundTurn;
   /** The first run pauses mid-turn and takes supplements. */
   pause?: FakePause;
+  /** What the fake channel reports for every group chat. */
+  chatMode?: 'group' | 'topic';
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;
@@ -1225,6 +1255,7 @@ function createFakeLarkChannel(harnessOptions: {
   stream?: StreamFn;
   send?: SendFn;
   updateCard?: UpdateCardFn;
+  chatMode?: 'group' | 'topic';
 } = {}): FakeLarkChannel {
   const handlers: MessageHandlerMap = {};
   const sent: FakeLarkChannel['sent'] = [];
@@ -1263,7 +1294,7 @@ function createFakeLarkChannel(harnessOptions: {
     async connect() {},
     async disconnect() {},
     async getChatMode() {
-      return 'group';
+      return harnessOptions.chatMode ?? 'group';
     },
     getConnectionStatus() {
       return { state: 'connected', reconnectAttempts: 0 };
@@ -1367,6 +1398,16 @@ function message(messageId: string, content: string, senderId = 'ou_user'): Norm
     resources: [],
     mentionedBot: false,
     createTime: 1760000001000,
+  } as unknown as NormalizedMessage;
+}
+
+function topicMessage(messageId: string, content: string, threadId = 'omt_1'): NormalizedMessage {
+  return {
+    ...message(messageId, content),
+    chatId: 'oc_topic',
+    chatType: 'group',
+    threadId,
+    mentionedBot: true,
   } as unknown as NormalizedMessage;
 }
 

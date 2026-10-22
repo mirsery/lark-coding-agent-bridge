@@ -1256,8 +1256,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
 /**
  * Fold a follow-up into the run already going on this scope instead of
  * queueing it as a new question — only on an explicit signal (quote-reply to
- * the run, or a 补充 / 追加 / + prefix) and only from the run's initiator or
- * the owner. Everything else, including a run that can no longer take input,
+ * the run, a 补充 / 追加 / + prefix, or posting in the run's own topic) and
+ * only from the run's initiator or the owner. Everything else, including a run that can no longer take input,
  * keeps the queue-for-next-run behavior.
  */
 async function tryInjectSupplement(deps: {
@@ -1274,7 +1274,9 @@ async function tryInjectSupplement(deps: {
   const target = handle?.supplement;
   if (!handle || !target || !handle.run.inject) return false;
   const quoted = replyQuoteTargetForMessage(msg, mode);
-  const signal = supplementSignal(msg.content, quoted, target);
+  // The scope is per topic, so an active run here is this topic's own run.
+  const inTopic = mode === 'topic' && Boolean(msg.threadId);
+  const signal = supplementSignal(msg.content, quoted, target, inTopic);
   if (!signal) return false;
   if (!maySupplement(target, msg.senderId, isCreator(controls, msg.senderId))) {
     log.info('supplement', 'skip-not-initiator', { scope, sender: msg.senderId.slice(-6) });
