@@ -749,4 +749,38 @@ describe('profile schema', () => {
       maxAccess: 'workspace',
     });
   });
+
+  it('keeps well-formed restricted chats and drops malformed ones', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      access: {
+        restrictedChats: {
+          oc_a: {
+            deniedCommands: ['\\bkubectl\\b', 42],
+            deniedPaths: ['~/.kube'],
+            deniedTools: ['mcp__jira', null],
+            workspace: ' ~/ws/dp ',
+            refusal: '  不支持  ',
+          },
+          oc_b: { deniedCommands: [] },
+          oc_c: 'nonsense',
+          '': { deniedCommands: ['x'] },
+        },
+      },
+    } as never);
+    expect(cfg.access.restrictedChats).toEqual({
+      oc_a: {
+        deniedCommands: ['\\bkubectl\\b'],
+        deniedPaths: ['~/.kube'],
+        deniedTools: ['mcp__jira'],
+        workspace: '~/ws/dp',
+        refusal: '不支持',
+      },
+      oc_b: { deniedCommands: [] },
+    });
+    const plain = normalizeProfileConfig({ schemaVersion: 2, agentKind: 'claude', accounts: { app } });
+    expect(plain.access).not.toHaveProperty('restrictedChats');
+  });
 });

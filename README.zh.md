@@ -756,6 +756,32 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 
 这是字符串匹配，不是沙箱：拦得住常规写法，agent 的系统提示里也写明了同样的规则。Codex 暂不支持这层拦截。
 
+### 受限群（`access.restrictedChats`）
+
+按 chat_id 指定的群里，**每一次运行（包括主人自己）**都再加一层守卫：只做数据和文档处理，不碰集群、云、各环境的配置和数据，也不扫描、介绍项目代码。
+
+```json
+"access": {
+  "restrictedChats": {
+    "oc_xxxxxxxx": {
+      "deniedCommands": ["(^|[\\s;|&(/])(kubectl|helm)(\\s|$)", "net-debug"],
+      "deniedPaths": ["~/.kube"],
+      "deniedTools": ["mcp__jira", "WebFetch"],
+      "workspace": "~/.lark-channel-workspaces/restricted",
+      "refusal": "这是一个危险操作，暂时不支持"
+    }
+  }
+}
+```
+
+- `deniedCommands`：拒绝的命令正则；同样用来检查写进文件的内容和文件路径，脚本里夹带也拦。
+- `deniedPaths`：既不能读也不能改的路径，shell 和文件工具都拦。
+- `deniedTools`：额外禁用的 Claude 权限规则，叠加在访客限制之上。
+- `workspace`：这个群固定的工作目录，优先于 `/cd` 和默认目录。
+- `refusal`：被拦时唯一的回复，默认「这是一个危险操作，暂时不支持」；agent 不解释原因、不提规则。
+
+访客在受限群里两层限制同时生效。同样只对 Claude 生效，Codex 只收到指令里的规则。
+
 ### 终止任务权限
 
 `/stop` 和进度卡「终止」按钮只有当前任务的发起人、bot 主人、管理员和 `access.stoppers` 白名单里的人能用。按钮会先要求确认；无权的人点了不会让按钮失效。后台任务沿用最后一轮的发起人。用 `/stop <scope>` 停止其他会话的任务仅限管理员。

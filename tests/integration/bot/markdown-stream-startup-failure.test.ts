@@ -1,5 +1,5 @@
 import { LarkChannelError, type NormalizedMessage } from '@larksuite/channel';
-import { realpath, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../../src/agent/types.js';
@@ -551,6 +551,28 @@ describe('markdown stream startup failures', () => {
       run.release();
       await waitFor(() => h.agent.runs.length === 2);
     });
+  });
+
+  it('fences every run in a restricted chat: its guard, its own directory and the rules in the prompt', async () => {
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [{ type: 'done', terminationReason: 'normal' }],
+      stream: async () => {},
+    });
+    const pinned = join(h.tmp.root, 'restricted');
+    await mkdir(pinned, { recursive: true });
+    h.profileConfig.access.restrictedChats = {
+      oc_dm: { deniedCommands: ['(^|\\s)kubectl(\\s|$)'], deniedPaths: ['~/.kube'], workspace: pinned },
+    };
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_restricted', '整理一下这个表格'));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    const opts = h.agent.runOptions[0]!;
+    expect(opts.cwd).toBe(await realpath(pinned));
+    expect(opts.guard?.refusal).toBe('这是一个危险操作，暂时不支持');
+    expect(opts.guard?.deniedCommands).toContain('(^|\\s)kubectl(\\s|$)');
+    expect(opts.prompt).toContain('本会话是受限会话');
   });
 
   describe('recalled messages', () => {

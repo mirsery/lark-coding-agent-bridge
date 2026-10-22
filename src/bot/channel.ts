@@ -104,7 +104,14 @@ import {
   type PendingResume,
 } from './auto-resume';
 import { INTERRUPT_RESUME_DELAY_MS, MAX_INTERRUPT_RESUMES, isKilledExit } from './task-ledger';
-import { grantedToolsFor, isOwnerBatch, ownerOnlyGuard } from '../policy/owner-guard';
+import {
+  grantedToolsFor,
+  isOwnerBatch,
+  ownerOnlyGuard,
+  restrictedChatGuard,
+  restrictedChatInstruction,
+  restrictedChatWorkspace,
+} from '../policy/owner-guard';
 import { paths } from '../config/paths';
 import type { RunRecord } from '../runtime/run-registry';
 import { CardPatchHealth, instrumentCardPatches } from './card-patch-health';
@@ -1532,7 +1539,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
   lastRunModelByScope.set(scope, modelSelection);
   const smartSession = getSmartSession(controls.cfg);
+  // A restricted chat fences every run there, the owner's included.
+  const restrictedChat = controls.profileConfig.access.restrictedChats?.[chatId];
   const instructions = [
+    ...(restrictedChat ? [restrictedChatInstruction(restrictedChat)] : []),
     ...(modelSwitched
       ? [
           `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
@@ -1651,7 +1661,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const runSubmittedAt = Date.now();
   // Someone else's run may only touch what the owner opened to others.
   const access = controls.profileConfig.access;
-  const guestWorkspace = workspaces.cwdFor(scope) ?? controls.profileConfig.workspaces.default;
+  // A restricted chat's own directory wins over /cd and the default.
+  const restrictedCwd = restrictedChat ? restrictedChatWorkspace(restrictedChat) : undefined;
+  const guestWorkspace = restrictedCwd ?? workspaces.cwdFor(scope) ?? controls.profileConfig.workspaces.default;
   const guestGuard = ownerRun
     ? undefined
     : ownerOnlyGuard({
@@ -1663,6 +1675,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         deniedCommands: access.guestDeniedCommands ?? [],
         ...(guestWorkspace ? { workspace: guestWorkspace } : {}),
       });
+  const runGuard = restrictedChat ? restrictedChatGuard(guestGuard, restrictedChat) : guestGuard;
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -1677,7 +1690,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     executor,
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
-    ...(guestGuard ? { guard: guestGuard } : {}),
+    ...(runGuard ? { guard: runGuard } : {}),
+    ...(restrictedCwd ? { cwd: restrictedCwd } : {}),
     ...(readHook ? { readHook } : {}),
     ...(smartSession
       ? {

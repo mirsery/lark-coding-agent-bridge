@@ -750,6 +750,32 @@ Configure what's open in the profile's `access` section (`~` allowed; restart th
 
 This is string matching, not a sandbox: it stops the plain ways of doing it, and the agent's system prompt states the same rules. Codex runs aren't fenced this way yet.
 
+### Restricted chats (`access.restrictedChats`)
+
+In the chats listed by chat_id, **every run — the owner's included** — gets one more fence: data and document work only, no cluster, cloud or environment configs and data, and no scanning or describing project code.
+
+```json
+"access": {
+  "restrictedChats": {
+    "oc_xxxxxxxx": {
+      "deniedCommands": ["(^|[\\s;|&(/])(kubectl|helm)(\\s|$)", "net-debug"],
+      "deniedPaths": ["~/.kube"],
+      "deniedTools": ["mcp__jira", "WebFetch"],
+      "workspace": "~/.lark-channel-workspaces/restricted",
+      "refusal": "这是一个危险操作，暂时不支持"
+    }
+  }
+}
+```
+
+- `deniedCommands`: regexes for refused shell commands; also checked against what file tools write and the paths they touch, so a script can't carry them past the guard.
+- `deniedPaths`: paths that can be neither read nor changed, by shell or file tools.
+- `deniedTools`: extra Claude permission rules denied there, on top of the guest ones.
+- `workspace`: the chat's own working directory; it wins over `/cd` and the default.
+- `refusal`: the only answer when a step is refused (default 「这是一个危险操作，暂时不支持」); the agent gives no reason and doesn't mention the rules.
+
+A guest in a restricted chat gets both fences. Like the guest fence, it applies to Claude; Codex only gets the rules in its instructions.
+
 ### Who can stop a run
 
 `/stop` and the progress card's stop button work only for the run's starter, the bot owner, admins and people in `access.stoppers`. The button asks for confirmation first; a click from someone not allowed doesn't use the button up. Background work keeps the starter of its last turn. Stopping another chat's run with `/stop <scope>` is for admins only.
