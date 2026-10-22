@@ -146,6 +146,23 @@ describe('Bridge command contracts', () => {
     await expect(realpath(legacy)).resolves.toBe(h.workspaces.cwdFor('chat-1'));
   });
 
+  it('shows the Claude account table to admins only', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('/accounts', { senderId: 'ou-not-admin' })).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('仅管理员可用');
+
+    await expect(h.run('/accounts')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('**Claude 订阅账户**');
+    expect(lastMarkdown(h.channel)).toContain('| 账户 |');
+
+    await expect(h.run('/accounts switch')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('只有一个账户，没有可切换的');
+
+    await expect(h.run('/accounts nope')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('用法：`/accounts`');
+  });
+
   it('keeps directory commands admin-only', async () => {
     const h = await createHarness();
 
