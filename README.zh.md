@@ -822,6 +822,29 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 
 访客在受限群里两层限制同时生效。同样只对 Claude 生效，Codex 只收到指令里的规则。
 
+### 过载保护：额度紧张时不回其他 bot（默认关闭）
+
+列出的群里，额度紧张时**只由 bot 发来的提问**不再回答，改回一张红色「算力过载」卡，不起模型，把剩下的额度留给人。批次里只要有真人的消息就照常回答；私聊不受影响。只能在配置文件里开：
+
+```json
+"preferences": {
+  "botOverload": {
+    "chats": ["*"],
+    "weekPercent": 80, "weekGraceHours": 6,
+    "sessionPercent": 80, "sessionGraceHours": 1,
+    "cooldownMinutes": 10,
+    "exceptChats": ["oc_xxxxxxxx"],
+    "exceptBots": ["cli_xxxxxxxx", "ou_xxxxxxxx"],
+    "botOwners": [{ "name": "某 bot", "ids": ["cli_xxxxxxxx", "ou_xxxxxxxx"], "owner": "ou_主人", "ownerName": "主人" }]
+  }
+}
+```
+
+- `chats`：生效的群（`oc_…`），`"*"` 为所有群和话题群；为空即关闭。
+- 何时算紧张：本周窗口已用超过 `weekPercent` 且离重置还有 `weekGraceHours` 以上，或 5 小时窗口超过 `sessionPercent` 且离重置还有 `sessionGraceHours` 以上。快重置时剩下的额度反正要作废，照常回答。额度每 5 分钟读一次（多账户时取余量最大的账户）；读不到一律放行。
+- 卡片开头 @ 提问 bot 的主人（查 `botOwners` 映射表，按 bot 的 open_id 或 app id 匹配），再跟一个纯文字的「@ALL」——不是真的 @所有人，不打扰全群，也不会唤醒群里的 bot；**绝不 @ 任何 bot**。同一个群 `cooldownMinutes` 内只发一张，其余静默不回。
+- 白名单：`exceptChats` 里的群不拦；`exceptBots` 里的 bot 发来的消息照常回答。
+
 ### 终止任务权限
 
 `/stop` 和进度卡「终止」按钮只有当前任务的发起人、bot 主人、管理员和 `access.stoppers` 白名单里的人能用。按钮会先要求确认；无权的人点了不会让按钮失效。后台任务沿用最后一轮的发起人。用 `/stop <scope>` 停止其他会话的任务仅限管理员。

@@ -816,6 +816,29 @@ In the chats listed by chat_id, **every run — the owner's included** — gets 
 
 A guest in a restricted chat gets both fences. Like the guest fence, it applies to Claude; Codex only gets the rules in its instructions.
 
+### Bot overload protection: stop answering other bots when the quota is tight (off by default)
+
+In the listed groups, while the quota is tight, a batch made **only of other bots' messages** is not answered: the bot posts a red 「算力过载」 card instead and starts no run, leaving what is left to people. A batch with any human message is answered as usual; private chats are never affected. Config file only:
+
+```json
+"preferences": {
+  "botOverload": {
+    "chats": ["*"],
+    "weekPercent": 80, "weekGraceHours": 6,
+    "sessionPercent": 80, "sessionGraceHours": 1,
+    "cooldownMinutes": 10,
+    "exceptChats": ["oc_xxxxxxxx"],
+    "exceptBots": ["cli_xxxxxxxx", "ou_xxxxxxxx"],
+    "botOwners": [{ "name": "Some bot", "ids": ["cli_xxxxxxxx", "ou_xxxxxxxx"], "owner": "ou_owner", "ownerName": "Owner" }]
+  }
+}
+```
+
+- `chats`: the groups it applies to (`oc_…`); `"*"` for every group and topic group; empty means off.
+- Tight means: the weekly window is used above `weekPercent` with more than `weekGraceHours` to its reset, or the 5-hour window above `sessionPercent` with more than `sessionGraceHours` to go. Close to a reset the rest would expire anyway, so bots are answered. The quota is read at most every 5 minutes (with several accounts, the one with the most room); when it can't be read, nothing is blocked.
+- The card @s the owners of the asking bots (from the `botOwners` table, matched by the bot's open_id or app id), followed by a plain-text "@ALL" — not a real @everyone, so the group isn't paged and its bots aren't woken; **no bot is ever @-ed**. One card per group per `cooldownMinutes`; the rest go unanswered silently.
+- Allowlists: groups in `exceptChats` are never covered; messages from bots in `exceptBots` are always answered.
+
 ### Who can stop a run
 
 `/stop` and the progress card's stop button work only for the run's starter, the bot owner, admins and people in `access.stoppers`. The button asks for confirmation first; a click from someone not allowed doesn't use the button up. Background work keeps the starter of its last turn. Stopping another chat's run with `/stop <scope>` is for admins only.

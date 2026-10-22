@@ -7,6 +7,7 @@ import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
 import type { AgentEvent } from '../../../src/agent/types.js';
+import type { QuotaReading } from '../../../src/agent/quota.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 const sdkMock = vi.hoisted(() => ({
@@ -16,6 +17,14 @@ const sdkMock = vi.hoisted(() => ({
     return sdkMock.channel;
   }),
 }));
+
+// 过载保护 reads the account quota; tests decide what it says (default: unknown).
+const quotaMock = vi.hoisted(() => ({ reading: undefined as QuotaReading | undefined }));
+
+vi.mock('../../../src/agent/quota.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/agent/quota.js')>();
+  return { ...actual, readAgentQuota: vi.fn(async () => quotaMock.reading) };
+});
 
 vi.mock('@larksuite/channel', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@larksuite/channel')>();
@@ -68,6 +77,7 @@ afterEach(async () => {
   vi.useRealTimers();
   sdkMock.channel = undefined;
   sdkMock.createLarkChannel.mockClear();
+  quotaMock.reading = undefined;
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
@@ -577,6 +587,71 @@ describe('long-run notice', () => {
   });
 });
 
+describe('bot overload (过载保护)', () => {
+  const tight: QuotaReading = { windows: [{ label: '本周', usedPercent: 95 }] };
+
+  async function overloadHarness() {
+    const h = await createHarness({
+      chatMode: 'group',
+      agentEvents: [
+        { type: 'text', delta: '好' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+    h.profileConfig.preferences.botOverload = {
+      chats: ['oc_topic_chat'],
+      botOwners: [{ name: 'Other', ids: ['ou_other_bot'], owner: 'ou_other_owner' }],
+    };
+    await startTestBridge(h);
+    return h;
+  }
+
+  const fromBot = (messageId: string) =>
+    message({ messageId, rootId: messageId, parentId: messageId, content: '@Bridge 帮我查一下', senderType: 'app', senderId: 'ou_other_bot' });
+
+  it("answers another bot's question with an overload card and no run while the quota is tight", async () => {
+    quotaMock.reading = tight;
+    const h = await overloadHarness();
+
+    await h.channel.handlers.message?.(fromBot('om_bot_1'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    const sent = h.channel.sent[0]!;
+    const card = JSON.stringify((sent.content as { card?: unknown }).card);
+    expect(card).toContain('算力过载');
+    expect(card).toContain('<at id=ou_other_owner></at> @ALL');
+    expect(card).not.toContain('<at id=all>');
+    expect(card).not.toContain('<at id=ou_other_bot>');
+    expect(sent.options).toMatchObject({ replyTo: 'om_bot_1' });
+    expect(h.agent.runOptions).toHaveLength(0);
+
+    // Inside the cooldown the next bot question is dropped without another card.
+    await h.channel.handlers.message?.(fromBot('om_bot_2'));
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(h.channel.sent).toHaveLength(1);
+    expect(h.agent.runOptions).toHaveLength(0);
+  });
+
+  it('still answers people while the quota is tight', async () => {
+    quotaMock.reading = tight;
+    const h = await overloadHarness();
+
+    await h.channel.handlers.message?.(
+      message({ messageId: 'om_human', rootId: 'om_human', parentId: 'om_human', content: '@Bridge ping', senderType: 'user' }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+    expect(h.channel.sent.some((m) => JSON.stringify(m.content).includes('算力过载'))).toBe(false);
+  });
+
+  it('answers bots when the quota cannot be read', async () => {
+    const h = await overloadHarness();
+
+    await h.channel.handlers.message?.(fromBot('om_bot_unknown'));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    expect(h.channel.sent.some((m) => JSON.stringify(m.content).includes('算力过载'))).toBe(false);
+  });
+});
+
 describe('merge_forward fetch failure', () => {
   it('skips the run and hints the user when the SDK could not fetch a merge_forward', async () => {
     // @larksuite/channel >= 0.4.1 normalizes an un-fetchable merge_forward to
@@ -808,13 +883,14 @@ function message(input: {
   mentions?: Array<{ key: string; openId: string; name: string; isBot: boolean }>;
   createTime?: number;
   senderType?: 'user' | 'app';
+  senderId?: string;
 }): NormalizedMessage {
   const mentionedBot = input.mentionedBot ?? true;
   return {
     messageId: input.messageId,
     chatId: 'oc_topic_chat',
     chatType: 'group',
-    senderId: 'ou_user',
+    senderId: input.senderId ?? 'ou_user',
     senderName: 'User',
     content: input.content,
     rawContentType: input.rawContentType ?? 'text',
@@ -831,7 +907,9 @@ function message(input: {
     ...(input.threadId ? { threadId: input.threadId } : {}),
     replyToMessageId: input.parentId,
     createTime: input.createTime ?? 1760000001000,
-    ...(input.senderType ? { raw: { sender: { sender_type: input.senderType } } } : {}),
+    ...(input.senderType
+      ? { raw: { sender: { sender_type: input.senderType, sender_id: { open_id: input.senderId ?? 'ou_user' } } } }
+      : {}),
   } as unknown as NormalizedMessage;
 }
 

@@ -5,6 +5,7 @@ import type {
   NormalizedMessage,
 } from '@larksuite/channel';
 import { createLarkChannel, LarkChannelError } from '@larksuite/channel';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { agentAccountName } from '../agent/account';
 import { agentCapability } from '../agent/capability';
@@ -57,8 +58,11 @@ import {
   getSmartSession,
   getTopicSessionRetentionMonths,
   getWorktreeCleanupIdleDays,
+  resolveBotOverload,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
+import { overloadCard } from '../card/templates';
+import { botOwnersOf, BotOverloadGuard, isBotOnlyBatch, isOverloadExempt } from './bot-overload';
 import { log, reportMetric, withTrace } from '../core/logger';
 import { MediaCache, type LocalAttachment } from '../media/cache';
 import {
@@ -546,6 +550,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   const recalled = new RecalledMessages();
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
 
+  // 过载保护 (`preferences.botOverload`): reads the agent account's quota for bot-only batches in the listed groups.
+  const botOverload = new BotOverloadGuard({
+    profileConfig: () => controls.profileConfig,
+    scratchDir: join(deps.appPaths?.profileDir ?? tmpdir(), 'quota-scratch'),
+    ...(deps.appPaths?.profileDir ? { profileDir: deps.appPaths.profileDir } : {}),
+  });
+
   // Pending → run handoff: while a run is active on a chat, block its pending
   // queue so messages keep accumulating without flushing. When the run ends,
   // unblock arms a fresh quiet-window timer. Net effect: at most one run per
@@ -604,6 +615,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           autoResumer,
           activeRuns,
           recalled,
+          botOverload,
           ...(knowledge ? { knowledge } : {}),
         });
       } catch (err) {
@@ -1438,6 +1450,7 @@ interface RunBatchDeps {
   autoResumer?: AutoResumer;
   activeRuns?: ActiveRuns;
   recalled?: RecalledMessages;
+  botOverload?: BotOverloadGuard;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -1469,6 +1482,42 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   const chatId = firstMsg.chatId;
   const threadId = firstMsg.threadId;
+
+  // 过载保护: other bots' questions wait while the quota is tight; humans never do.
+  const overload = resolveBotOverload(controls.cfg);
+  if (
+    overload &&
+    deps.botOverload &&
+    mode !== 'p2p' &&
+    isBotOnlyBatch(batch, senderTypeOf) &&
+    !isOverloadExempt(overload, chatId, batch.flatMap(senderIdsOf))
+  ) {
+    const decision = await deps.botOverload.decide(overload, chatId);
+    if (decision.overload) {
+      log.info('overload', decision.card ? 'card' : 'dropped', {
+        scope,
+        chatId,
+        msgId: lastMsg.messageId,
+        windows: decision.windows.map((w) => `${w.kind}:${w.usedPercent}%`).join(','),
+      });
+      if (decision.card) {
+        const card = overloadCard({
+          owners: botOwnersOf(overload, batch.flatMap(senderIdsOf)),
+          windows: decision.windows.map((w) => ({
+            ...w,
+            ...(w.resetAt !== undefined
+              ? { resumeAt: w.resetAt - (w.kind === 'week' ? overload.weekGraceHours : overload.sessionGraceHours) * 3_600_000 }
+              : {}),
+          })),
+          cooldownMinutes: overload.cooldownMinutes,
+        });
+        await channel
+          .send(chatId, { card }, { replyTo: lastMsg.messageId, ...(mode === 'topic' && threadId ? { replyInThread: true } : {}) })
+          .catch((err: unknown) => log.fail('overload', err, { step: 'send-card' }));
+      }
+      return;
+    }
+  }
 
   const resourceItems = batch.flatMap((m) =>
     m.resources.map((r) => ({ messageId: m.messageId, resource: r })),
@@ -3164,6 +3213,13 @@ function senderTypeOf(msg: NormalizedMessage): 'user' | 'bot' | undefined {
   if (senderType === 'user') return 'user';
   if (senderType === 'app' || senderType === 'bot') return 'bot';
   return undefined;
+}
+
+/** Every id the sender is known by: the normalized one and the raw open_id / app_id. */
+function senderIdsOf(msg: NormalizedMessage): string[] {
+  const raw = msg.raw as { sender?: { sender_id?: { open_id?: unknown; app_id?: unknown; union_id?: unknown } } } | undefined;
+  const ids = raw?.sender?.sender_id;
+  return [msg.senderId, ids?.open_id, ids?.app_id, ids?.union_id].filter((id): id is string => typeof id === 'string' && id !== '');
 }
 
 /** The people (never bots — an @ would wake them) whose messages make up a batch. */

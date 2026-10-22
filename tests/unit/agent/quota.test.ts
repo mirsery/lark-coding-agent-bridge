@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseClaudeUsage, readClaudeQuota } from '../../../src/agent/claude/quota.js';
 import { parseCodexRateLimits, readCodexQuota } from '../../../src/agent/codex/quota.js';
-import { fullestQuotaWindow } from '../../../src/agent/quota.js';
+import { fullestQuotaWindow, quotaResetAt } from '../../../src/agent/quota.js';
 
 const FIXTURES = join(__dirname, '..', '..', 'fixtures');
 const dirs: string[] = [];
@@ -93,5 +93,25 @@ rl.on('line', (line) => {
     const calls = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(calls[0]).toEqual({ args: ['app-server', '--listen', 'stdio://'], home: join(dir, 'profile', 'codex-home') });
     expect(calls.slice(1).map((call) => call.method)).toEqual(['initialize', 'initialized', 'account/rateLimits/read']);
+  });
+});
+
+describe('quotaResetAt', () => {
+  const at = (iso: string) => Date.parse(iso);
+
+  it("reads Claude's wording in its time zone, and ISO times", () => {
+    const now = at('2026-10-16T13:00:00Z');
+    expect(quotaResetAt('Oct 20 at 9am (Asia/Shanghai)', now)).toBe(at('2026-10-20T01:00:00Z'));
+    expect(quotaResetAt('Oct 18, 2:59pm (Asia/Shanghai)', now)).toBe(at('2026-10-18T06:59:00Z'));
+    expect(quotaResetAt('Oct 17 at 12:20am (Asia/Shanghai)', now)).toBe(at('2026-10-16T16:20:00Z'));
+    // Past the year end: the reset lies ahead, in the next year.
+    expect(quotaResetAt('Jan 2 at 1am (UTC)', now)).toBe(at('2027-01-02T01:00:00Z'));
+    expect(quotaResetAt('2026-10-20T01:00:00.000Z', now)).toBe(at('2026-10-20T01:00:00Z'));
+  });
+
+  it('is undefined when it cannot tell', () => {
+    const now = at('2026-10-16T13:00:00Z');
+    expect(quotaResetAt('soon', now)).toBeUndefined();
+    expect(quotaResetAt(undefined, now)).toBeUndefined();
   });
 });
