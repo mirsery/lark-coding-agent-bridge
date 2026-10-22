@@ -132,7 +132,7 @@ describe('markdown stream startup failures', () => {
       // at all and there is no late failure to log.
       events: [
         [
-          { type: 'text', delta: 'progress update' },
+          { type: 'text', delta: '进度更新' },
           {
             type: 'error',
             message: 'codex exited with code 1: Error loading config.toml',
@@ -177,11 +177,44 @@ describe('markdown stream startup failures', () => {
     );
   }, 10_000);
 
+  it.each([
+    ['看下日志', false],
+    ['Please check the logs today', true],
+  ] as const)('shows English progress notes for %j: %s', async (prompt, shown) => {
+    const visible: string[] = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [
+        { type: 'text', delta: 'Now checking the logs first.' },
+        { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'tail log' } },
+        { type: 'tool_result', id: 'toolu_1', output: 'ok', isError: false },
+        { type: 'text', delta: '日志正常。' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void>; messageId: string }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            visible.push(markdown);
+          }),
+          messageId: 'om_stream',
+        });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_lang', prompt));
+    await waitFor(() => visible.some((markdown) => markdown.includes('日志正常')));
+    expect(visible.some((markdown) => markdown.includes('Now checking the logs'))).toBe(shown);
+  });
+
   it('sends one dedicated non-streaming final reply after progress completes', async () => {
     const visibleProgress: string[] = [];
     const h = await createHarness({
       events: [
-        { type: 'text', delta: 'progress update' },
+        { type: 'text', delta: '进度更新' },
         { type: 'final_text', content: 'FINAL_SENTINEL' },
         { type: 'done', terminationReason: 'normal' },
       ],
@@ -201,7 +234,7 @@ describe('markdown stream startup failures', () => {
     await h.channel.handlers.message?.(message('om_final', 'run'));
     await waitFor(() => h.channel.sent.length === 1);
 
-    expect(visibleProgress.some((markdown) => markdown.includes('progress update'))).toBe(true);
+    expect(visibleProgress.some((markdown) => markdown.includes('进度更新'))).toBe(true);
     expect(h.channel.sent).toHaveLength(1);
     expect(lastMarkdown(h.channel)).toContain('FINAL_SENTINEL');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_final' });
@@ -617,7 +650,7 @@ describe('markdown stream startup failures', () => {
     const fail = vi.spyOn(log, 'fail').mockImplementation(() => {});
     const h = await createHarness({
       events: [
-        { type: 'text', delta: 'progress update' },
+        { type: 'text', delta: '进度更新' },
         { type: 'final_text', content: 'FINAL_AFTER_STREAM_FAILURE' },
         { type: 'done', terminationReason: 'normal' },
       ],
@@ -943,7 +976,7 @@ describe('markdown stream startup failures', () => {
     const h = await createHarness({
       messageReply: 'card',
       events: [
-        { type: 'text', delta: 'progress update' },
+        { type: 'text', delta: '进度更新' },
         { type: 'final_text', content: 'FINAL_SENTINEL' },
         { type: 'done', terminationReason: 'normal' },
       ],
@@ -966,14 +999,14 @@ describe('markdown stream startup failures', () => {
     // Intermediate agent messages stream as progress; the final answer never
     // leaks into the progress card (it is held back for the dedicated reply).
     const progressJson = JSON.stringify(progressCards);
-    expect(progressJson).toContain('progress update');
+    expect(progressJson).toContain('进度更新');
     expect(progressJson).not.toContain('FINAL_SENTINEL');
 
     // The terminal answer arrives as exactly one non-streaming card send.
     expect(h.channel.sent).toHaveLength(1);
     const finalJson = JSON.stringify(h.channel.sent[0]?.content);
     expect(finalJson).toContain('FINAL_SENTINEL');
-    expect(finalJson).not.toContain('progress update');
+    expect(finalJson).not.toContain('进度更新');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_card_final' });
 
     // Card mode gets both reactions now: Typing as an instant ack (the card's

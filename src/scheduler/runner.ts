@@ -19,6 +19,8 @@ import type { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
+import { detectLocale } from '../card/locale';
+import { withoutOffLocaleProgress } from '../card/progress-language';
 import { describeCron } from './cron';
 import { jobTitleMd, type JobRunRecord, type ScheduledJob } from './types';
 
@@ -189,7 +191,9 @@ export async function runScheduledJob(
  * message rather than a live card. In a topic group it replies to the message
  * that created the job, which is the only way to land inside that topic.
  */
-async function deliver(deps: JobRunnerDeps, job: ScheduledJob, state: RunState): Promise<void> {
+async function deliver(deps: JobRunnerDeps, job: ScheduledJob, finished: RunState): Promise<void> {
+  // Same rule as a chat reply: English progress notes stay off a Chinese job's result.
+  const state = withoutOffLocaleProgress(finished, detectLocale([job.prompt]));
   const body = renderText(state);
   if (!body.trim()) {
     log.info('scheduler', 'deliver-skip-empty', { jobId: job.id });

@@ -141,6 +141,8 @@ import { lookupMessageThreadId } from './thread-id';
 import { addDoneReaction, addSupplementReaction, addWorkingReaction, removeReaction } from './reaction';
 import { maySupplement, quotesRun, SUPPLEMENT_INSTRUCTION, supplementPreview, supplementSignal } from './supplement';
 import { mediaPlaceholders } from './media-placeholders';
+import { detectLocale } from '../card/locale';
+import { withoutOffLocaleProgress } from '../card/progress-language';
 import { planLongRunNotice, sendLongRunNotice, type LongRunRequester } from './long-run-notice';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
@@ -1777,9 +1779,12 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     canAutoResume && state.terminal === 'paused' && state.limit
       ? { ...state, limit: { ...state.limit, autoResumeAt: resumeAtFor(state.limit) } }
       : state;
+  // English progress notes in a Chinese conversation are hidden (see the
+  // helper); the conversation's language is read off what the caller wrote.
+  const locale = detectLocale(batch.map((m) => m.content));
   const filterForPrefs = (raw: RunState): RunState => {
     lastRawState = raw;
-    const state = withAutoResume(stripControlMarkers(raw));
+    const state = withAutoResume(stripControlMarkers(withoutOffLocaleProgress(raw, locale)));
     if (getShowToolCalls(controls.cfg)) return state;
     return {
       ...state,
