@@ -79,7 +79,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   }
 
   if (state.terminal === 'interrupted') {
-    elements.push(noteMd('_⏹ 已被中断_'));
+    elements.push(noteMd(interruptedNote(state)));
   } else if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;
     elements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
@@ -307,6 +307,11 @@ export function formatClock(ms: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
 }
 
+/** Terminal note for an interrupted run: a recall-cancel says so. */
+export function interruptedNote(state: RunState): string {
+  return state.interruptReason === 'recalled' ? '_↩️ 消息已撤回，任务已取消_' : '_⏹ 已被中断_';
+}
+
 /** `8 秒前`, `2 分钟前`. */
 export function formatAgo(ms: number): string {
   const secs = Math.max(0, Math.floor(ms / 1000));
@@ -315,7 +320,7 @@ export function formatAgo(ms: number): string {
 }
 
 function summaryText(state: RunState): string {
-  if (state.terminal === 'interrupted') return '已中断';
+  if (state.terminal === 'interrupted') return state.interruptReason === 'recalled' ? '已撤回' : '已中断';
   if (state.terminal === 'idle_timeout') return '已超时';
   if (state.terminal === 'paused') return '额度用完，已暂停';
   if (state.terminal === 'error') return '出错';

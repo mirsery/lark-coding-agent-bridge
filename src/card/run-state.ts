@@ -46,6 +46,9 @@ export interface RunState {
   quota?: { limitType?: string; resetsAt?: number };
   /** Set once a request was refused for quota; the run ends `paused`. */
   limit?: RunLimit;
+  /** Set when terminal === 'interrupted' because the message that started
+   * the run was recalled — the card says so instead of a plain "stopped". */
+  interruptReason?: 'recalled';
 }
 
 export const initialState: RunState = {

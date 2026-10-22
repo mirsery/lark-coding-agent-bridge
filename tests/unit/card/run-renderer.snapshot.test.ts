@@ -134,6 +134,23 @@ describe('run card renderer snapshots', () => {
     expect(interrupted.header?.template).toBe('grey');
   });
 
+  it('says a recall-cancelled run was cancelled because its message was recalled', () => {
+    const recalled: RunState = {
+      ...markInterrupted(stateFrom([{ type: 'text', delta: 'partial' }])),
+      interruptReason: 'recalled',
+    };
+    const rendered = renderCard(recalled) as { config?: { summary?: { content?: string } } };
+    const card = JSON.stringify(rendered);
+    expect(card).toContain('消息已撤回，任务已取消');
+    expect(rendered.config?.summary?.content).toBe('已撤回');
+    expect(card).not.toContain('已被中断');
+    expect(renderText(recalled)).toContain('消息已撤回，任务已取消');
+
+    const stopped = markInterrupted(stateFrom([{ type: 'text', delta: 'partial' }]));
+    expect(JSON.stringify(renderCard(stopped))).toContain('已被中断');
+    expect(renderText(stopped)).toContain('已被中断');
+  });
+
   it('signs the byline with the sponsoring account when known', () => {
     const card = renderCard(stateFrom([{ type: 'done', terminationReason: 'normal' }]), {
       meta: { title: 'CC', agent: 'claude', model: 'Opus 5', provider: 'anthropic', sponsor: 'first.last' },

@@ -141,6 +141,7 @@ import { lookupMessageThreadId } from './thread-id';
 import { addDoneReaction, addSupplementReaction, addWorkingReaction, removeReaction } from './reaction';
 import { maySupplement, quotesRun, SUPPLEMENT_INSTRUCTION, supplementPreview, supplementSignal } from './supplement';
 import { mediaPlaceholders } from './media-placeholders';
+import { applyRecall, parseRecallEvent, RECALL_EVENT, RecalledMessages, settleEarlyRecalls } from './recall';
 import { detectLocale } from '../card/locale';
 import { withoutOffLocaleProgress } from '../card/progress-language';
 import { planLongRunNotice, sendLongRunNotice, type LongRunRequester } from './long-run-notice';
@@ -525,6 +526,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   const channel = createLarkChannel(opts);
   channelRef = channel;
+  // 撤回消息: recently recalled ids, for messages caught between queue and run.
+  const recalled = new RecalledMessages();
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
 
   // Pending → run handoff: while a run is active on a chat, block its pending
@@ -532,7 +535,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // unblock arms a fresh quiet-window timer. Net effect: at most one run per
   // chat in flight, and everything sent during a run merges into the next
   // batch (only flushed once 600ms of silence has passed *after* the run).
-  const pending = new PendingQueue(DEBOUNCE_MS, (scope, batch) => {
+  const pending = new PendingQueue(DEBOUNCE_MS, (scope, queued) => {
+    // A recall can land after intake but before the queue had the message.
+    const batch = queued.filter((m) => !recalled.has(m.messageId));
+    if (batch.length < queued.length) {
+      log.info('recall', 'dropped-at-flush', { scope, dropped: queued.length - batch.length });
+    }
     const firstMsg = batch[0];
     if (!firstMsg) return;
     pending.block(scope);
@@ -578,6 +586,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           mode,
           runs,
           autoResumer,
+          activeRuns,
+          recalled,
           ...(knowledge ? { knowledge } : {}),
         });
       } catch (err) {
@@ -634,6 +644,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           logThreadModeOverride,
           executor,
           pool,
+          recalled,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -709,6 +720,29 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       }
     },
   });
+
+  // 撤回消息: rides the existing connection like the meeting events below
+  // (a second long connection would split delivery). Only arrives once the
+  // app subscribes to "消息被撤回" in the developer console.
+  if (typeof channel.onRawEvent === 'function') {
+    channel.onRawEvent(RECALL_EVENT, (raw) => {
+      const evt = parseRecallEvent(raw);
+      if (!evt) {
+        log.warn('recall', 'unparsed', {});
+        return;
+      }
+      const outcome = applyRecall(evt.messageId, { pending, activeRuns, recalled });
+      log.info('recall', outcome.action, {
+        msgId: evt.messageId,
+        chatId: evt.chatId,
+        recallType: evt.recallType,
+        ...(outcome.action === 'none' ? {} : { scope: outcome.scope }),
+        ...(outcome.action === 'voided' ? { injected: outcome.injected } : {}),
+      });
+    });
+  } else {
+    log.warn('recall', 'hook-unavailable', { reason: 'channel 不支持 onRawEvent' });
+  }
 
   // In-meeting agent. Created before connect() so the `vc.bot.*` handlers are
   // installed on the event dispatcher before any push can arrive; sessions are
@@ -1086,6 +1120,7 @@ interface IntakeDeps {
   logThreadModeOverride: LogThreadModeOverride;
   executor: RunExecutor;
   pool: ProcessPool;
+  recalled?: RecalledMessages;
 }
 
 type LogThreadModeOverride = (input: {
@@ -1163,6 +1198,10 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     preview,
     resources: msg.resources.length,
   });
+  if (deps.recalled?.has(msg.messageId)) {
+    log.info('intake', 'skip-recalled', { scope, msgId: msg.messageId });
+    return;
+  }
 
   const accessDecision =
     msg.chatType === 'p2p'
@@ -1251,7 +1290,26 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
   // User tasks come first: an automatic 梦境整理 still drafting stops here.
   deps.controls.dream?.preempt('有新的用户消息');
-  if (await tryInjectSupplement({ channel, activeRuns, media, controls, msg: emsg, scope, mode: chatMode })) return;
+  if (
+    await tryInjectSupplement({
+      channel,
+      activeRuns,
+      media,
+      controls,
+      msg: emsg,
+      scope,
+      mode: chatMode,
+      ...(deps.recalled ? { recalled: deps.recalled } : {}),
+    })
+  ) {
+    return;
+  }
+
+  // Recalled while intake was still resolving it.
+  if (deps.recalled?.has(emsg.messageId)) {
+    log.info('intake', 'skip-recalled', { scope, msgId: emsg.messageId });
+    return;
+  }
   const size = pending.push(scope, emsg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
 }
@@ -1271,6 +1329,7 @@ async function tryInjectSupplement(deps: {
   msg: NormalizedMessage;
   scope: string;
   mode: ChatMode;
+  recalled?: RecalledMessages;
 }): Promise<boolean> {
   const { channel, activeRuns, media, controls, msg, scope, mode } = deps;
   const handle = activeRuns.get(scope);
@@ -1302,9 +1361,12 @@ async function tryInjectSupplement(deps: {
     undefined,
     isOwnerBatch(controls, [msg], (m) => senderTypeOf(m) === 'bot'),
   );
-  // The run may have wrapped up while attachments were downloading.
+  // The run may have wrapped up (or the message been recalled) while
+  // attachments were downloading.
   const injected =
-    activeRuns.get(scope) === handle && handle.run.inject(prompt, supplementPreview(msg.content, attachments.length));
+    !deps.recalled?.has(msg.messageId) &&
+    activeRuns.get(scope) === handle &&
+    handle.run.inject(prompt, supplementPreview(msg.content, attachments.length));
   if (!injected) {
     log.info('supplement', 'fallback-queue', { scope, msgId: msg.messageId, signal });
     return false;
@@ -1336,6 +1398,8 @@ interface RunBatchDeps {
   runs?: RunRegistry;
   knowledge?: KnowledgeStore;
   autoResumer?: AutoResumer;
+  activeRuns?: ActiveRuns;
+  recalled?: RecalledMessages;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -1686,6 +1750,12 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     initiators: new Set(batch.map((m) => m.senderId)),
   };
   handle.supplement = supplementTarget;
+  if (deps.activeRuns && deps.recalled) {
+    // Recalled while this batch was being prepared (context, pool slot).
+    for (const outcome of settleEarlyRecalls(scope, handle, { activeRuns: deps.activeRuns, recalled: deps.recalled })) {
+      log.info('recall', outcome.action, { scope, early: true });
+    }
+  }
   handle.onLedger = (ledger) => runs?.annotate(execution.runId, { ledger });
   for (const id of supplementTarget.initiators) handle.initiators?.add(id);
   const eventStream = execution.subscribe();

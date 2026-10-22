@@ -235,6 +235,7 @@ Before step 2, make sure the app is ready on the Open Platform:
 
 - **Bot** capability is enabled.
 - **Event subscription** uses **long connection** and subscribes to *Receive messages* (`im.message.receive_v1`); otherwise the bot never sees a message.
+- To cancel a task when its message is recalled, also subscribe to *Message recalled* (`im.message.recalled_v1`) and publish a version: a queued message is dropped; a run whose every message was recalled is stopped and its card says the message was recalled; a partly recalled run is told to disregard that message and goes on.
 - The app is **not already bound to another profile**. Two profiles on one app both consume the same events and answer the same message twice.
 
 Add `--tenant lark` for a Lark global app. Day-to-day management is the same as any profile: `restart` / `stop --profile codex`, or `lark-channel-bridge ui` for the web console.

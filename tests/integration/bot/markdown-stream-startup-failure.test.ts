@@ -60,6 +60,9 @@ interface FakeLarkChannel {
     };
   };
   on(handlers: MessageHandlerMap): void;
+  /** `onRawEvent` subscribers by event type, for pushing raw events in tests. */
+  rawHandlers: Map<string, Array<(payload: unknown) => void | Promise<void>>>;
+  onRawEvent(eventType: string, handler: (payload: unknown) => void | Promise<void>): () => void;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   getChatMode(chatId: string): Promise<'group' | 'topic'>;
@@ -547,6 +550,88 @@ describe('markdown stream startup failures', () => {
       expect(run.injected).toHaveLength(0);
       run.release();
       await waitFor(() => h.agent.runs.length === 2);
+    });
+  });
+
+  describe('recalled messages', () => {
+    const recall = async (h: { channel: FakeLarkChannel }, messageId: string): Promise<void> => {
+      for (const handler of h.channel.rawHandlers.get('im.message.recalled_v1') ?? []) {
+        await handler({ message_id: messageId, chat_id: 'oc_dm', recall_type: 'message_owner' });
+      }
+    };
+    const paused = (visible: string[] = []): Parameters<typeof createHarness>[0] => ({
+      agentKind: 'claude',
+      pause: { afterEvents: 1 },
+      events: [
+        [
+          { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'sleep 60' } },
+          { type: 'text', delta: 'answer' },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+        [{ type: 'done', terminationReason: 'normal' }],
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void>; messageId: string }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            visible.push(markdown);
+          }),
+          messageId: 'om_stream',
+        });
+      },
+    });
+
+    it('cancels the running task when the message that started it is recalled', async () => {
+      const visible: string[] = [];
+      const h = await createHarness(paused(visible));
+      await startTestBridge(h);
+      await h.channel.handlers.message?.(message('om_task', '查一下 EUR 的日志'));
+      await waitFor(() => h.agent.runs.length === 1);
+
+      await recall(h, 'om_task');
+      const run = h.agent.runs[0]!;
+      expect(run.stopped).toBe(true);
+      run.release();
+      await waitFor(() => visible.some((markdown) => markdown.includes('消息已撤回，任务已取消')));
+      expect(visible.some((markdown) => markdown.includes('已被中断'))).toBe(false);
+    });
+
+    it('tells the agent to disregard one recalled message of a batch and keeps going', async () => {
+      const h = await createHarness(paused());
+      await startTestBridge(h);
+      await h.channel.handlers.message?.(message('om_a', '查一下 EUR 的日志'));
+      await h.channel.handlers.message?.(message('om_b', '顺便看下 AUS'));
+      await waitFor(() => h.agent.runs.length === 1);
+
+      await recall(h, 'om_a');
+      const run = h.agent.runs[0]!;
+      await waitFor(() => run.injected.length === 1);
+      expect(run.injected[0]).toContain('用户撤回了消息 om_a');
+      expect(run.stopped).toBe(false);
+    });
+
+    it('drops a queued message that is recalled before it runs', async () => {
+      const h = await createHarness(paused());
+      await startTestBridge(h);
+      await h.channel.handlers.message?.(message('om_task', '查一下 EUR 的日志'));
+      await waitFor(() => h.agent.runs.length === 1);
+
+      await h.channel.handlers.message?.(message('om_new', '另一个问题'));
+      await recall(h, 'om_new');
+      h.agent.runs[0]!.release();
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      expect(h.agent.runs).toHaveLength(1);
+    });
+
+    it('ignores a message whose recall arrived before it did', async () => {
+      const h = await createHarness(paused());
+      await startTestBridge(h);
+      await recall(h, 'om_late');
+      await h.channel.handlers.message?.(message('om_late', '查一下 EUR 的日志'));
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      expect(h.agent.runs).toHaveLength(0);
     });
   });
 
@@ -1323,6 +1408,15 @@ function createFakeLarkChannel(harnessOptions: {
     },
     on(nextHandlers) {
       Object.assign(handlers, nextHandlers);
+    },
+    rawHandlers: new Map(),
+    onRawEvent(eventType, handler) {
+      const list = channel.rawHandlers.get(eventType) ?? [];
+      list.push(handler);
+      channel.rawHandlers.set(eventType, list);
+      return () => {
+        channel.rawHandlers.set(eventType, (channel.rawHandlers.get(eventType) ?? []).filter((h) => h !== handler));
+      };
     },
     async connect() {},
     async disconnect() {},

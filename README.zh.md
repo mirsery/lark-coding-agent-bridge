@@ -236,6 +236,7 @@ lark-channel-bridge profile list
 
 - 已开启 **机器人** 能力。
 - **事件订阅** 选 **长连接**，并订阅「接收消息」（`im.message.receive_v1`），否则机器人收不到任何消息。
+- 想让撤回消息时自动取消对应任务，再订阅「消息被撤回」（`im.message.recalled_v1`）并发布版本：排队中的消息直接移出；任务收到的消息全部撤回时终止任务，卡片写「消息已撤回，任务已取消」；只撤回其中一部分时，让 agent 忽略那条消息继续做。
 - 这个应用 **没有被别的 profile 占用**。一个应用接两个 profile，两边会消费同一批事件，同一条消息会被回复两次。
 
 Lark 国际版应用加 `--tenant lark`。日常管理和其他 profile 一样：`restart` / `stop --profile codex`，或用 `lark-channel-bridge ui` 打开网页控制台。

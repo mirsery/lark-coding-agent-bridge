@@ -1,5 +1,6 @@
 import { maskEmails } from './mask-email';
 import { pauseNotice } from './pause-notice';
+import { interruptedNote } from './run-renderer';
 import type { Block, RunState, ToolEntry } from './run-state';
 import { toolHeaderText } from './tool-render';
 
@@ -22,7 +23,7 @@ export function renderText(state: RunState): string {
   }
 
   if (state.terminal === 'interrupted') {
-    parts.push('_⏹ 已被中断_');
+    parts.push(interruptedNote(state));
   } else if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;
     parts.push(`_⏱ ${mins} 分钟无响应,已自动终止_`);
