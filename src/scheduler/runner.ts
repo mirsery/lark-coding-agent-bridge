@@ -252,6 +252,7 @@ async function cardOptions(deps: JobRunnerDeps, chatId: string): Promise<RunCard
       provider: agentDescriptor(profileConfig.agentKind).provider,
       sponsor: await agentAccountName(profileConfig),
     },
+    ...(deps.controls.codeSnippets ? { copyCode: (code: string) => deps.controls.codeSnippets!.put(code) } : {}),
   };
 }
 

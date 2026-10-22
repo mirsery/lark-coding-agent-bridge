@@ -28,6 +28,7 @@ import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth, operatorForAction } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
+import { CodeSnippetStore } from '../card/code-snippets';
 import { fitCardToBudget, fullText } from '../card/card-budget';
 import { runningToolLabel } from '../card/run-activity';
 import { renderCard } from '../card/run-renderer';
@@ -457,6 +458,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   const pendingRotations = new PendingRotationStore(deps.appPaths?.rotationsFile);
   await pendingRotations.load();
   controls.pendingRotations = pendingRotations;
+  // 复制代码: finished cards' copy buttons carry a key into this store.
+  if (deps.appPaths?.profileDir) {
+    const codeSnippets = new CodeSnippetStore(join(deps.appPaths.profileDir, 'code-snippets.json'));
+    await codeSnippets.load();
+    controls.codeSnippets = codeSnippets;
+  }
   // 群聊 / 话题上下文: per scope, the newest message a run was given — where
   // the next run's catch-up of what the group said in between starts.
   const contextCursors = new ChatContextCursorStore(deps.appPaths?.contextCursorsFile);
@@ -1871,6 +1878,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       provider: capability.descriptor.provider,
       ...(flow.rotated ? { notice: rotationNotice(flow.rotated) } : {}),
     },
+    ...(controls.codeSnippets ? { copyCode: (code: string) => controls.codeSnippets!.put(code) } : {}),
     ...(callbackAuth
       ? {
           signCallback: (action: string) =>

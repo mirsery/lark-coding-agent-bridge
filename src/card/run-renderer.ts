@@ -1,4 +1,5 @@
 import { runningToolLabel } from './run-activity';
+import { extractCodeBlocks } from './code-snippets';
 import { deepMaskEmails } from './mask-email';
 import { pauseNotice } from './pause-notice';
 import type { Block, FooterStatus, RunState, Terminal, ToolEntry } from './run-state';
@@ -42,7 +43,16 @@ export interface RunCardRenderOptions {
   meta?: RunCardMeta;
   /** Live clock for the running footer. See {@link RunActivity}. */
   activity?: RunActivity;
+  /**
+   * Keep a code block for its copy button and return the key the button
+   * carries. When set, a finished card gets one 「复制代码」 button per fenced
+   * block in the answer (see {@link copyButtons}).
+   */
+  copyCode?: (code: string) => string;
 }
+
+/** Copy buttons past this many would crowd the card; later blocks get none. */
+export const MAX_COPY_BUTTONS = 6;
 
 /**
  * How long the run has been going and how long since the agent last did
@@ -95,6 +105,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     if (state.footer) elements.push(footerStatus(state.footer, options.activity, runningToolLabel(state)));
     elements.push(stopButton(options));
   } else {
+    if (options.copyCode) elements.push(...copyButtons(state, options.copyCode));
     elements.push(...byline(options.meta));
   }
 
@@ -279,6 +290,40 @@ function stopButton(options: RunCardRenderOptions): object {
     confirm: { title: { tag: 'plain_text', content: '终止任务？' }, text: { tag: 'plain_text', content: '将终止当前任务及其子进程。' } },
     behaviors: [{ type: 'callback', value }],
   };
+}
+
+/**
+ * Feishu cards can't write the clipboard, and their code blocks have no copy
+ * icon, so each code block gets a button: a click makes the bridge send that
+ * block alone as a plain-text message, which long-press / right-click 复制
+ * copies whole. The button carries only the snippet's key.
+ */
+function copyButtons(state: RunState, copyCode: (code: string) => string): object[] {
+  const text = state.blocks
+    .filter((b): b is Extract<Block, { kind: 'text' }> => b.kind === 'text')
+    .map((b) => b.content)
+    .join('\n');
+  const blocks = extractCodeBlocks(text).slice(0, MAX_COPY_BUTTONS);
+  if (blocks.length === 0) return [];
+  const columns = blocks.map((block, i) => ({
+    tag: 'column',
+    width: 'auto',
+    elements: [
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: copyLabel(blocks.length > 1 ? i + 1 : undefined, block.lang) },
+        type: 'default',
+        size: 'small',
+        behaviors: [{ type: 'callback', value: { cmd: `copycode.${copyCode(block.code)}` } }],
+      },
+    ],
+  }));
+  return [{ tag: 'column_set', flex_mode: 'flow', horizontal_spacing: '8px', columns }];
+}
+
+/** `📋 复制代码` for a lone block, `📋 复制 #2 SQL` when there are several. */
+function copyLabel(index: number | undefined, lang: string): string {
+  return `📋 复制${index ? ` #${index}` : '代码'}${lang ? ` ${lang.toUpperCase()}` : ''}`;
 }
 
 function footerStatus(status: Exclude<FooterStatus, null>, activity?: RunActivity, toolLabel?: string): object {
