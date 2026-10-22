@@ -49,6 +49,8 @@ export interface RunState {
   /** Set when terminal === 'interrupted' because the message that started
    * the run was recalled — the card says so instead of a plain "stopped". */
   interruptReason?: 'recalled';
+  /** The account the agent reported paying for the run (last one after a failover). */
+  sponsor?: string;
 }
 
 export const initialState: RunState = {
@@ -145,6 +147,25 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       };
       return { ...state, quota, limit };
     }
+
+    case 'account': {
+      if (!evt.switchedFrom) return { ...state, sponsor: evt.label };
+      // Moved to another account mid-task: say so where it happened, and drop
+      // the refusal that caused it — the task goes on, it is not paused.
+      const note: Block = {
+        kind: 'text',
+        content: `🔄 **账户 ${evt.switchedFrom} 额度用尽，已切换到 ${evt.label} 继续**\n\n`,
+        streaming: false,
+      };
+      const { limit: _limit, ...rest } = state;
+      return {
+        ...rest,
+        sponsor: evt.label,
+        blocks: [...closeStreamingText(state.blocks), note],
+        footer: 'thinking',
+      };
+    }
+
     case 'subagent_activity':
       return { ...state, subagent: evt };
 
