@@ -1,4 +1,5 @@
 import type { SupplementTarget } from './active-runs';
+import { mediaPlaceholders } from './media-placeholders';
 
 /**
  * Leading markers that mean "add this to the task that is running" rather
@@ -51,7 +52,7 @@ export function maySupplement(target: SupplementTarget, senderId: string, isOwne
 
 /** One-line preview for the reply's「收到补充」marker (prefix dropped — the marker says it). */
 export function supplementPreview(content: string, attachmentCount: number): string {
-  const text = content.replace(/\s+/g, ' ').trim().replace(SUPPLEMENT_PREFIX_TRIM_RE, '');
+  const text = mediaPlaceholders(content).replace(/\s+/g, ' ').trim().replace(SUPPLEMENT_PREFIX_TRIM_RE, '');
   if (!text) return attachmentCount > 0 ? `（${attachmentCount} 个附件）` : '（空消息）';
   return text.length > PREVIEW_MAX ? `${text.slice(0, PREVIEW_MAX)}…` : text;
 }
