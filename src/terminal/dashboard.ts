@@ -1,11 +1,21 @@
 import { foreground, type MonitorTheme } from './theme';
 
-/** 通用终端字符动画：独立占用四行，不依赖图片或终端专属接口。 */
-export const CAT_WIDTH = 16;
+/**
+ * 通用终端字符动画：AlphaESS 吉祥物——戴帽子的猫推着平板车上的储能柜，独立占用五行，
+ * 不依赖图片或终端专属接口。向左走时镜像图形，柜子上的「A」保持原样可读。
+ */
+const MASCOT = [
+  '  /\\.--.__      .-----.',
+  '  ( o.o )       | A  ||',
+  '  /|###|>==.    |    ||',
+  ' ~ |___|    \\___|____||',
+];
+// 腿交替迈步，轮子跟着转；轮子在平板两端下方。
+const STRIDES = ['   /   \\     o       o', '    | |      O       O'];
+export const CAT_WIDTH = Math.max(...[...MASCOT, ...STRIDES].map(row => row.length));
 export function renderCat(frame: number, direction: 'left' | 'right' = 'right'): string[] {
   const step = ((frame % 6) + 6) % 6;
-  const legs = step % 2 ? '  /_/-\\_\\' : '  (_/  \\_)';
-  const art = ['     /\\_/\\', ' ___( o.o )', `(~___ >^< )`, legs].map(row => row.padEnd(CAT_WIDTH));
+  const art = [...MASCOT, STRIDES[step % 2]!].map(row => row.padEnd(CAT_WIDTH));
   const mirror: Record<string, string> = { '/': '\\', '\\': '/', '(': ')', ')': '(', '<': '>', '>': '<' };
   return direction === 'right' ? art : art.map(row => [...row].reverse().map(char => mirror[char] ?? char).join(''));
 }

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { catPatch, catPosition, renderCat } from '../../../src/terminal/dashboard';
+import { CAT_WIDTH, catPatch, catPosition, renderCat } from '../../../src/terminal/dashboard';
 import { renderMonitor } from '../../../src/terminal/monitor';
 
 it('animates only a bounded top corner without clearing or scrolling the viewport', () => {
@@ -17,7 +17,8 @@ it('animates only a bounded top corner without clearing or scrolling the viewpor
 it('keeps metrics above sessions, with bars in roomy terminals and compact small screens', () => {
   const snap = { now: 1000, host: 'host', cores: 8, load: 1, bots: [{ profile: 'test', name: 'Busy', agent: 'agent', online: true, runs: [{ runId: 'id', scope: 'scope', chatId: 'chat', originMessageId: 'msg', promptPreview: '保持任务可见', startedAt: 0, ownerPid: process.pid, orphan: false }] }], metrics: { cpuPercent: 45, memoryTotal: 16 * 1024 ** 3, memoryNonFree: 12 * 1024 ** 3, uptimeSeconds: 600, disk: { total: 100, used: 70, available: 30, sampledAt: 1000 } } };
   const view = renderMonitor(snap, 110, 36, false);
-  expect(view).toContain('/\\_/\\');
+  expect(view).toContain('( o.o )');
+  expect(view).toContain('| A  ||');
   expect(view).toContain('█');
   expect(view.indexOf('CPU')).toBeLessThan(view.indexOf('Busy'));
   expect(view).toContain('保持任务可见');
@@ -33,8 +34,8 @@ it('turns at both edges without jumping and faces its direction of travel', () =
   for (const columns of [80, 110, 238]) {
     const first = catPosition(columns, 36, 0)!;
     expect(catPosition(columns, 36, 1)!.column).toBeGreaterThan(first.column);
-    const steps = Math.ceil((columns - 16 - 4) / 2);
-    expect(catPosition(columns, 36, steps)!.column).toBe(columns - 17);
+    const steps = Math.ceil((columns - CAT_WIDTH - 4) / 2);
+    expect(catPosition(columns, 36, steps)!.column).toBe(columns - CAT_WIDTH - 1);
     expect(catPosition(columns, 36, steps)!.direction).toBe('left');
     expect(catPosition(columns, 36, steps * 2)!.column).toBe(first.column);
     expect(catPosition(columns, 36, steps * 2)!.direction).toBe('right');
@@ -42,7 +43,7 @@ it('turns at both edges without jumping and faces its direction of travel', () =
     for (let frame = 1; frame < 500; frame++) {
       const at = catPosition(columns, 36, frame)!;
       expect(at.column).toBeGreaterThanOrEqual(3);
-      expect(at.column + 16).toBeLessThan(columns);
+      expect(at.column + CAT_WIDTH).toBeLessThan(columns);
       expect(Math.abs(at.column - previous.column)).toBeLessThanOrEqual(2);
       expect(at.row).toBe(3);
       const direction = catPosition(columns, 36, frame + 1)!.column < at.column ? 'left' : 'right';
@@ -51,7 +52,10 @@ it('turns at both edges without jumping and faces its direction of travel', () =
       previous = at;
     }
     const patch = catPatch(columns, 36, 1, false);
-    expect(patch).toContain(`\x1b[3;${first.column}H${' '.repeat(16)}`);
+    // The previous frame is erased across the mascot's full width and all five rows.
+    expect(patch).toContain(`\x1b[3;${first.column}H${' '.repeat(CAT_WIDTH)}`);
+    expect(patch).toContain(`\x1b[7;${first.column}H${' '.repeat(CAT_WIDTH)}`);
+    expect(patch).not.toContain(`\x1b[8;`);
   }
 });
 it('keeps all of a bot\'s sessions in its one closed card and preserves the terminal background in every theme', () => {
@@ -75,9 +79,27 @@ it('keeps all of a bot\'s sessions in its one closed card and preserves the term
   }
 });
 
-it('mirrors the cat when walking back to the left', () => {
+it('draws the capped mascot pushing an A-branded cabinet, mirrored without mirroring the letter', () => {
+  expect(CAT_WIDTH).toBeLessThanOrEqual(26);
   expect(renderCat(0, 'left')).not.toEqual(renderCat(0, 'right'));
   for (const direction of ['left', 'right'] as const) {
-    expect(renderCat(1, direction).every(row => row.length === 16)).toBe(true);
+    for (const frame of [0, 1]) {
+      const art = renderCat(frame, direction);
+      expect(art).toHaveLength(5);
+      expect(art.every(row => row.length === CAT_WIDTH)).toBe(true);
+      const text = art.join('\n');
+      expect(text).toContain('( o.o )');
+      expect(text).toContain('.--.');
+      expect(text).toMatch(/[oO] {7}[oO]/);
+    }
   }
+  // Walking right the cat pushes from the left; walking left the cart leads on the left.
+  expect(renderCat(0, 'right')[1]!.indexOf('o.o')).toBeLessThan(renderCat(0, 'right')[1]!.indexOf('A'));
+  expect(renderCat(0, 'left')[1]!.indexOf('A')).toBeLessThan(renderCat(0, 'left')[1]!.indexOf('o.o'));
+  expect(renderCat(0, 'right')[1]).toContain('| A  ||');
+  expect(renderCat(0, 'left')[1]).toContain('||  A |');
+  expect(renderCat(0, 'right')[0]).toContain('/\\.--.__');
+  expect(renderCat(0, 'left')[0]).toContain('__.--./\\');
+  // Legs and wheels alternate between frames.
+  expect(renderCat(0, 'right')[4]).not.toEqual(renderCat(1, 'right')[4]);
 });
