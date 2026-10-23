@@ -46,7 +46,6 @@ export interface MonitorView {
   cores: number;
   load: number;
   metrics?: HostMetrics;
-  networkHistory: Array<{ read: number; write: number }>;
   bots: MonitorBotView[];
 }
 
@@ -117,7 +116,6 @@ export async function monitorView(
     cores: snap.cores,
     load: snap.load,
     ...(snap.metrics ? { metrics: snap.metrics } : {}),
-    networkHistory: snap.networkHistory ?? [],
     bots,
   };
 }

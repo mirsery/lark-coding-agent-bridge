@@ -79,12 +79,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     const gauge = (label: string, value: number | null, caption: string) => line(label, 37, 6) + bar(value, barWidth) + line('  ' + caption, 37, Math.max(0, half - 6 - barWidth));
     const heading = (label: string) => line(label + '  ' + '─'.repeat(half), 35, half);
     const row = (left: string, right: string) => left + '    ' + right;
-    const spark = (key: 'read' | 'write') => {
-      const values = (s.networkHistory ?? []).map(sample => sample[key]);
-      if (!values.length) return '─'.repeat(12);
-      const max = Math.max(1, ...values);
-      return values.map(value => '▁▂▃▄▅▆▇█'[Math.min(7, Math.floor(value / max * 7))]).join('').padStart(24, ' ');
-    };
+    const rate = (label: string, value: number | undefined) => line(label, 37, 6) + line(value === undefined ? '—' : speed(value), 92, half - 6);
     if (w >= 76 && rows >= 30) {
       out.push(row(heading('◉ CPU'), heading('▥ Memory')),
         row(gauge('Total', m.cpuPercent, percent(m.cpuPercent)), gauge('Used', ram, percent(ram))),
@@ -92,12 +87,9 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
           line(`RAM ${gib(m.memoryNonFree)} / ${gib(m.memoryTotal)}G  ·  free ${gib(m.memoryTotal - m.memoryNonFree)}G*`, 90, half)),
         row(line('UP ' + Math.floor(m.uptimeSeconds / 86400) + 'd ' + Math.floor(m.uptimeSeconds % 86400 / 3600) + 'h', 90, half), gauge('Free', ram === null ? null : 100 - ram, percent(ram === null ? null : 100 - ram))),
         row(heading('▥ Disk'), heading('↕ Network')),
-        row(gauge('Used', disk, m.disk ? gib(m.disk.used) + 'G' : '—'),
-          line(io?.network ? `NET ↓ ${speed(io.network.read)} ↑ ${speed(io.network.write)}` : 'NET —', 92, half)),
-        row(line(m.disk ? `DISK ${gib(m.disk.total)}G total · ${gib(m.disk.available)}G free` : 'DISK —', 90, half),
-          line(io?.disk ? `IO R ${speed(io.disk.read)} W ${speed(io.disk.write)}` : 'IO —', 90, half)),
-        row(line('', 90, half), line('Down ' + spark('read'), 92, half)),
-        row(line('', 90, half), line('Up   ' + spark('write'), 92, half)));
+        row(gauge('Used', disk, m.disk ? gib(m.disk.used) + 'G' : '—'), rate('Down', io?.network?.read)),
+        row(line(m.disk ? `DISK ${gib(m.disk.total)}G total · ${gib(m.disk.available)}G free` : 'DISK —', 90, half), rate('Up', io?.network?.write)),
+        row(line('', 90, half), line(io?.disk ? `IO R ${speed(io.disk.read)} W ${speed(io.disk.write)}` : 'IO —', 90, half)));
     } else {
       out.push(line(`CPU ${percent(m.cpuPercent)}  RAM ${gib(m.memoryNonFree)}/${gib(m.memoryTotal)}G*  DISK ${m.disk ? gib(m.disk.available) + 'G free' : '—'}`));
       if (rows >= 24) out.push(line(`TEMP ${m.temperatureC == null ? '—' : m.temperatureC.toFixed(1) + '°C'}  ${io?.network ? 'NET ↓ ' + speed(io.network.read) + ' ↑ ' + speed(io.network.write) : 'NET —'}`));
@@ -130,7 +122,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   const header = (bot: MonitorBot, inner: number, level: number): string[] => {
     const active = bot.runs.filter(r => !r.orphan).length;
     const state = !bot.online ? 'OFFLINE' : active ? `WORKING · ${active} 个会话` : 'IDLE';
-    const lines = [pair(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}`, state, bot.online ? 36 : 90, inner, active ? 92 : 90)];
+    const lines = [pair(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}`, state, bot.online ? 36 : 90, inner)];
     const sub = bot.subscription;
     if (!sub || level >= 2) return lines;
     const windows = QUOTA_WINDOWS.map(([label, short]) => [short, sub.quota?.windows.find(window => window.label === label)] as const);
@@ -219,7 +211,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     if (!framed) return body;
     const edge = bot.online ? 36 : 90;
     const border = (left: string, right: string) => paint(left + '─'.repeat(outer - 2) + right, edge);
-    return [border('╭', '╮'), ...body.map(text => paint('│ ', edge) + text + paint(' │', edge)), border('╰', '╯')];
+    return [border('╭', '╮'), ...body.map(text => paint('│ ', 90) + text + paint(' │', 90)), border('╰', '╯')];
   };
 
   const gap = 2;
@@ -228,7 +220,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   const inner = outer >= 8 ? outer - 4 : outer;
   let hidden = 0;
   if (perRow > 1) {
-    // Side by side: each row of groups shares the height left, every column filled to the bottom.
+    // Side by side: each row of groups shares the height left; a row is as tall as its tallest group, not the window.
     let used = 0;
     for (let i = 0; i < bots.length; i += perRow) {
       const rowsLeft = Math.ceil((bots.length - i) / perRow);
@@ -236,8 +228,8 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
       const budget = rowsLeft > 1 ? Math.floor(remaining / rowsLeft) : remaining;
       const row = bots.slice(i, i + perRow);
       if (budget < Math.max(...row.map(bot => minimumHeight(bot, inner, 2)))) { hidden = bots.length - i; break; }
-      const blocks = row.map(bot => group(bot, outer, budget, true));
-      const groupHeight = Math.max(...blocks.map(b => b.length));
+      const groupHeight = Math.max(...row.map(bot => group(bot, outer, budget, false).length));
+      const blocks = row.map(bot => group(bot, outer, groupHeight, true));
       for (let r = 0; r < groupHeight; r++) {
         out.push(blocks.map(b => { const text = b[r] ?? ''; return text + ' '.repeat(Math.max(0, outer - cells(text))); }).join(' '.repeat(gap)).trimEnd());
       }

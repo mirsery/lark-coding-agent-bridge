@@ -15,7 +15,7 @@ import { readRunRecords, RUN_STALE_AFTER_MS, type RunRecord } from '../runtime/r
  */
 export interface Activity { ts: number; event: string; phase: string; tool?: string; traceId?: string; runId?: string; scope?: string }
 export interface MonitorBot { profile: string; name: string; agent: string; pid?: number; online: boolean; subscription?: MonitorSubscription; activity?: Activity; runs: Array<RunRecord & { orphan: boolean; activity?: Activity }> }
-export interface MonitorSnapshot { now: number; host: string; cores: number; load: number; bots: MonitorBot[]; metrics?: HostMetrics; networkHistory?: Array<{ read: number; write: number }> }
+export interface MonitorSnapshot { now: number; host: string; cores: number; load: number; bots: MonitorBot[]; metrics?: HostMetrics }
 
 /** What a run is doing right now, in words both the terminal and the console show. */
 export function activityLabel(a?: Activity): string {
@@ -65,8 +65,6 @@ export function createMonitorReader(intervalMs = 10_000) {
   const cache = new Map<string, LogCache>();
   const readSubscription = createSubscriptionReader();
   const sampleHost = createHostSampler(intervalMs);
-  const networkHistory: Array<{ read: number; write: number }> = [];
-  let ioSampledAt: number | undefined;
   return async (rootDir: string, profile?: string, now = Date.now(), waitForSubscription = false): Promise<MonitorSnapshot> => {
   const root = await loadRootConfig(join(rootDir, 'config.json')).catch(() => undefined);
   const entries = readAndPrune(join(rootDir, 'registry', 'processes.json'));
@@ -90,12 +88,7 @@ export function createMonitorReader(intervalMs = 10_000) {
       }).sort((a, b) => Number(a.orphan) - Number(b.orphan) || a.startedAt - b.startedAt) };
   }));
   const metrics = await sampleHost(now);
-  if (metrics.io?.network && metrics.io.sampledAt !== ioSampledAt) {
-    ioSampledAt = metrics.io.sampledAt;
-    networkHistory.push({ ...metrics.io.network });
-    if (networkHistory.length > 24) networkHistory.shift();
-  }
-  return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics, networkHistory: [...networkHistory] };
+  return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics };
   };
 }
 export async function readMonitor(rootDir: string, profile?: string, now = Date.now()): Promise<MonitorSnapshot> {

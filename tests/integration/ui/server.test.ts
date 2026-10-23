@@ -377,7 +377,6 @@ describe('ui server (supervisor-backed)', () => {
     snapshot = {
       now: 0, host: 'mac.local', cores: 8, load: 1.5,
       metrics: { cpuPercent: 12, memoryTotal: 16, memoryNonFree: 8, uptimeSeconds: 60 },
-      networkHistory: [{ read: 1, write: 2 }],
       bots: [
         { profile: 'claude', name: 'stale-name', agent: 'claude', online: true, runs: [record],
           subscription: { sponsor: 'alice', loading: false, quota: { blocked: true, windows: [
@@ -390,7 +389,7 @@ describe('ui server (supervisor-backed)', () => {
     };
 
     const view = await json(await get('/api/monitor', handle.token));
-    expect(view).toMatchObject({ host: 'mac', cores: 8, metrics: { cpuPercent: 12 }, networkHistory: [{ read: 1, write: 2 }] });
+    expect(view).toMatchObject({ host: 'mac', cores: 8, metrics: { cpuPercent: 12 } });
     // Stable snapshot order; a profile with nothing to show is left out.
     expect(view.bots.map((b: { profile: string }) => b.profile)).toEqual(['claude', 'work']);
     const [claude, work] = view.bots;

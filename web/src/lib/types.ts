@@ -150,7 +150,6 @@ export interface MonitorInfo {
   cores: number;
   load: number;
   metrics?: HostMetricsInfo;
-  networkHistory: Array<{ read: number; write: number }>;
   bots: MonitorBot[];
 }
 

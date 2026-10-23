@@ -79,7 +79,10 @@ describe('responsive monitor layout', () => {
     expect(Math.max(...lines.map(cells))).toBeGreaterThan(220);
     expect(lines.join('\n')).toContain('TEMP 56.2°C');
     expect(lines.join('\n')).toContain('IO R 2.0K/s W 4.0K/s');
-    expect(lines.join('\n')).toContain('NET ↓ 8.0K/s ↑ 16.0K/s');
+    // Network rates are plain numbers, not sparklines.
+    expect(lines.join('\n')).toMatch(/Down +8\.0K\/s/);
+    expect(lines.join('\n')).toMatch(/Up +16\.0K\/s/);
+    expect(lines.join('\n')).not.toMatch(/[▁▂▃▄▅▆▇]/);
   });
   it('stacks bots in ordinary windows and stays within narrow viewport dimensions', () => {
     expect(renderMonitor(snapshot, 110, 36, false).split('\n').some(line => line.includes('CC /') && line.includes('Poki /'))).toBe(false);
@@ -162,6 +165,11 @@ it('groups each bot into one card: its sponsor and quota on top, its sessions be
   const wide = renderMonitor(snap, 238, 67, false).split('\n');
   expect(wide.some(line => line.includes('Idle / agent') && line.includes('Busy / agent'))).toBe(true);
   expect(wide.some(line => line.includes('Sponsor: bob') && line.includes('Sponsor: alice'))).toBe(true);
+  // Side by side, both groups end on the same row as tall as the busier one; the footer follows, not the window bottom.
+  const bottom = wide.findIndex(line => line.includes('╰'));
+  expect(wide[bottom]!.match(/╰/g)).toHaveLength(2);
+  expect(wide.slice(bottom + 1).map(line => line.trim()).filter(Boolean)).toHaveLength(2);
+  expect(wide.length).toBeLessThan(40);
   for (const columns of [20, 48, 80, 110, 150, 238]) {
     for (const rows of [12, 24, 36]) {
       const output = renderMonitor(snap, columns, rows, false);
