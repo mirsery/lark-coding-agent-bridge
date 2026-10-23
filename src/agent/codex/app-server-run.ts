@@ -247,6 +247,12 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
       const item = record(params.item);
       if (item?.type === 'fileChange' && typeof item.id === 'string') fileChanges.set(item.id, changedPaths(item));
     }
+    const eventThread = str(params.threadId);
+    if (eventThread && threadId && eventThread !== threadId) {
+      // A sub-agent's thread: never this turn's messages, turn id or end.
+      if (turn) emit(turn.childNotification(method, params, eventThread));
+      return;
+    }
     if (method === 'turn/started') turnId = str(record(params.turn)?.id) ?? turnId;
     if (method === 'item/started') {
       // A supplement sent with turn/steer was read: Codex echoes it back.

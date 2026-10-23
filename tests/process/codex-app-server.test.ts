@@ -7,6 +7,7 @@ import type { AgentEvent, AgentRun, AgentRunOptions } from '../../src/agent/type
 import { initialState, reduce } from '../../src/card/run-state.js';
 
 const cleanup: string[] = [];
+const SUBAGENT_FIXTURE = join(__dirname, '../fixtures/codex-app-server-subagent.jsonl');
 afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((d) => rm(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 })));
 });
@@ -19,7 +20,9 @@ afterEach(async () => {
  * a turn/steer, echo it back as a userMessage item and answer it; LATE turns
  * refuse the steer (the turn was already ending) and finish without it.
  * LIMIT turns fail the way a used-up plan does; account/rateLimits/read then
- * reports the 5-hour window full.
+ * reports the 5-hour window full. SUBAGENT turns replay a real multi-agent
+ * turn (tests/fixtures/codex-app-server-subagent.jsonl): an MCP call, a
+ * sub-agent whose own thread's items and turn end arrive on the same stream.
  * Every message it receives is
  * appended to messages.jsonl; argv goes to argv.json.
  */
@@ -32,7 +35,7 @@ async function createFakeAppServer(): Promise<{ path: string; dir: string; messa
   await writeFile(
     path,
     `#!/usr/bin/env node
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 const argv = process.argv.slice(2);
 if (argv[0] === '--version') { console.log('codex-cli 0.159.2'); process.exit(0); }
@@ -87,6 +90,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return send({ id: 99, method: 'item/commandExecution/requestApproval', params: { threadId, turnId } });
     }
     if (text.includes('SLOW')) { slow = { threadId, turnId }; return; }
+    if (text.includes('SUBAGENT')) {
+      const lines = readFileSync(${JSON.stringify(SUBAGENT_FIXTURE)}, 'utf8').trim().split('\\n');
+      for (const l of lines) process.stdout.write(l.replaceAll('MAIN_THREAD', threadId) + '\\n');
+      return;
+    }
     if (text.includes('LIMIT')) {
       const error = { message: 'You’ve hit your usage limit. Upgrade to Pro, visit https://chatgpt.com/settings/usage to purchase more credits or try again at 8:35 PM.', codexErrorInfo: 'usageLimitExceeded' };
       send({ method: 'error', params: { error, willRetry: false, threadId, turnId } });
@@ -361,6 +369,36 @@ process.stdin.resume(); process.stdin.on('end', () => { console.log(JSON.stringi
     const methods = (await fake.messages()).map((m) => m.method);
     expect(methods).toContain('account/rateLimits/read');
     expect(methods.filter((m) => /credit/i.test(m ?? ''))).toEqual([]);
+    await run.stop();
+  });
+
+  it('keeps a sub-agent\'s own thread out of the reply and shows its steps as sub-agent activity', async () => {
+    const fake = await createFakeAppServer();
+    const cwd = await realpath(fake.dir);
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: join(fake.dir, 'home') });
+    const run = await preparedRun(adapter, { runId: 'sub1', prompt: 'SUBAGENT go', cwd });
+    const turn = await nextTurn(run.events[Symbol.asyncIterator]());
+
+    // The sub-agent's answer and turn end are not the reply's.
+    expect(turn.filter((e) => e.type === 'done')).toHaveLength(1);
+    expect(turn.find((e) => e.type === 'final_text')).toEqual({ type: 'final_text', content: 'MAIN done' });
+    expect(turn.some((e) => e.type === 'text' && e.delta.includes('child finished'))).toBe(false);
+    // Steps that used to be invisible: the MCP call and the sub-agent calls.
+    const tools = turn.filter((e) => e.type === 'tool_use').map((e) => e.type === 'tool_use' && [e.name, e.input]);
+    expect(tools).toEqual([
+      ['mcp__echo__say', { text: 'hello mcp' }],
+      ['Agent', { description: '启动子 agent：CHILD-TASK: run echo child-step' }],
+      ['Agent', { description: '等待子 agent' }],
+    ]);
+    expect(turn).toContainEqual({ type: 'tool_result', id: expect.any(String), output: 'echo: hello mcp', isError: false });
+    // The sub-agent's command shows under the wait call, without the command itself.
+    const waitId = turn.find((e) => e.type === 'tool_use' && (e.input as { description?: string }).description === '等待子 agent');
+    expect(turn).toContainEqual(
+      expect.objectContaining({ type: 'subagent_activity', parentToolUseId: (waitId as { id: string }).id, tool: 'command_execution', description: '运行命令' }),
+    );
+    const state = turn.reduce(reduce, initialState);
+    expect(state.terminal).toBe('done');
+    expect(state.blocks.filter((b) => b.kind === 'tool').every((b) => b.kind === 'tool' && b.tool.status === 'done')).toBe(true);
     await run.stop();
   });
 

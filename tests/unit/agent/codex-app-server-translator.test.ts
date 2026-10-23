@@ -55,4 +55,45 @@ describe('Codex app-server translator', () => {
       { type: 'error', message: 'codex app-server exited with code 1', terminationReason: 'failed' },
     ]);
   });
+
+  // Item shapes from the codex-cli 0.163 protocol schema (`app-server generate-ts`).
+  it('shows a web search once it knows the query, and what it did', () => {
+    const t = new CodexAppServerTranslator('thread-1');
+    expect(t.notification('item/started', { item: { type: 'webSearch', id: 'ws-1', query: '', action: null } })).toEqual([]);
+    expect(
+      t.notification('item/completed', {
+        item: { type: 'webSearch', id: 'ws-1', query: 'codex steer', action: { type: 'search', query: 'codex steer', queries: null } },
+      }),
+    ).toEqual([
+      { type: 'tool_use', id: 'ws-1', name: 'WebSearch', input: { query: 'codex steer' } },
+      { type: 'tool_result', id: 'ws-1', output: 'codex steer', isError: false },
+    ]);
+  });
+
+  it('shows plan updates as a step list', () => {
+    const t = new CodexAppServerTranslator('thread-1');
+    expect(
+      t.notification('turn/plan/updated', {
+        explanation: null,
+        plan: [
+          { step: 'read the code', status: 'completed' },
+          { step: 'fix it', status: 'inProgress' },
+          { step: 'test', status: 'pending' },
+        ],
+      }),
+    ).toEqual([
+      { type: 'tool_use', id: 'plan-1', name: 'update_plan', input: {} },
+      { type: 'tool_result', id: 'plan-1', output: '✅ read the code\n⏳ fix it\n⬜ test', isError: false },
+    ]);
+  });
+
+  it('reports a failed dynamic tool call as an error', () => {
+    const t = new CodexAppServerTranslator('thread-1');
+    t.notification('item/started', { item: { type: 'dynamicToolCall', id: 'd-1', tool: 'lookup', arguments: { q: 'x' }, status: 'inProgress' } });
+    expect(
+      t.notification('item/completed', {
+        item: { type: 'dynamicToolCall', id: 'd-1', tool: 'lookup', status: 'failed', success: false, contentItems: [{ type: 'inputText', text: 'nope' }] },
+      }),
+    ).toEqual([{ type: 'tool_result', id: 'd-1', output: 'nope', isError: true }]);
+  });
 });
