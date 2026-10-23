@@ -132,3 +132,40 @@ it('shows each bot sponsor and both quota windows with local reset times, includ
   expect(unknown).toContain('周 已用 —');
   expect(unknown).not.toContain('已用 0%');
 });
+
+it('lists quotas once per bot below the session heading, outside all task cards', () => {
+  const run = { runId: 'one', scope: 'chat', chatId: 'chat', originMessageId: 'msg', promptPreview: '检查布局', startedAt: 0, ownerPid: process.pid, orphan: false };
+  const subscription = { sponsor: 'alice', loading: false, quota: { windows: [
+    { label: '5 小时窗口', usedPercent: 12, resets: '2026-10-23T12:00:00Z' },
+    { label: '本周', usedPercent: 67, resets: '2026-10-25T12:00:00Z' },
+  ] } };
+  const snap = { now: Date.parse('2026-10-23T10:00:00Z'), host: 'host', cores: 8, load: 1, bots: [
+    { profile: 'busy', name: 'Busy', agent: 'agent', online: true, subscription, runs: [run, { ...run, runId: 'two' }] },
+    { profile: 'idle', name: 'Idle', agent: 'agent', online: true, subscription: { ...subscription, sponsor: 'bob' }, runs: [] },
+  ] };
+  for (const columns of [80, 238]) {
+    const output = renderMonitor(snap, columns, 67, false);
+    const beforeCards = output.slice(output.indexOf('会话'), output.indexOf('╭'));
+    expect(beforeCards).toContain('Busy / agent');
+    expect(beforeCards).toContain('Idle / agent');
+    expect(beforeCards).toContain('Sponsor: alice');
+    expect(beforeCards).toContain('Sponsor: bob');
+    expect(beforeCards).toContain('5h 已用 12%');
+    expect(beforeCards).toContain('周 已用 67%');
+    expect(output.match(/Sponsor: alice/g)).toHaveLength(1);
+    expect(output.match(/5h 已用 12%/g)).toHaveLength(2);
+    expect(output.slice(output.indexOf('╭'))).not.toContain('Sponsor:');
+    expect(output.slice(output.indexOf('╭'))).not.toContain('已用');
+    expect(output.match(/╭/g)).toHaveLength(3);
+    expect(output).toContain('检查布局');
+  }
+  for (const columns of [20, 48, 80, 110, 150, 238]) {
+    for (const rows of [12, 24, 36]) {
+      const output = renderMonitor(snap, columns, rows, false);
+      expect(output).toContain(rows >= 24 ? '检查布局' : 'Busy');
+      const lines = output.split('\n');
+      expect(lines.length).toBeLessThan(rows);
+      expect(lines.every(line => [...line].reduce((n, c) => n + ((c.codePointAt(0) ?? 0) >= 0x2e80 ? 2 : 1), 0) < columns)).toBe(true);
+    }
+  }
+});

@@ -164,7 +164,7 @@ lark-channel-bridge monitor --once
 lark-channel-bridge monitor --json
 ```
 
-Each bot card also shows its Sponsor, five-hour and weekly usage percentages, and reset times in the local timezone, including while idle. Account readings refresh asynchronously once a minute; unavailable values show `—`. One-shot and JSON output wait for the reading. With multiple Claude accounts, the card shows the account selected for the next task and its quota, falling back to that account’s latest run report. Short viewports prioritize bot and task information.
+Below the sessions heading, a separate list shows each bot’s Sponsor, five-hour and weekly usage percentages, and reset times in the local timezone, including while idle. Each bot appears once in this list, independently of its session cards. Account readings refresh asynchronously once a minute; unavailable values show `—`. One-shot and JSON output wait for the reading. With multiple Claude accounts, the list shows the account selected for the next task and its quota, falling back to that account’s latest run report. Short viewports prioritize bot and task information.
 
 The examples above refresh every five seconds; omitting `--interval` uses a ten-second sampling default. The walking cat independently clears its previous position and updates only its own area at two frames per second, without collecting metrics or reading logs. Use `--no-animation` to disable animation; small viewports hide the cat.
 

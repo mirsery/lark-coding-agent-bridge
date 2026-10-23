@@ -140,9 +140,9 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     return line(left, code, size - rightCells - 2) + '  ' + line(right, 90, rightCells);
   };
   const rule = () => line('─'.repeat(w), 90);
-  const ordered = [...s.bots].filter(b => b.online || b.runs.length || b.agent !== 'unknown')
-    .sort((a, b) => Number(b.runs.some(r => !r.orphan)) - Number(a.runs.some(r => !r.orphan)) || Number(b.online) - Number(a.online))
-    .flatMap(bot => bot.runs.length ? bot.runs.map(run => ({ ...bot, runs: [run] })) : [bot]);
+  const bots = [...s.bots].filter(b => b.online || b.runs.length || b.agent !== 'unknown')
+    .sort((a, b) => Number(b.runs.some(r => !r.orphan)) - Number(a.runs.some(r => !r.orphan)) || Number(b.online) - Number(a.online));
+  const ordered = bots.flatMap(bot => bot.runs.length ? bot.runs.map(run => ({ ...bot, runs: [run] })) : [bot]);
   const online = s.bots.filter(b => b.online).length;
   const running = s.bots.flatMap(b => b.runs).filter(r => !r.orphan).length;
   const out = [pair('LARK  /  CONTROL', paused ? 'PAUSED' : new Date(s.now).toLocaleTimeString(), 35),
@@ -196,7 +196,30 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   }
   out.push(line('会话  ' + '─'.repeat(Math.max(0, w - 6)), 35));
   const footer = [rule(), line((paused ? 'PAUSED  ·  ' : '') + 'q 退出  ·  空格暂停  ·  r 刷新' + (m ? '    *RAM 含系统缓存' : ''), 90)];
+  // Subscription belongs to a bot, while each card below belongs to a session.
+  const subscribed = bots.filter(bot => bot.subscription);
   const slots = w >= 146 && ordered.length > 1 ? 2 : 1;
+  const taskReserve = ordered.length ? 6 + Number(ordered.length > slots) : 0;
+  for (let i = 0; i < subscribed.length; i++) {
+    const bot = subscribed[i]!;
+    const sub = bot.subscription!;
+    const quotaLines = [line(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}  ·  Sponsor: ${sub.sponsor ?? (sub.loading ? '读取中…' : '—')}`, bot.online ? 36 : 90)];
+    for (const [label, short] of [['5 小时窗口', '5h'], ['本周', '周']]) {
+      const window = sub.quota?.windows.find(window => window.label === label);
+      const used = window ? `${Math.round(window.usedPercent)}%` : '—';
+      const at = quotaResetAt(window?.resets, s.now);
+      const reset = at === undefined ? (window?.resets ?? '—') : new Date(at).toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+      quotaLines.push(line(`    ${short} 已用 ${used} · 重置 ${reset}`, window && window.usedPercent >= 90 ? 91 : 90));
+    }
+    if (sub.quota?.blocked) quotaLines.push(line('    额度已用尽', 91));
+    const available = height - out.length - footer.length - taskReserve;
+    const later = i + 1 < subscribed.length;
+    if (quotaLines.length + Number(later) > available) {
+      if (available > 0) out.push(line(`+${subscribed.length - i} bots 额度 · 放大窗口查看`, 90));
+      break;
+    }
+    out.push(...quotaLines);
+  }
   const gap = 4;
   const outerWidth = Math.floor((w - (slots - 1) * gap) / slots);
   const cardWidth = Math.max(1, outerWidth - 4);
@@ -212,18 +235,6 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     const active = bot.runs.filter(r => !r.orphan).length;
     const state = !bot.online ? 'OFFLINE' : active ? 'WORKING' : 'IDLE';
     const result = [pair(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}`, state, bot.online ? 36 : 90, cardWidth)];
-    if (bot.subscription && budget >= (bot.runs.length ? 10 + Number(Boolean(bot.subscription.quota?.blocked)) : 7)) {
-      const sub = bot.subscription;
-      result.push(line(`    Sponsor: ${sub.sponsor ?? (sub.loading ? '读取中…' : '—')}`, 90, cardWidth));
-      for (const [label, short] of [['5 小时窗口', '5h'], ['本周', '周']]) {
-        const window = sub.quota?.windows.find(window => window.label === label);
-        const used = window ? `${Math.round(window.usedPercent)}%` : '—';
-        const at = quotaResetAt(window?.resets, s.now);
-        const reset = at === undefined ? (window?.resets ?? '—') : new Date(at).toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
-        result.push(line(`    ${short} 已用 ${used} · 重置 ${reset}`, window && window.usedPercent >= 90 ? 91 : 90, cardWidth));
-      }
-      if (sub.quota?.blocked) result.push(line('    额度已用尽', 91, cardWidth));
-    }
     let shown = 0;
     for (const run of bot.runs) {
       const side = cardWidth >= 70;
