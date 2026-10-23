@@ -14,7 +14,10 @@ afterEach(async () => {
  * A stand-in for `codex app-server --listen stdio://` speaking just enough of
  * the protocol: thread/start|resume, turn/start (a reply per turn), and
  * turn/interrupt for turns whose text contains SLOW. Turns containing ASK
- * first send the client an approval request. Every message it receives is
+ * first send the client an approval request. Turns containing STEER wait for
+ * a turn/steer, echo it back as a userMessage item and answer it; LATE turns
+ * refuse the steer (the turn was already ending) and finish without it.
+ * Every message it receives is
  * appended to messages.jsonl; argv goes to argv.json.
  */
 async function createFakeAppServer(): Promise<{ path: string; dir: string; messages(): Promise<Array<Record<string, any>>>; argv(): Promise<string[][]> }> {
@@ -32,7 +35,7 @@ const argv = process.argv.slice(2);
 if (argv[0] === '--version') { console.log('codex-cli 0.159.2'); process.exit(0); }
 appendFileSync(${JSON.stringify(argvPath)}, JSON.stringify(argv) + '\\n');
 const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n');
-let turns = 0; let slow; let asked; let gated; const decisions = [];
+let turns = 0; let slow; let asked; let gated; let steering; const decisions = [];
 const finish = (threadId, turnId, status, text) => {
   if (text) send({ method: 'item/completed', params: { threadId, turnId, item: { type: 'agentMessage', id: 'm' + turnId, text } } });
   send({ method: 'thread/tokenUsage/updated', params: { threadId, turnId, tokenUsage: { last: { inputTokens: 100, cachedInputTokens: 60, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 105 }, total: {} } } });
@@ -51,6 +54,17 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     const g = gated; gated = undefined;
     return finish(g.threadId, g.turnId, 'completed', 'decisions: ' + decisions.join(','));
   }
+  if (msg.method === 'turn/steer') {
+    const s = steering; steering = undefined;
+    if (!s || s.late || msg.params.expectedTurnId !== s.turnId) {
+      send({ id: msg.id, error: { code: -32600, message: 'no active turn to steer' } });
+      if (s) finish(s.threadId, s.turnId, 'completed', 'reply without steer');
+      return;
+    }
+    send({ id: msg.id, result: { turnId: s.turnId } });
+    send({ method: 'item/started', params: { threadId: s.threadId, turnId: s.turnId, item: { type: 'userMessage', id: 'u-' + s.turnId, clientId: msg.params.clientUserMessageId, content: msg.params.input } } });
+    return finish(s.threadId, s.turnId, 'completed', 'steered: ' + msg.params.input[0].text);
+  }
   if (msg.id === 99 && asked) { const a = asked; asked = undefined; return finish(a.threadId, a.turnId, 'completed', 'after refusal'); }
   if (msg.method === 'initialize') return send({ id: msg.id, result: { userAgent: 'fake' } });
   if (msg.method === 'thread/start') return send({ id: msg.id, result: { thread: { id: 'thr-new' } } });
@@ -67,6 +81,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return send({ id: 99, method: 'item/commandExecution/requestApproval', params: { threadId, turnId } });
     }
     if (text.includes('SLOW')) { slow = { threadId, turnId }; return; }
+    if (text.includes('STEER') || text.includes('LATE')) { steering = { threadId, turnId, late: text.includes('LATE') }; return; }
     if (text.includes('TOUCH')) {
       gated = { threadId, turnId, step: 'command' };
       return send({ id: 501, method: 'item/commandExecution/requestApproval', params: { threadId, turnId, itemId: 'cmd-1', command: "/bin/zsh -lc 'touch x.txt'", proposedExecpolicyAmendment: ['/bin/zsh', '-lc', 'touch x.txt'], startedAtMs: 1 } });
@@ -263,4 +278,85 @@ process.stdin.resume(); process.stdin.on('end', () => { console.log(JSON.stringi
     expect((await fake.messages())[2]?.params).toMatchObject({ sandbox: 'read-only', approvalPolicy: 'untrusted' });
     await run.stop();
   });
+
+  it('reads a mid-turn supplement into the running turn with turn/steer', async () => {
+    const fake = await createFakeAppServer();
+    const cwd = await realpath(fake.dir);
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: join(fake.dir, 'home') });
+    const run = await preparedRun(adapter, { runId: 's1', prompt: 'STEER me', cwd });
+    const events = run.events[Symbol.asyncIterator]();
+    expect((await events.next()).value).toEqual({ type: 'system', threadId: 'thr-new' });
+    await waitFor(async () => (await fake.messages()).some((m) => m.method === 'turn/start'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(run.inject?.('also add tests', 'also add tests')).toBe(true);
+    const turn = await nextTurn(events);
+    expect(turn).toEqual([
+      { type: 'supplement', preview: 'also add tests' },
+      { type: 'final_text', content: 'steered: also add tests' },
+      { type: 'usage', inputTokens: 100, cachedInputTokens: 60, outputTokens: 5, reasoningOutputTokens: 0 },
+      { type: 'done', threadId: 'thr-new', terminationReason: 'normal' },
+    ]);
+    const steer = (await fake.messages()).find((m) => m.method === 'turn/steer');
+    expect(steer?.params).toMatchObject({
+      threadId: 'thr-new',
+      expectedTurnId: 'turn-1',
+      clientUserMessageId: expect.any(String),
+      input: [{ type: 'text', text: 'also add tests' }],
+    });
+    // The turn is over: the next supplement is the caller's to queue.
+    expect(run.inject?.('too late', 'too late')).toBe(false);
+    await run.stop();
+  });
+
+  it('runs a supplement the turn could no longer take as a follow-up turn of the same reply', async () => {
+    const fake = await createFakeAppServer();
+    const cwd = await realpath(fake.dir);
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: join(fake.dir, 'home') });
+    const run = await preparedRun(adapter, { runId: 's2', prompt: 'LATE one', cwd });
+    const events = run.events[Symbol.asyncIterator]();
+    expect((await events.next()).value).toEqual({ type: 'system', threadId: 'thr-new' });
+    await waitFor(async () => (await fake.messages()).some((m) => m.method === 'turn/start'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(run.inject?.('one more thing', 'one more thing')).toBe(true);
+    // One reply: the first answer turns into progress text, the follow-up
+    // turn answers last, usage covers both, and there is a single done.
+    expect(await nextTurn(events)).toEqual([
+      { type: 'text', delta: 'reply without steer' },
+      { type: 'supplement', preview: 'one more thing' },
+      { type: 'system', threadId: 'thr-new' },
+      { type: 'final_text', content: 'reply 2' },
+      { type: 'usage', inputTokens: 200, cachedInputTokens: 120, outputTokens: 10, reasoningOutputTokens: 0 },
+      { type: 'done', threadId: 'thr-new', terminationReason: 'normal' },
+    ]);
+    const starts = (await fake.messages()).filter((m) => m.method === 'turn/start');
+    expect(starts).toHaveLength(2);
+    expect(starts[1]?.params.input[0].text).toBe('one more thing');
+    await run.stop();
+  });
+
+  it('refuses a supplement before the turn is under way and on the exec transport', async () => {
+    const fake = await createFakeAppServer();
+    const cwd = await realpath(fake.dir);
+    const home = join(fake.dir, 'home');
+    const run = await preparedRun(new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: home }), { runId: 's3', prompt: 'hi', cwd });
+    // Still opening the conversation: nothing to steer yet.
+    expect(run.inject?.('early', 'early')).toBe(false);
+    await nextTurn(run.events[Symbol.asyncIterator]());
+    expect(run.inject?.('after', 'after')).toBe(false);
+    await run.stop();
+
+    const exec = await preparedRun(new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: home, transport: 'exec' }), { runId: 's4', prompt: 'x', cwd });
+    expect(exec.inject).toBeUndefined();
+    await exec.stop();
+  });
 });
+
+async function waitFor(check: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  while (!(await check())) {
+    if (Date.now() > until) throw new Error('timed out waiting');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}

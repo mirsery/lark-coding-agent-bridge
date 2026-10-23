@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import type { CodexSandboxMode } from '../../config/permissions';
@@ -80,6 +81,16 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
   let stopRequested = false;
   /** Paths each pending file-change item touches, for its approval prompt. */
   const fileChanges = new Map<string, string[]>();
+  /**
+   * Mid-turn supplements (`inject`) sent with `turn/steer` but not yet read:
+   * Codex echoes each as a `userMessage` item carrying our client id once the
+   * turn takes it in.
+   */
+  const unread = new Map<string, { prompt: string; preview: string }>();
+  /** `turn/steer` requests still waiting for their answer. */
+  const steers = new Set<Promise<void>>();
+  /** A finished turn's closing events, held while a supplement is still unread. */
+  let held: AgentEvent[] | undefined;
 
   const write = (message: Record<string, unknown>): boolean => {
     if (!inputOpen || exited) return false;
@@ -109,10 +120,45 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
     }
   };
 
-  const startTurn = (prompt: string, images: readonly string[] | undefined): void => {
-    if (!threadId) return;
-    turn = new CodexAppServerTranslator(threadId);
-    emit(turn.start());
+  /**
+   * The turn completed while a supplement was still unread — its steer was
+   * refused (the turn was already wrapping up) or is still in flight. That is
+   * not the end of the bridge's turn: once every steer has its answer, what
+   * is left goes to Codex as a follow-up turn of the same conversation, and
+   * the held answer becomes progress text before it.
+   */
+  const holdForSupplements = (events: AgentEvent[]): void => {
+    held = events;
+    void Promise.allSettled([...steers]).then(() => {
+      const closing = held;
+      if (!closing || exited) return;
+      held = undefined;
+      const left = [...unread.values()];
+      unread.clear();
+      if (left.length === 0 || stopRequested) {
+        emit(closing);
+        return;
+      }
+      let usage: Extract<AgentEvent, { type: 'usage' }> | undefined;
+      for (const event of closing) {
+        if (event.type === 'done') continue;
+        if (event.type === 'usage') usage = event;
+        else queue.push(event.type === 'final_text' ? { type: 'text', delta: event.content } : event);
+      }
+      for (const supplement of left) queue.push({ type: 'supplement', preview: supplement.preview });
+      log.info('codex-app-server', 'supplement-follow-up-turn', { pid: child.pid ?? null, count: left.length });
+      turn = undefined;
+      turnId = undefined;
+      const next = startTurn(left.map((supplement) => supplement.prompt).join('\n\n'), undefined);
+      if (usage) next?.carryUsage(usage);
+    });
+  };
+
+  const startTurn = (prompt: string, images: readonly string[] | undefined): CodexAppServerTranslator | undefined => {
+    if (!threadId) return undefined;
+    const started = new CodexAppServerTranslator(threadId);
+    turn = started;
+    emit(started.start());
     request('turn/start', {
       threadId,
       input: [
@@ -125,6 +171,7 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
         turnId ??= str(record(result.turn)?.id);
       })
       .catch((err: Error) => emit(turn?.fail(`codex app-server rejected turn/start: ${err.message}`) ?? []));
+    return started;
   };
 
   const onLine = (line: string): void => {
@@ -171,7 +218,20 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
       if (item?.type === 'fileChange' && typeof item.id === 'string') fileChanges.set(item.id, changedPaths(item));
     }
     if (method === 'turn/started') turnId = str(record(params.turn)?.id) ?? turnId;
-    if (turn) emit(turn.notification(method, params));
+    if (method === 'item/started') {
+      // A supplement sent with turn/steer was read: Codex echoes it back.
+      const item = record(params.item);
+      const clientId = item?.type === 'userMessage' ? str(item.clientId) : undefined;
+      const supplement = clientId === undefined ? undefined : unread.get(clientId);
+      if (clientId !== undefined && supplement) {
+        unread.delete(clientId);
+        queue.push({ type: 'supplement', preview: supplement.preview });
+      }
+    }
+    if (!turn) return;
+    const events = turn.notification(method, params);
+    if (turn.done && unread.size > 0 && events.at(-1)?.type === 'done' && !stopRequested) holdForSupplements(events);
+    else emit(events);
   };
 
   const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
@@ -191,6 +251,13 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
     log.info('agent', 'exit', { pid: child.pid ?? null, code, signal, transport: 'app-server' });
     for (const waiter of pending.values()) waiter.reject(new Error('codex app-server exited'));
     pending.clear();
+    unread.clear();
+    if (held) {
+      // The turn had finished; nothing is left to read its supplements.
+      const closing = held;
+      held = undefined;
+      emit(closing);
+    }
     if (turn) {
       emit(
         stopRequested
@@ -248,6 +315,29 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
     send(prompt: string): boolean {
       if (exited || !inputOpen || !threadId || turn) return false;
       startTurn(prompt, undefined);
+      return true;
+    },
+    inject(prompt: string, preview: string): boolean {
+      // Only a turn under way can take it; otherwise the caller queues it.
+      if (exited || !inputOpen || !threadId || !turnId || !turn || turn.done || held) {
+        log.info('agent', 'inject-refused', { pid: child.pid ?? null, transport: 'app-server' });
+        return false;
+      }
+      const clientId = randomUUID();
+      unread.set(clientId, { prompt, preview });
+      const steer = request('turn/steer', {
+        threadId,
+        expectedTurnId: turnId,
+        clientUserMessageId: clientId,
+        input: [{ type: 'text', text: prompt, text_elements: [] }],
+      }).then(
+        () => undefined,
+        // Still unread: the turn's end sends it as a follow-up turn.
+        (err: Error) => log.warn('codex-app-server', 'steer-refused', { reason: err.message.slice(0, 300) }),
+      );
+      steers.add(steer);
+      void steer.finally(() => steers.delete(steer));
+      log.info('agent', 'inject', { pid: child.pid ?? null, transport: 'app-server', promptChars: prompt.length });
       return true;
     },
     endInput(): void {

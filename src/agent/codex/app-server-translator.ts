@@ -22,6 +22,18 @@ export class CodexAppServerTranslator {
     this.threadId = threadId;
   }
 
+  /**
+   * Count an earlier turn's usage as this turn's: a follow-up turn the
+   * bridge started on its own (unread supplements) is still the same reply.
+   */
+  carryUsage(usage: Extract<AgentEvent, { type: 'usage' }>): void {
+    this.sawUsage = true;
+    this.usage.inputTokens += usage.inputTokens ?? 0;
+    this.usage.cachedInputTokens += usage.cachedInputTokens ?? 0;
+    this.usage.outputTokens += usage.outputTokens ?? 0;
+    this.usage.reasoningOutputTokens += usage.reasoningOutputTokens ?? 0;
+  }
+
   /** The turn's opening event: the session handle the bridge resumes later. */
   start(): AgentEvent[] {
     return [{ type: 'system', threadId: this.threadId }];
