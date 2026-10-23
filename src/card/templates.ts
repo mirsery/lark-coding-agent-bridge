@@ -1,3 +1,4 @@
+import { formatTokens, type UsageTotals } from '../runtime/usage-ledger';
 import { humanIdle, humanTokens, type RotationReason } from '../session/smart-session';
 
 interface ButtonSpec {
@@ -983,6 +984,141 @@ export function cronCard(jobs: CronJobView[], hint: string): object {
   });
 
   return shell('⏰ 定时任务', elements);
+}
+
+export interface UsageCardRow {
+  name: string;
+  self: boolean;
+  total: UsageTotals;
+}
+
+export interface UsageCardPeriod {
+  label: string;
+  total: UsageTotals;
+  /** Everyone's rows, heaviest first; absent when the viewer only sees their own. */
+  rows?: UsageCardRow[];
+  /** People with usage in the period (rows may be capped below this). */
+  people: number;
+}
+
+/** Rows a table carries; it pages them 10 at a time. */
+const USAGE_TABLE_ROWS = 50;
+
+function percent(part: number, whole: number): string {
+  if (whole <= 0) return '—';
+  const p = (part / whole) * 100;
+  return p >= 1 || p === 0 ? `${Math.round(p)}%` : '<1%';
+}
+
+function usageTile(label: string, value: string): object {
+  return {
+    tag: 'column',
+    width: 'weighted',
+    weight: 1,
+    padding: '10px 12px',
+    background_style: 'grey-50',
+    vertical_spacing: '2px',
+    elements: [
+      { tag: 'markdown', content: `<font color='grey'>${label}</font>`, text_size: 'notation' },
+      { tag: 'markdown', content: `**${value}**`, text_size: 'heading' },
+    ],
+  };
+}
+
+function usageTiles(t: UsageTotals): object {
+  const tiles = [
+    usageTile('对话轮次', String(t.turns)),
+    usageTile(
+      t.cachedInputTokens > 0 ? `输入 · 缓存 ${percent(t.cachedInputTokens, t.inputTokens)}` : '输入',
+      formatTokens(t.inputTokens),
+    ),
+    usageTile('输出', formatTokens(t.outputTokens)),
+    ...(t.costUsd > 0 ? [usageTile('估算费用', `$${t.costUsd.toFixed(2)}`)] : []),
+  ];
+  // Four tiles fold into 2 × 2 on a phone; three still fit on one line.
+  return { tag: 'column_set', flex_mode: tiles.length === 4 ? 'bisect' : 'none', horizontal_spacing: '8px', columns: tiles };
+}
+
+function usageTable(period: UsageCardPeriod, rows: UsageCardRow[]): object {
+  const withCost = period.total.costUsd > 0;
+  // Share of the cost; Codex reports none, so fall back to tokens.
+  const weight = (t: UsageTotals): number => (withCost ? t.costUsd : t.inputTokens + t.outputTokens);
+  const whole = weight(period.total);
+  const right = { horizontal_align: 'right', width: 'auto' };
+  return {
+    tag: 'table',
+    page_size: 10,
+    row_height: 'low',
+    freeze_first_column: true,
+    header_style: { text_align: 'left', text_size: 'normal', background_style: 'grey', text_color: 'grey', bold: true, lines: 1 },
+    columns: [
+      { name: 'who', display_name: '成员', data_type: 'text', width: 'auto' },
+      { name: 'turns', display_name: '轮次', data_type: 'number', format: { precision: 0 }, ...right },
+      { name: 'input', display_name: '输入', data_type: 'text', ...right },
+      { name: 'output', display_name: '输出', data_type: 'text', ...right },
+      ...(withCost
+        ? [{ name: 'cost', display_name: '估算费用', data_type: 'number', format: { symbol: '$', precision: 2, separator: true }, ...right }]
+        : []),
+      { name: 'share', display_name: '占比', data_type: 'text', ...right },
+    ],
+    rows: rows.slice(0, USAGE_TABLE_ROWS).map((row, i) => ({
+      who: `${i + 1}. ${row.name}${row.self ? '（你）' : ''}`,
+      turns: row.total.turns,
+      input: formatTokens(row.total.inputTokens),
+      output: formatTokens(row.total.outputTokens),
+      ...(withCost ? { cost: Number(row.total.costUsd.toFixed(2)) } : {}),
+      share: percent(weight(row.total), whole),
+    })),
+  };
+}
+
+/**
+ * `/usage`: per period a row of totals, then — for an admin in private —
+ * who used how much as a table. Numbers go in tiles and table cells instead
+ * of one long `·`-joined line per person, which was unreadable at a glance.
+ */
+export function usageCard(view: { periods: UsageCardPeriod[]; everyone: boolean; notes: string[] }): object {
+  const elements: object[] = [];
+  view.periods.forEach((period, i) => {
+    if (i > 0) elements.push(HR);
+    const people = view.everyone && period.people > 0 ? ` <font color='grey'>· ${period.people} 人</font>` : '';
+    elements.push({ tag: 'markdown', content: `**${period.label}**${people}` });
+    if (period.total.turns === 0) {
+      elements.push({ tag: 'markdown', content: "<font color='grey'>暂无用量记录。</font>" });
+      return;
+    }
+    elements.push(usageTiles(period.total));
+    if (period.rows && period.rows.length > 0) {
+      elements.push(usageTable(period, period.rows));
+      const hidden = period.people - Math.min(period.rows.length, USAGE_TABLE_ROWS);
+      if (hidden > 0) {
+        elements.push({ tag: 'markdown', content: `<font color='grey'>另有 ${hidden} 人未列出</font>`, text_size: 'notation' });
+      }
+    }
+  });
+  if (view.notes.length > 0) {
+    elements.push(HR, {
+      tag: 'markdown',
+      content: view.notes.map((note) => `<font color='grey'>${note}</font>`).join('\n'),
+      text_size: 'notation',
+    });
+  }
+  return {
+    schema: '2.0',
+    config: { width_mode: 'fill', summary: { content: '用量统计' } },
+    header: {
+      title: { tag: 'plain_text', content: '用量统计' },
+      subtitle: { tag: 'plain_text', content: view.everyone ? '所有人 · 从高到低' : '你自己的用量' },
+      template: 'indigo',
+      icon: { tag: 'standard_icon', token: 'bar-chart_outlined' },
+    },
+    body: {
+      direction: 'vertical',
+      padding: '12px 12px 16px 12px',
+      vertical_spacing: '10px',
+      elements,
+    },
+  };
 }
 
 function escapeMd(s: string): string {

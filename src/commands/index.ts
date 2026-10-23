@@ -14,13 +14,7 @@ import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { agentAccountsTable, switchAgentAccount } from '../agent/account';
 import { agentCapability } from '../agent/capability';
 import { agentDescriptor, type AgentKind } from '../agent/registry';
-import {
-  emptyTotals,
-  formatTokens,
-  type UsageLedger,
-  type UsageReportRow,
-  type UsageTotals,
-} from '../runtime/usage-ledger';
+import { emptyTotals, type UsageLedger, type UsageReportRow } from '../runtime/usage-ledger';
 import type { ApprovalBroker } from '../runtime/approvals';
 import { toolLabel } from '../card/approval-cards';
 import type { AuditLog } from '../runtime/audit-log';
@@ -95,6 +89,8 @@ import {
   statusCard,
   taskStatusCard,
   type StatusInfo,
+  type UsageCardPeriod,
+  usageCard,
   worktreeCard,
   workspacesCard,
 } from '../card/templates';
@@ -1720,23 +1716,23 @@ async function handleUsage(args: string, ctx: CommandContext): Promise<void> {
   const everyone =
     ctx.chatMode === 'p2p' &&
     canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok;
-  const sections = periods.map((period) => {
+  const views = periods.map((period) => {
     const rows = ledger.report({ days: period.days, ...(everyone ? {} : { actorId: ctx.msg.senderId }) });
-    return formatUsageSection(period.label, rows, { everyone, selfId: ctx.msg.senderId });
+    return usagePeriodView(period.label, rows, { everyone, selfId: ctx.msg.senderId });
   });
   const notes = [
-    '_费用是按 API 价格估算的；订阅账号不实际扣费，只用来比较各人占用额度的多少。Codex 不报费用，只看 token。_',
-    ...(ctx.chatMode !== 'p2p' && !everyone ? ['_只显示你自己的用量；管理员私聊发 `/usage` 可看所有人。_'] : []),
+    '费用是按 API 价格估算的；订阅账号不实际扣费，只用来比较各人占用额度的多少。Codex 不报费用，只看 token。',
+    ...(ctx.chatMode !== 'p2p' && !everyone ? ['只显示你自己的用量；管理员私聊发 `/usage` 可看所有人。'] : []),
   ];
-  await reply(ctx, [...sections, ...notes].join('\n\n'));
+  const card = usageCard({ periods: views, everyone, notes });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
-function formatUsageSection(
+function usagePeriodView(
   label: string,
   rows: UsageReportRow[],
   opts: { everyone: boolean; selfId: string },
-): string {
-  if (rows.length === 0) return `**${label}**\n暂无用量记录。`;
+): UsageCardPeriod {
   const total = rows.reduce((acc, row) => {
     acc.turns += row.total.turns;
     acc.inputTokens += row.total.inputTokens;
@@ -1745,19 +1741,17 @@ function formatUsageSection(
     acc.costUsd += row.total.costUsd;
     return acc;
   }, emptyTotals());
-  if (!opts.everyone) return `**${label}**\n你：${formatUsageTotals(total)}`;
-  const shown = rows.slice(0, 10).map((row, i) => {
-    const who = row.actorId === opts.selfId ? '你' : (row.actorName ?? `…${row.actorId.slice(-6)}`);
-    return `${i + 1}. ${who}：${formatUsageTotals(row.total)}`;
-  });
-  const more = rows.length > 10 ? [`…另有 ${rows.length - 10} 人`] : [];
-  return [`**${label}**（${rows.length} 人）`, `合计：${formatUsageTotals(total)}`, ...shown, ...more].join('\n');
-}
-
-function formatUsageTotals(t: UsageTotals): string {
-  const cached = t.cachedInputTokens > 0 ? `（缓存 ${formatTokens(t.cachedInputTokens)}）` : '';
-  const cost = t.costUsd > 0 ? ` · 估算 $${t.costUsd.toFixed(2)}` : '';
-  return `${t.turns} 轮 · 输入 ${formatTokens(t.inputTokens)}${cached} · 输出 ${formatTokens(t.outputTokens)}${cost}`;
+  if (!opts.everyone) return { label, total, people: rows.length };
+  return {
+    label,
+    total,
+    people: rows.length,
+    rows: rows.map((row) => ({
+      name: row.actorName ?? (row.actorId === opts.selfId ? '你' : `…${row.actorId.slice(-6)}`),
+      self: row.actorId === opts.selfId && row.actorName !== undefined,
+      total: row.total,
+    })),
+  };
 }
 
 /**

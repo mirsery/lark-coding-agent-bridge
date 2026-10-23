@@ -330,18 +330,23 @@ describe('Bridge command contracts', () => {
     cleanups.push(() => ledger.flush());
 
     await expect(h.run('/usage')).resolves.toBe(true);
-    const adminView = lastMarkdown(h.channel);
+    const adminView = JSON.stringify(lastContent(h.channel).card);
     expect(adminView).toContain('2 人');
+    expect(adminView).toContain('"tag":"table"');
+    expect(adminView).toContain('Boss（你）');
     expect(adminView).toContain('Colleague');
-    expect(adminView).toContain('估算 $1.90');
+    expect(adminView).toContain('$1.90');
+    expect(adminView).toContain('79%');
 
     await h.run('/usage', { senderId: 'ou-other' });
-    const ownView = lastMarkdown(h.channel);
-    expect(ownView).toContain('你：1 轮');
+    const ownView = JSON.stringify(lastContent(h.channel).card);
+    expect(ownView).toContain('你自己的用量');
+    expect(ownView).toContain('$0.40');
     expect(ownView).not.toContain('Boss');
+    expect(ownView).not.toContain('"tag":"table"');
 
     await h.run('/usage week', { chatMode: 'group' });
-    const groupView = lastMarkdown(h.channel);
+    const groupView = JSON.stringify(lastContent(h.channel).card);
     expect(groupView).not.toContain('Colleague');
     expect(groupView).toContain('私聊');
 
