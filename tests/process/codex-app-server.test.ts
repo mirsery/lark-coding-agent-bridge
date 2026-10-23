@@ -1,10 +1,12 @@
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CodexAdapter } from '../../src/agent/codex/adapter.js';
 import type { AgentEvent, AgentRun, AgentRunOptions } from '../../src/agent/types.js';
 import { initialState, reduce } from '../../src/card/run-state.js';
+import { bridgeRoot, guardRefusal, ownerOnlyGuard } from '../../src/policy/owner-guard.js';
 
 const cleanup: string[] = [];
 const SUBAGENT_FIXTURE = join(__dirname, '../fixtures/codex-app-server-subagent.jsonl');
@@ -23,15 +25,26 @@ afterEach(async () => {
  * reports the 5-hour window full. SUBAGENT turns replay a real multi-agent
  * turn (tests/fixtures/codex-app-server-subagent.jsonl): an MCP call, a
  * sub-agent whose own thread's items and turn end arrive on the same stream.
- * Every message it receives is
- * appended to messages.jsonl; argv goes to argv.json.
+ * Given a PreToolUse hook (`-c hooks.PreToolUse=…`) it lists it untrusted
+ * until config/value/write trusts it (never, with FAKE_HOOK_TRUST=stuck);
+ * BLOCKED turns record a shell call in the thread's rollout, and one of a
+ * code-mode cell in the hook's refusal log, and report the hook refusing both. Every message it receives is appended to messages.jsonl;
+ * argv goes to argv.json.
  */
-async function createFakeAppServer(): Promise<{ path: string; dir: string; messages(): Promise<Array<Record<string, any>>>; argv(): Promise<string[][]> }> {
+async function createFakeAppServer(): Promise<{
+  path: string;
+  dir: string;
+  messages(): Promise<Array<Record<string, any>>>;
+  argv(): Promise<string[][]>;
+  env(): Promise<Array<Record<string, string | undefined>>>;
+}> {
   const dir = await mkdtemp(join(tmpdir(), 'codex-app-server-'));
   cleanup.push(dir);
   const path = join(dir, 'fake-codex.mjs');
   const messagesPath = join(dir, 'messages.jsonl');
   const argvPath = join(dir, 'argv.jsonl');
+  const rolloutPath = join(dir, 'rollout.jsonl');
+  const envPath = join(dir, 'env.jsonl');
   await writeFile(
     path,
     `#!/usr/bin/env node
@@ -40,7 +53,12 @@ import { createInterface } from 'node:readline';
 const argv = process.argv.slice(2);
 if (argv[0] === '--version') { console.log('codex-cli 0.159.2'); process.exit(0); }
 appendFileSync(${JSON.stringify(argvPath)}, JSON.stringify(argv) + '\\n');
+appendFileSync(${JSON.stringify(envPath)}, JSON.stringify({ LARK_CHANNEL_HOOK_REFUSALS: process.env.LARK_CHANNEL_HOOK_REFUSALS }) + '\\n');
 const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n');
+const hookFlag = argv.find((a) => a.startsWith('hooks.PreToolUse='));
+const hookCommand = hookFlag ? JSON.parse(/command=("(?:[^"\\\\]|\\\\.)*")/.exec(hookFlag)[1]) : undefined;
+let hookTrusted = false;
+const rollout = ${JSON.stringify(rolloutPath)};
 let turns = 0; let slow; let asked; let gated; let steering; const decisions = [];
 const finish = (threadId, turnId, status, text) => {
   if (text) send({ method: 'item/completed', params: { threadId, turnId, item: { type: 'agentMessage', id: 'm' + turnId, text } } });
@@ -76,7 +94,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   }
   if (msg.id === 99 && asked) { const a = asked; asked = undefined; return finish(a.threadId, a.turnId, 'completed', 'after refusal'); }
   if (msg.method === 'initialize') return send({ id: msg.id, result: { userAgent: 'fake' } });
-  if (msg.method === 'thread/start') return send({ id: msg.id, result: { thread: { id: 'thr-new' } } });
+  if (msg.method === 'hooks/list') {
+    const hooks = hookCommand ? [{ key: 'flags:pre_tool_use:0:0', source: 'sessionFlags', eventName: 'preToolUse', handlerType: 'command', command: hookCommand, currentHash: 'h1', trustStatus: hookTrusted ? 'trusted' : 'untrusted' }] : [];
+    return send({ id: msg.id, result: { data: [{ cwd: msg.params.cwds[0], hooks }] } });
+  }
+  if (msg.method === 'config/value/write') { hookTrusted = process.env.FAKE_HOOK_TRUST !== 'stuck'; return send({ id: msg.id, result: {} }); }
+  if (msg.method === 'thread/start') return send({ id: msg.id, result: { thread: { id: 'thr-new', path: rollout } } });
   if (msg.method === 'thread/resume') return send({ id: msg.id, result: { thread: { id: msg.params.threadId } } });
   if (msg.method === 'turn/start') {
     const turnId = 'turn-' + (++turns);
@@ -100,6 +123,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       send({ method: 'error', params: { error, willRetry: false, threadId, turnId } });
       return send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'failed', error } } });
     }
+    if (text.includes('BLOCKED')) {
+      appendFileSync(rollout, JSON.stringify({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'call_x', arguments: JSON.stringify({ cmd: 'cat secret.txt', workdir: '/private' }) } }) + '\\n');
+      send({ method: 'hook/completed', params: { threadId, turnId, run: { id: 'pre-tool-use:0:/<session-flags>/config.toml:call_x', eventName: 'preToolUse', source: 'sessionFlags', status: 'blocked', entries: [{ kind: 'feedback', text: '这条命令会访问未对外开放的位置 /private。请停止这一步。' }] } } });
+      // A code-mode cell's call: only the hook's refusal log has it.
+      appendFileSync(process.env.LARK_CHANNEL_HOOK_REFUSALS, JSON.stringify({ id: 'exec-9', tool: 'Bash', input: { command: 'cat /private/key' } }) + '\\n');
+      send({ method: 'hook/completed', params: { threadId, turnId, run: { id: 'pre-tool-use:0:/<session-flags>/config.toml:exec-9', eventName: 'preToolUse', source: 'sessionFlags', status: 'blocked', entries: [{ kind: 'feedback', text: '这条命令会访问未对外开放的位置 /private/key。' }] } } });
+      return finish(threadId, turnId, 'completed', 'not allowed');
+    }
     if (text.includes('STEER') || text.includes('LATE')) { steering = { threadId, turnId, late: text.includes('LATE') }; return; }
     if (text.includes('TOUCH')) {
       gated = { threadId, turnId, step: 'command' };
@@ -120,7 +151,7 @@ process.stdin.on('end', () => process.exit(0));
   await chmod(path, 0o755);
   const readJsonl = async (p: string) =>
     (await readFile(p, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-  return { path, dir, messages: () => readJsonl(messagesPath), argv: () => readJsonl(argvPath) };
+  return { path, dir, messages: () => readJsonl(messagesPath), argv: () => readJsonl(argvPath), env: () => readJsonl(envPath) };
 }
 
 async function nextTurn(iterator: AsyncIterator<AgentEvent>): Promise<AgentEvent[]> {
@@ -416,6 +447,58 @@ process.stdin.resume(); process.stdin.on('end', () => { console.log(JSON.stringi
     const exec = await preparedRun(new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: home, transport: 'exec' }), { runId: 's4', prompt: 'x', cwd });
     expect(exec.inject).toBeUndefined();
     await exec.stop();
+  });
+
+  it("trusts the bridge's hook before a guest's turn, and shows the calls it refuses", async () => {
+    const fake = await createFakeAppServer();
+    const cwd = await realpath(fake.dir);
+    const guard = ownerOnlyGuard({ larkChannelHome: join(cwd, '.lark-channel'), workspace: cwd, home: cwd, root: bridgeRoot() });
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: join(fake.dir, 'home') });
+    const run = await preparedRun(adapter, { runId: 'h1', prompt: 'BLOCKED read the secret', cwd, guard });
+    const turn = await nextTurn(run.events[Symbol.asyncIterator]());
+    await run.stop();
+
+    expect((await fake.argv())[0]).toEqual(expect.arrayContaining(['features.unified_exec_tty=false', expect.stringMatching(/^hooks\.PreToolUse=/)]));
+    expect((await fake.messages()).map((m) => m.method).slice(0, 7)).toEqual([
+      'initialize',
+      'initialized',
+      'hooks/list',
+      'config/value/write',
+      'hooks/list',
+      'thread/start',
+      'turn/start',
+    ]);
+    expect(turn).toContainEqual({ type: 'tool_use', id: 'call_x', name: 'command_execution', input: { command: 'cd /private && cat secret.txt' } });
+    const refused = turn.find((e): e is Extract<AgentEvent, { type: 'tool_result' }> => e.type === 'tool_result' && e.id === 'call_x');
+    expect(refused?.isError).toBe(true);
+    expect(guardRefusal(refused?.output ?? '')).toBe('这条命令会访问未对外开放的位置 /private');
+    expect(turn).toContainEqual({ type: 'tool_use', id: 'exec-9', name: 'command_execution', input: { command: 'cat /private/key' } });
+    expect(turn.at(-1)).toMatchObject({ type: 'done' });
+    // The log goes with the process.
+    const log = (await fake.env()).at(0)?.LARK_CHANNEL_HOOK_REFUSALS as string;
+    await waitFor(async () => !existsSync(dirname(log)));
+  });
+
+  it("never runs a guest's turn on a hook it could not trust, and sends later hooked runs through exec", async () => {
+    const fake = await createFakeAppServer();
+    const cwd = await realpath(fake.dir);
+    const guard = ownerOnlyGuard({ larkChannelHome: join(cwd, '.lark-channel'), workspace: cwd, home: cwd, root: bridgeRoot() });
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: join(fake.dir, 'home'), env: { FAKE_HOOK_TRUST: 'stuck' } });
+
+    const first = await preparedRun(adapter, { runId: 't1', prompt: 'x', cwd, guard });
+    expect((await nextTurn(first.events[Symbol.asyncIterator]())).at(-1)).toMatchObject({ type: 'error', message: expect.stringContaining('still untrusted') });
+    expect((await fake.messages()).map((m) => m.method)).not.toContain('thread/start');
+
+    // The owner's runs need no hook and stay on the app-server.
+    const owner = await preparedRun(adapter, { runId: 't2', prompt: 'x', cwd });
+    expect(owner.send).toBeDefined();
+    await owner.stop();
+
+    const guest = await preparedRun(adapter, { runId: 't3', prompt: 'x', cwd, guard });
+    expect(guest.send).toBeUndefined();
+    await waitFor(async () => (await fake.argv()).length === 3);
+    await guest.stop();
+    expect((await fake.argv()).at(-1)?.slice(0, 2)).toEqual(['--dangerously-bypass-hook-trust', 'exec']);
   });
 });
 

@@ -1,6 +1,7 @@
 import { log } from '../../core/logger';
 import type { AgentEvent } from '../types';
 import { isUsageLimitMessage, USAGE_LIMIT_ERROR_INFO } from './rate-limit';
+import type { CodexCall } from './blocked-calls';
 
 /**
  * Turns `codex app-server` notifications for one turn into bridge events,
@@ -24,9 +25,12 @@ export class CodexAppServerTranslator {
   private planUpdates = 0;
   private readonly usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 };
   private sawUsage = false;
+  /** The call a PreToolUse hook blocked, looked up by id (it never becomes an item). */
+  private readonly blockedCall: ((callId: string) => CodexCall | undefined) | undefined;
 
-  constructor(threadId: string) {
+  constructor(threadId: string, blockedCall?: (callId: string) => CodexCall | undefined) {
     this.threadId = threadId;
+    this.blockedCall = blockedCall;
   }
 
   /**
@@ -68,6 +72,8 @@ export class CodexAppServerTranslator {
       }
       case 'turn/plan/updated':
         return this.prependPending(this.planUpdated(params));
+      case 'hook/completed':
+        return this.prependPending(this.hookBlocked(record(params.run)));
       case 'thread/tokenUsage/updated':
         this.addUsage(record(record(params.tokenUsage)?.last));
         return [];
@@ -175,6 +181,30 @@ export class CodexAppServerTranslator {
     }
     if (!opened && start.length === 0) return [];
     return this.prependPending([...start, { type: 'tool_result', id, output: truncate(output, 4096), isError: failed }]);
+  }
+
+  /**
+   * A call a PreToolUse hook refused — the bridge's guest guard, mostly. It
+   * never becomes an item, so show it as a failed step the way Claude reports
+   * a refused call, which is also what `/audit 拦截` reads (`guardRefusal`).
+   */
+  private hookBlocked(run: Record<string, unknown> | undefined): AgentEvent[] {
+    if (run?.eventName !== 'preToolUse' || run.status !== 'blocked') return [];
+    // `pre-tool-use:<n>:<source path>:<call id>`
+    const id = str(run.id)?.split(':').at(-1);
+    if (!id) return [];
+    const reason = (Array.isArray(run.entries) ? run.entries : [])
+      .map(record)
+      .filter((entry) => entry?.kind === 'feedback' || entry?.kind === 'error')
+      .map((entry) => str(entry?.text))
+      .filter(Boolean)
+      .join('\n');
+    const call = this.blockedCall?.(id) ?? { name: 'PreToolUse', input: {} };
+    const hook = run.source === 'sessionFlags' ? ' [codex-hook.mjs]' : '';
+    return [
+      { type: 'tool_use', id, name: call.name, input: call.input },
+      { type: 'tool_result', id, output: truncate(`PreToolUse hook${hook}: ${reason || 'blocked'}`), isError: true },
+    ];
   }
 
   /** Codex's step list (`update_plan`), shown like Claude's to-do updates. */

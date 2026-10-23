@@ -58,10 +58,13 @@ describe('guest runs: owner-only areas', () => {
     ['the restart helper', '~/.local/bin/bridge-restart-when-idle'],
     ['the bridge source', `git -C ${ROOT} log -1`],
     ['bridge secrets', 'cat ~/.lark-channel/config.json'],
+    ["Codex's own state", 'cat ~/.codex/auth.json'],
     ['bridge logs', 'tail $HOME/.lark-channel/profiles/claude/logs/bridge.jsonl'],
     ['in-place edits of the agent instructions', 'sed -i "" s/a/b/ ~/.claude/CLAUDE.md'],
     ['appending to the agent instructions', 'echo rule >> ~/.claude/CLAUDE.md'],
     ['writing a skill', 'tee ~/.claude/skills/x/SKILL.md < /tmp/a'],
+    ["writing one of Codex's skills", 'echo x >> ~/.agents/skills/x/SKILL.md'],
+    ["writing one of Codex's system skills", 'rm -rf ~/.codex/skills/.system/imagegen'],
     ['deleting memory', 'rm -rf ~/.claude/projects/p/memory'],
     ['cd then write', 'cd ~/.claude/skills/x && echo hi > SKILL.md'],
     ['writing into a skill library', 'echo x >> ~/.lark-channel/profiles/claude/skill-libraries/lib/skills/x/SKILL.md'],
@@ -115,6 +118,7 @@ describe('guest runs: file scope', () => {
     ['reading an opened project', 'cat ~/Desktop/coding/lark/alphaess/antelope/README.md'],
     ['working in an opened project', `cd ${OPEN}/antelope && git status && mvn -q test`],
     ['running a skill script', 'python3 ~/.claude/skills/alphaess-tcpdump/scripts/capture.py --sn AL1 > /tmp/out.txt'],
+    ["reading Codex's system skills", 'cat ~/.codex/skills/.system/openai-docs/SKILL.md; cat ~/.agents/skills/lark-im/SKILL.md'],
     ['reading an attachment', 'file ~/.lark-channel/profiles/claude/media/abc.jpg'],
     ['reading a shared skill library', 'cat ~/.lark-channel/profiles/claude/skill-libraries/lib/skills/x/SKILL.md'],
     ['reading a knowledge library mirror', 'cat ~/.lark-channel/profiles/claude/knowledge-libraries/dept/shared/pitfalls/a.md'],
@@ -311,6 +315,12 @@ describe('guardRefusal', () => {
 
     const edit = hook('Edit', { file_path: `${READ_ONLY}/src/Main.java`, old_string: 'a', new_string: 'b' });
     expect(guardRefusal(reported('Edit', edit.stderr))).toContain(READ_ONLY);
+  });
+
+  it('reads the same reason from a call the Codex adapter reports refused', () => {
+    const refused = bash(`cat ${LC}/config.json`);
+    expect(guardRefusal(`PreToolUse hook [codex-hook.mjs]: ${refused.stderr}`)).toBe(`这条命令会读取或改动 ${LC}`);
+    expect(guardRefusal('PreToolUse hook: blocked by a hook of the user')).toBeUndefined();
   });
 
   it('ignores other failures', () => {

@@ -776,10 +776,10 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 
 ### 非主人发起的任务：工具层限制（始终开启）
 
-改动 bridge 和 agent 自身只接受 bot 主人本人的请求。一批消息里只要有一条不是主人本人发的（包括其他 bot 转交、引用或转述主人的话），这一轮就按访客任务运行，Claude Code 在工具层面拦截（与上面的审批同时生效，审批放行的操作照样拦）：
+改动 bridge 和 agent 自身只接受 bot 主人本人的请求。一批消息里只要有一条不是主人本人发的（包括其他 bot 转交、引用或转述主人的话），这一轮就按访客任务运行，在工具层面拦截（Claude Code 与 Codex 都是；与上面的审批同时生效，审批放行的操作照样拦）：
 
 - **不能改**：bridge 源码、`~/.lark-channel`（配置、密钥、日志都读不到，用户发来的附件除外）、`~/.claude` 下的 CLAUDE.md / settings / skills / agents / 记忆、`~/.local/bin`、`~/Library/LaunchAgents`；也不能运行启停 bridge 或 `launchctl` 的命令。
-- **只能看主人开放的目录**：主目录下只能读写 `guestRoots`、当前工作目录、skill 和附件；`guestReadOnlyRoots` 只读（可以读文件、搜索、用只读 git 查历史）。主目录以外（系统目录、`/tmp`）不受限。
+- **只能看主人开放的目录**：主目录下只能读写 `guestRoots`、当前工作目录、skill（含 Codex 的 `~/.agents/skills`、`~/.codex/skills`，只读）和附件；`guestReadOnlyRoots` 只读（可以读文件、搜索、用只读 git 查历史）。主目录以外（系统目录、`/tmp`）不受限。
 - `/resume` 只列本会话用过的历史会话，管理员发 `/resume all` 看全部；非管理员发 `/status` 只看到当前任务进度和待续跑时间。
 
 开放范围在 profile 的 `access` 段配置（`~` 可用，改完重启该 profile 生效）：
@@ -794,11 +794,19 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 }
 ```
 
-- `guestDeniedTools`：访客任务额外禁用的 Claude 权限规则（整个 MCP server 或单个工具）。
+- `guestDeniedTools`：访客任务额外禁用的 Claude 权限规则（整个 MCP server 或单个工具），只对 Claude 生效。
 - `guestDeniedCommands`：访客任务拒绝的命令正则。
 - `guestToolGrants`：按人放开上面两项里的条目（命令写原样的正则字符串）；一批消息里每个人都有这一项才放开，有 bot 参与则不放开。
 
-这是字符串匹配，不是沙箱：拦得住常规写法，agent 的系统提示里也写明了同样的规则。Codex 暂不支持这层拦截。
+这是字符串匹配，不是沙箱：拦得住常规写法，agent 的系统提示里也写明了同样的规则。
+
+Codex 经它的 PreToolUse hook 拦截 shell、`apply_patch` 和看图（`bin/codex-hook.mjs`，与 Claude 共用同一套判断）：
+
+- 第一次用时，bridge 在 Codex 配置目录（默认 `~/.codex`）的 `config.toml` 里登记信任这个 hook（`hooks.state`；Codex 只跑受信任的 hook）；登记不上的访客任务改走 `codex exec`，不会不设防地跑。
+- 访客任务不开交互终端（`write_stdin` 的输入不经过 hook）。
+- 代码模式（模型在 JS 单元里调 `tools.exec_command`）的命令一律固定在会话工作目录里执行，不认它自己指定的目录。
+- 被拦的调用照样出现在卡片和 `/audit 拦截` 里（`codex exec` 兜底时卡片上看不到）。
+- MCP 工具不经过这个 hook；`guestDeniedTools` 在 Codex 上不生效，需要禁 MCP 就别给 Codex profile 配那个 server。
 
 ### 受限群（`access.restrictedChats`）
 
@@ -824,7 +832,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 - `workspace`：这个群固定的工作目录，优先于 `/cd` 和默认目录。
 - `refusal`：被拦时唯一的回复，默认「这是一个危险操作，暂时不支持」；agent 不解释原因、不提规则。
 
-访客在受限群里两层限制同时生效。同样只对 Claude 生效，Codex 只收到指令里的规则。
+访客在受限群里两层限制同时生效。Codex 同样拦截，`deniedTools` 除外（见上）。
 
 ### 过载保护：额度紧张时不回其他 bot（默认关闭）
 

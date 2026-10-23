@@ -770,10 +770,10 @@ It lives in the profile config's `approvals` section (restart the profile to app
 
 ### Runs the owner didn't start: tool-level limits (always on)
 
-Changes to the bridge and to the agent itself are taken only from the bot owner in person. If any message of a batch isn't the owner's own (including requests handed over by another bot, or quoting / relaying the owner), the turn runs as a guest run, which Claude Code fences at the tool level (alongside approvals above — an approved step is still fenced):
+Changes to the bridge and to the agent itself are taken only from the bot owner in person. If any message of a batch isn't the owner's own (including requests handed over by another bot, or quoting / relaying the owner), the turn runs as a guest run, fenced at the tool level (Claude Code and Codex alike; alongside approvals above — an approved step is still fenced):
 
 - **Off limits**: the bridge's source, `~/.lark-channel` (config, secrets and logs are unreadable; attachments users sent stay readable), CLAUDE.md / settings / skills / agents / memory under `~/.claude`, `~/.local/bin`, `~/Library/LaunchAgents`; commands that start, stop or restart the bridge or call `launchctl` are refused.
-- **Only what the owner opened**: inside the home directory, only `guestRoots`, the run's workspace, skills and attachments can be read or written; `guestReadOnlyRoots` are read-only (read files, search, read-only git). Paths outside home (system dirs, `/tmp`) aren't fenced.
+- **Only what the owner opened**: inside the home directory, only `guestRoots`, the run's workspace, skills (Codex's `~/.agents/skills` and `~/.codex/skills` included, read-only) and attachments can be read or written; `guestReadOnlyRoots` are read-only (read files, search, read-only git). Paths outside home (system dirs, `/tmp`) aren't fenced.
 - `/resume` lists only the sessions this chat has used (admins see all with `/resume all`); non-admins' `/status` shows just the current task and any pending auto-resume.
 
 Configure what's open in the profile's `access` section (`~` allowed; restart the profile to apply):
@@ -788,11 +788,19 @@ Configure what's open in the profile's `access` section (`~` allowed; restart th
 }
 ```
 
-- `guestDeniedTools`: extra Claude permission rules denied to guest runs (a whole MCP server or one tool).
+- `guestDeniedTools`: extra Claude permission rules denied to guest runs (a whole MCP server or one tool); Claude only.
 - `guestDeniedCommands`: regexes for shell commands refused to guest runs.
 - `guestToolGrants`: per person, entries of the two lists above lifted for their runs (commands by their exact regex string); a run gets an entry back only when every sender in its batch has it, and never when a bot is in the batch.
 
-This is string matching, not a sandbox: it stops the plain ways of doing it, and the agent's system prompt states the same rules. Codex runs aren't fenced this way yet.
+This is string matching, not a sandbox: it stops the plain ways of doing it, and the agent's system prompt states the same rules.
+
+Codex is fenced through its PreToolUse hook on the shell, `apply_patch` and image views (`bin/codex-hook.mjs`, the same checks as Claude's):
+
+- On first use the bridge trusts the hook under `hooks.state` in the `config.toml` of Codex's home (`~/.codex` by default; Codex only runs trusted hooks); a guest run whose hook can't be trusted falls back to `codex exec` rather than running unfenced.
+- Guest runs get no interactive terminal (input sent with `write_stdin` never reaches a hook).
+- In code mode (the model calls `tools.exec_command` from a JS cell) commands always run in the session's working directory, whatever directory they ask for.
+- Refused calls show on the card and in `/audit 拦截` (not on the card under the `codex exec` fallback).
+- MCP tools don't pass through the hook, and `guestDeniedTools` doesn't apply to Codex: to keep an MCP server from guests, don't configure it for the Codex profile.
 
 ### Restricted chats (`access.restrictedChats`)
 
@@ -818,7 +826,7 @@ In the chats listed by chat_id, **every run — the owner's included** — gets 
 - `workspace`: the chat's own working directory; it wins over `/cd` and the default.
 - `refusal`: the only answer when a step is refused (default 「这是一个危险操作，暂时不支持」); the agent gives no reason and doesn't mention the rules.
 
-A guest in a restricted chat gets both fences. Like the guest fence, it applies to Claude; Codex only gets the rules in its instructions.
+A guest in a restricted chat gets both fences. Codex is fenced the same way, except for `deniedTools` (see above).
 
 ### Bot overload protection: stop answering other bots when the quota is tight (off by default)
 

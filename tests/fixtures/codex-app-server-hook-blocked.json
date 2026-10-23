@@ -1,0 +1,222 @@
+{
+ "source": "codex-cli 0.163.0 `codex app-server`, mock Responses provider, guest run with the bridge's PreToolUse hook (bin/codex-hook.mjs): a shell call into a private directory and a patch into a read-only root refused, a workspace command allowed",
+ "notifications": [
+  {
+   "method": "hook/started",
+   "params": {
+    "threadId": "01a168b4-f686-7e33-adf0-27fd73333399",
+    "turnId": "01a168b4-f6b2-7573-8378-dc14bc8bf65e",
+    "run": {
+     "id": "pre-tool-use:0:/<session-flags>/config.toml:call_fywm3g",
+     "eventName": "preToolUse",
+     "handlerType": "command",
+     "executionMode": "sync",
+     "scope": "turn",
+     "sourcePath": "/<session-flags>/config.toml",
+     "source": "sessionFlags",
+     "displayOrder": 0,
+     "status": "running",
+     "statusMessage": null,
+     "startedAt": 1792758052,
+     "completedAt": null,
+     "durationMs": null,
+     "entries": []
+    }
+   },
+   "emittedAtMs": 1792758052615
+  },
+  {
+   "method": "hook/completed",
+   "params": {
+    "threadId": "01a168b4-f686-7e33-adf0-27fd73333399",
+    "turnId": "01a168b4-f6b2-7573-8378-dc14bc8bf65e",
+    "run": {
+     "id": "pre-tool-use:0:/<session-flags>/config.toml:call_fywm3g",
+     "eventName": "preToolUse",
+     "handlerType": "command",
+     "executionMode": "sync",
+     "scope": "turn",
+     "sourcePath": "/<session-flags>/config.toml",
+     "source": "sessionFlags",
+     "displayOrder": 0,
+     "status": "blocked",
+     "statusMessage": null,
+     "startedAt": 1792758052,
+     "completedAt": 1792758052,
+     "durationMs": 104,
+     "entries": [
+      {
+       "kind": "feedback",
+       "text": "这条命令会访问未对外开放的位置 /tmp/codex-probe/e2e/capture/home/private。本次任务不是 bot 主人发起的，这部分仅限主人本人。请停止这一步，并告诉用户这部分内容不对外开放。"
+      }
+     ]
+    }
+   },
+   "emittedAtMs": 1792758052719
+  },
+  {
+   "method": "hook/started",
+   "params": {
+    "threadId": "01a168b4-f686-7e33-adf0-27fd73333399",
+    "turnId": "01a168b4-f6b2-7573-8378-dc14bc8bf65e",
+    "run": {
+     "id": "pre-tool-use:0:/<session-flags>/config.toml:call_vz835d",
+     "eventName": "preToolUse",
+     "handlerType": "command",
+     "executionMode": "sync",
+     "scope": "turn",
+     "sourcePath": "/<session-flags>/config.toml",
+     "source": "sessionFlags",
+     "displayOrder": 0,
+     "status": "running",
+     "statusMessage": null,
+     "startedAt": 1792758052,
+     "completedAt": null,
+     "durationMs": null,
+     "entries": []
+    }
+   },
+   "emittedAtMs": 1792758052746
+  },
+  {
+   "method": "hook/completed",
+   "params": {
+    "threadId": "01a168b4-f686-7e33-adf0-27fd73333399",
+    "turnId": "01a168b4-f6b2-7573-8378-dc14bc8bf65e",
+    "run": {
+     "id": "pre-tool-use:0:/<session-flags>/config.toml:call_vz835d",
+     "eventName": "preToolUse",
+     "handlerType": "command",
+     "executionMode": "sync",
+     "scope": "turn",
+     "sourcePath": "/<session-flags>/config.toml",
+     "source": "sessionFlags",
+     "displayOrder": 0,
+     "status": "blocked",
+     "statusMessage": null,
+     "startedAt": 1792758052,
+     "completedAt": 1792758052,
+     "durationMs": 101,
+     "entries": [
+      {
+       "kind": "feedback",
+       "text": "只读目录不能改动：/tmp/codex-probe/e2e/capture/home/ro。本次任务不是 bot 主人发起的，这个目录只开放查看、搜索和用 git 查历史，改动仅限主人本人。请停止这一步，并告诉用户这个目录只能读、不能改。"
+      }
+     ]
+    }
+   },
+   "emittedAtMs": 1792758052847
+  },
+  {
+   "method": "hook/started",
+   "params": {
+    "threadId": "01a168b4-f686-7e33-adf0-27fd73333399",
+    "turnId": "01a168b4-f6b2-7573-8378-dc14bc8bf65e",
+    "run": {
+     "id": "pre-tool-use:0:/<session-flags>/config.toml:call_o8wled",
+     "eventName": "preToolUse",
+     "handlerType": "command",
+     "executionMode": "sync",
+     "scope": "turn",
+     "sourcePath": "/<session-flags>/config.toml",
+     "source": "sessionFlags",
+     "displayOrder": 0,
+     "status": "running",
+     "statusMessage": null,
+     "startedAt": 1792758052,
+     "completedAt": null,
+     "durationMs": null,
+     "entries": []
+    }
+   },
+   "emittedAtMs": 1792758052869
+  },
+  {
+   "method": "hook/completed",
+   "params": {
+    "threadId": "01a168b4-f686-7e33-adf0-27fd73333399",
+    "turnId": "01a168b4-f6b2-7573-8378-dc14bc8bf65e",
+    "run": {
+     "id": "pre-tool-use:0:/<session-flags>/config.toml:call_o8wled",
+     "eventName": "preToolUse",
+     "handlerType": "command",
+     "executionMode": "sync",
+     "scope": "turn",
+     "sourcePath": "/<session-flags>/config.toml",
+     "source": "sessionFlags",
+     "displayOrder": 0,
+     "status": "completed",
+     "statusMessage": null,
+     "startedAt": 1792758052,
+     "completedAt": 1792758052,
+     "durationMs": 101,
+     "entries": []
+    }
+   },
+   "emittedAtMs": 1792758052989
+  },
+  {
+   "method": "item/started",
+   "params": {
+    "item": {
+     "type": "commandExecution",
+     "id": "call_o8wled",
+     "pluginId": null,
+     "scriptPath": null,
+     "command": "/bin/zsh -lc 'echo ok > allowed.txt'",
+     "cwd": "/tmp/codex-probe/e2e/capture/home/ws",
+     "processId": "85492",
+     "source": "unifiedExecStartup",
+     "status": "inProgress",
+     "commandActions": [
+      {
+       "type": "unknown",
+       "command": "echo ok > allowed.txt"
+      }
+     ],
+     "aggregatedOutput": null,
+     "exitCode": null,
+     "durationMs": null
+    },
+    "threadId": "01a168b4-f686-7e33-adf0-27fd73333399",
+    "turnId": "01a168b4-f6b2-7573-8378-dc14bc8bf65e",
+    "startedAtMs": 1792758053043
+   },
+   "emittedAtMs": 1792758053045
+  },
+  {
+   "method": "item/completed",
+   "params": {
+    "item": {
+     "type": "commandExecution",
+     "id": "call_o8wled",
+     "pluginId": null,
+     "scriptPath": null,
+     "command": "/bin/zsh -lc 'echo ok > allowed.txt'",
+     "cwd": "/tmp/codex-probe/e2e/capture/home/ws",
+     "processId": "85492",
+     "source": "unifiedExecStartup",
+     "status": "completed",
+     "commandActions": [
+      {
+       "type": "unknown",
+       "command": "echo ok > allowed.txt"
+      }
+     ],
+     "aggregatedOutput": null,
+     "exitCode": 0,
+     "durationMs": 0
+    },
+    "threadId": "01a168b4-f686-7e33-adf0-27fd73333399",
+    "turnId": "01a168b4-f6b2-7573-8378-dc14bc8bf65e",
+    "completedAtMs": 1792758053043
+   },
+   "emittedAtMs": 1792758053046
+  }
+ ],
+ "rollout": [
+  "{\"timestamp\":\"2026-10-23T12:20:52.608Z\",\"ordinal\":9,\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"id\":\"fc_fywm3g\",\"name\":\"exec_command\",\"arguments\":\"{\\\"cmd\\\":\\\"cat secret.txt\\\",\\\"workdir\\\":\\\"/tmp/codex-probe/e2e/capture/home/private\\\"}\",\"call_id\":\"call_fywm3g\",\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"01a168b4-f6b2-7573-8378-dc14bc8bf65e\"}},\"metadata\":{\"client_authored\":false,\"user_input_order\":1}}",
+  "{\"timestamp\":\"2026-10-23T12:20:52.740Z\",\"ordinal\":13,\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call\",\"id\":\"ctc_vz835d\",\"call_id\":\"call_vz835d\",\"name\":\"apply_patch\",\"input\":\"*** Begin Patch\\n*** Add File: /tmp/codex-probe/e2e/capture/home/ro/new.txt\\n+planted\\n*** End Patch\\n\",\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"01a168b4-f6b2-7573-8378-dc14bc8bf65e\"}}}",
+  "{\"timestamp\":\"2026-10-23T12:20:52.865Z\",\"ordinal\":17,\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"id\":\"fc_o8wled\",\"name\":\"exec_command\",\"arguments\":\"{\\\"cmd\\\":\\\"echo ok > allowed.txt\\\"}\",\"call_id\":\"call_o8wled\",\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"01a168b4-f6b2-7573-8378-dc14bc8bf65e\"}},\"metadata\":{\"client_authored\":false,\"user_input_order\":2}}"
+ ]
+}

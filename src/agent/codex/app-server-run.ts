@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import type { CodexSandboxMode } from '../../config/permissions';
@@ -7,7 +9,9 @@ import { spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import type { AgentEvent, AgentRun, RunApprovals } from '../types';
 import { isReadOnlyCommand } from '../../runtime/approvals';
 import { CodexAppServerTranslator } from './app-server-translator';
+import { CodexHookTrustError, ensureCodexHookTrusted } from './hooks';
 import { codexRateLimitEvent } from './rate-limit';
+import { refusedCall, rolloutCall } from './blocked-calls';
 
 type AppServerChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
@@ -32,8 +36,21 @@ export interface CodexAppServerRunOptions {
    * sandbox (approvalPolicy "untrusted"), and each ask goes to `decide`.
    */
   approvals?: RunApprovals;
+  /**
+   * The bridge's PreToolUse hook command, set in `config` (see hooks.ts): the
+   * run makes Codex trust it before opening the conversation, and does not
+   * start without it.
+   */
+  hookCommand?: string;
+  /**
+   * Where the hook logs the calls it refuses (`LARK_CHANNEL_HOOK_REFUSALS`),
+   * so they show on the card; removed with its directory when the process exits.
+   */
+  refusalLog?: string;
   /** Called when the app-server never got a conversation open (unsupported, hung, crashed). */
   onStartupFailure?: (reason: string) => void;
+  /** Called when the hook could not be trusted (the run failed; the app-server itself works). */
+  onHookTrustFailure?: (reason: string) => void;
   /** How long handshake + opening the thread may take. */
   startupTimeoutMs?: number;
 }
@@ -70,6 +87,7 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
     images: opts.images?.length ?? 0,
     model: opts.model,
     effort: opts.effort,
+    hooked: Boolean(opts.hookCommand),
   });
 
   const queue = new EventQueue();
@@ -77,6 +95,8 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
   const stderr: string[] = [];
   let nextId = 0;
   let threadId: string | undefined;
+  /** The thread's rollout, where a call the guard's hook blocked is looked up. */
+  let rollout: string | undefined;
   let turnId: string | undefined;
   let turn: CodexAppServerTranslator | undefined;
   let inputOpen = true;
@@ -186,7 +206,12 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
 
   const startTurn = (prompt: string, images: readonly string[] | undefined): CodexAppServerTranslator | undefined => {
     if (!threadId) return undefined;
-    const started = new CodexAppServerTranslator(threadId);
+    const started = new CodexAppServerTranslator(
+      threadId,
+      (callId) =>
+        (opts.refusalLog ? refusedCall(opts.refusalLog, callId) : undefined) ??
+        (rollout ? rolloutCall(rollout, callId) : undefined),
+    );
     turn = started;
     emit(started.start());
     request('turn/start', {
@@ -290,6 +315,11 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
   child.on('error', (err) => {
     emit(turn?.fail(`failed to spawn codex: ${err.message}`) ?? [{ type: 'error', message: `failed to spawn codex: ${err.message}`, terminationReason: 'failed' }]);
   });
+  if (opts.refusalLog) {
+    const dir = dirname(opts.refusalLog);
+    // After stdout ended: every notification that may look a refusal up is read.
+    child.once('close', () => rmSync(dir, { recursive: true, force: true }));
+  }
   child.on('exit', (code, signal) => {
     exited = true;
     inputOpen = false;
@@ -327,6 +357,7 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
         capabilities: null,
       });
       write({ method: 'initialized' });
+      if (opts.hookCommand) await ensureCodexHookTrusted(request, opts.cwd, opts.hookCommand);
       const threadParams = {
         cwd: opts.cwd,
         // Gated: read-only sandbox, and Codex asks before stepping outside it.
@@ -338,6 +369,7 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
         ? await request('thread/resume', { ...threadParams, threadId: opts.threadId })
         : await request('thread/start', threadParams);
       threadId = str(record(opened.thread)?.id) ?? opts.threadId;
+      rollout = str(record(opened.thread)?.path);
       if (!threadId) throw new Error('codex app-server returned no thread id');
       clearTimeout(startupTimer);
       startTurn(opts.prompt, opts.images);
@@ -347,7 +379,8 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
       const message = `codex app-server start-up failed: ${reason}${tail(stderr)}`;
       log.warn('codex-app-server', 'startup-failed', { reason: message.slice(0, 500) });
       // A stop during start-up is the user's doing, not a broken app-server.
-      if (!stopRequested) opts.onStartupFailure?.(reason);
+      if (err instanceof CodexHookTrustError) opts.onHookTrustFailure?.(reason);
+      else if (!stopRequested) opts.onStartupFailure?.(reason);
       emit([{ type: 'error', message, terminationReason: 'failed' }]);
       closeInput();
       if (!exited) child.kill('SIGTERM');

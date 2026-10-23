@@ -170,4 +170,13 @@ describe('Codex argv contract', () => {
     ).toContain('--ignore-user-config');
   });
 
+  it.each([undefined, 'thread-1'])("carries the bridge's hook, trusted by a top-level flag before exec (%s)", (threadId) => {
+    const config = ['-c', 'hooks.PreToolUse=[]', '-c', 'features.unified_exec_tty=false'];
+    const args = buildCodexArgs({ cwd: '/repo', sandbox: 'workspace-write', threadId, config, bypassHookTrust: true });
+    expect(args.slice(0, 2)).toEqual(['--dangerously-bypass-hook-trust', 'exec']);
+    const at = args.indexOf('hooks.PreToolUse=[]');
+    expect(args.slice(at - 1, at + 3)).toEqual(config);
+    if (threadId) expect(at).toBeLessThan(args.indexOf('resume'));
+    expect(buildCodexArgs({ cwd: '/repo', sandbox: 'read-only', threadId })).not.toContain('--dangerously-bypass-hook-trust');
+  });
 });

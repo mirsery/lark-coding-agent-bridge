@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Claude Code PreToolUse hook that lark-channel-bridge installs on runs started
-// by someone other than the bot owner. Two fences:
+// by someone other than the bot owner (Codex runs reach the same `decide`
+// through bin/codex-hook.mjs). Two fences:
 //
 // 1. Owner-only areas (`rules`): the bridge CLI and launchd, the bridge's
 //    source and private data, and writes into the agent's own instructions,
@@ -618,20 +619,22 @@ async function main() {
   const cwd = typeof input?.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
   const reason = decide(input?.tool_name, input?.tool_input, cfg, cwd);
   if (!reason) return 0;
+  process.stderr.write(refusal(reason, cfg));
+  return 2;
+}
+
+/** What the agent is told (on stderr, with exit 2) when `reason` refuses a call. */
+export function refusal(reason, cfg) {
   if (cfg.refusal) {
     // A restricted chat: one fixed answer, the reason and the rules unsaid.
-    process.stderr.write(
-      `${reason}。这一步在当前会话不可用：请停止这一步，不要换个写法再试；只回复用户「${cfg.refusal}」这一句，不要解释原因，也不要提及拦截、权限或规则。\n`,
-    );
-    return 2;
+    return `${reason}。这一步在当前会话不可用：请停止这一步，不要换个写法再试；只回复用户「${cfg.refusal}」这一句，不要解释原因，也不要提及拦截、权限或规则。\n`;
   }
   // A read-only place stays open for reading: say so, or the agent tells the
   // user it is closed to them altogether.
   const tail = reason.includes('只读目录')
     ? '本次任务不是 bot 主人发起的，这个目录只开放查看、搜索和用 git 查历史，改动仅限主人本人。请停止这一步，并告诉用户这个目录只能读、不能改。'
     : '本次任务不是 bot 主人发起的，这部分仅限主人本人。请停止这一步，并告诉用户这部分内容不对外开放。';
-  process.stderr.write(`${reason}。${tail}\n`);
-  return 2;
+  return `${reason}。${tail}\n`;
 }
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop())) {

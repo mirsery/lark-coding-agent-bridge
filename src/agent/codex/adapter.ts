@@ -1,7 +1,8 @@
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
+import { mkdtempSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SandboxMode } from '../../config/profile-schema';
 import type { EffortLevel } from '../../config/schema';
@@ -20,6 +21,7 @@ import type {
 } from '../types';
 import { clampCodexEffort } from '../models';
 import { buildCodexArgs, codexCompactionArgs } from './argv';
+import { codexHookSetup } from './hooks';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 import { readThreadUsageBaseline, subtractBaseline, type CodexUsageTotals } from './thread-usage';
 import { startCodexAppServerRun } from './app-server-run';
@@ -69,6 +71,8 @@ export class CodexAdapter implements AgentAdapter {
   private readonly transport: 'app-server' | 'exec';
   /** Set once an app-server never managed to open a conversation; later runs use exec. */
   private appServerUnavailable: string | undefined;
+  /** Set once the app-server could not be made to trust the bridge's hook; hooked runs use exec. */
+  private hookTrustUnavailable: string | undefined;
   private readonly extraEnv: Record<string, string>;
   private botIdentity: AgentBotIdentity | undefined;
 
@@ -133,12 +137,13 @@ export class CodexAdapter implements AgentAdapter {
    */
   private async chooseTransport(opts: AgentRunOptions): Promise<'app-server' | 'exec'> {
     if (this.transport === 'exec' || this.ignoreUserConfig || this.appServerUnavailable) return 'exec';
+    if ((opts.guard || opts.readHook) && this.hookTrustUnavailable) return 'exec';
     if (this.ignoreRules && (await hasExecpolicyRules(this.codexHomeDir(), opts.cwd))) return 'exec';
     return 'app-server';
   }
 
-  private childEnv(): NodeJS.ProcessEnv {
-    const envOverrides: NodeJS.ProcessEnv = { ...this.extraEnv, ...buildLarkChannelEnv(this.larkChannel) };
+  private childEnv(hookEnv: Record<string, string> = {}): NodeJS.ProcessEnv {
+    const envOverrides: NodeJS.ProcessEnv = { ...this.extraEnv, ...buildLarkChannelEnv(this.larkChannel), ...hookEnv };
     if (this.codexHome) {
       envOverrides.CODEX_HOME = this.codexHome;
     } else if (!this.inheritCodexHome) {
@@ -168,17 +173,29 @@ export class CodexAdapter implements AgentAdapter {
     const effort = clampCodexEffort(opts.model, opts.effort as EffortLevel | undefined);
     const transport = this.transports.get(opts.runId) ?? 'exec';
     this.transports.delete(opts.runId);
+    // A guest run on the app-server logs what its guard refuses, for the card.
+    const refusalLog =
+      transport === 'app-server' && opts.guard ? join(mkdtempSync(join(tmpdir(), 'codex-hook-')), 'refusals.jsonl') : undefined;
+    // The guest guard and the skill Read hook: one Codex PreToolUse hook.
+    const hook = codexHookSetup({
+      ...(opts.guard ? { guard: opts.guard } : {}),
+      ...(opts.readHook ? { readHook: opts.readHook } : {}),
+      ...(refusalLog ? { refusalLog } : {}),
+    });
     if (transport === 'app-server') {
       const run = startCodexAppServerRun({
         runId: opts.runId,
         binary: this.binary,
         cwd: opts.cwd,
-        env: this.childEnv(),
+        env: this.childEnv(hook?.env),
         config: [
           '-c', 'approval_policy="never"',
           '-c', 'shell_environment_policy.inherit="all"',
           ...codexCompactionArgs(opts.compactWindowTokens),
+          ...(hook?.config ?? []),
         ],
+        ...(hook ? { hookCommand: hook.command } : {}),
+        ...(refusalLog ? { refusalLog } : {}),
         prompt: prefixBridgeSystemPrompt(opts.prompt, this.botIdentity),
         ...(opts.images?.length ? { images: opts.images } : {}),
         ...(opts.threadId ? { threadId: opts.threadId } : {}),
@@ -193,6 +210,11 @@ export class CodexAdapter implements AgentAdapter {
           // hangs): stop trying, so the next message goes through exec.
           this.appServerUnavailable = reason;
           log.warn('agent', 'codex-app-server-disabled', { reason: reason.slice(0, 300) });
+        },
+        onHookTrustFailure: (reason) => {
+          // Later hooked runs go through exec, which can run it untrusted.
+          this.hookTrustUnavailable = reason;
+          log.warn('agent', 'codex-hook-trust-failed', { reason: reason.slice(0, 300) });
         },
       });
       // Later turns get the same bridge system prompt the first one did.
@@ -209,10 +231,11 @@ export class CodexAdapter implements AgentAdapter {
       model: opts.model,
       effort,
       compactWindowTokens: opts.compactWindowTokens,
+      ...(hook ? { config: hook.config, bypassHookTrust: true } : {}),
     });
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
-      env: this.childEnv(),
+      env: this.childEnv(hook?.env),
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as CodexChild;
 
@@ -225,6 +248,7 @@ export class CodexAdapter implements AgentAdapter {
       model: opts.model,
       effort,
       compactWindowTokens: opts.compactWindowTokens,
+      guarded: Boolean(opts.guard),
     });
 
     const stderrChunks: Buffer[] = [];

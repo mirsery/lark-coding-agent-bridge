@@ -38,9 +38,12 @@ export interface RunGuard {
   allowedRoots: string[];
   /** Regexes for further allowed paths (anchored), e.g. attachment dirs. */
   allowPatterns: string[];
-  /** Absolute path globs the run may not read. */
+  /**
+   * Absolute path globs the run may not read (Claude `Read(...)` rules; on
+   * Codex the hook's own fences cover them: they sit under `bash: 'any'` rules).
+   */
   readDeny: string[];
-  /** Extra Claude permission rules to deny (`access.guestDeniedTools`). */
+  /** Extra Claude permission rules to deny (`access.guestDeniedTools`); Claude only. */
   deniedTools: string[];
   /** Regexes for refused shell commands (`access.guestDeniedCommands`). */
   deniedCommands: string[];
@@ -51,7 +54,10 @@ export interface RunGuard {
    * alone, and the reason and the rules stay unsaid.
    */
   refusal?: string;
-  /** The PreToolUse hook script that applies the guard to tool calls. */
+  /**
+   * The PreToolUse hook script that applies the guard to tool calls (Claude;
+   * Codex runs use `codex-hook.mjs` next to it, which calls the same checks).
+   */
   hookScript: string;
 }
 
@@ -121,6 +127,7 @@ export function ownerOnlyGuard(opts: {
       // never write — the rules below still apply) and command-line tools.
       join(claude, 'skills'),
       join(home, '.agents', 'skills'),
+      join(home, '.codex', 'skills'),
       ...skillTargets(join(claude, 'skills')),
       join(home, '.local', 'bin'),
     ],
@@ -136,6 +143,10 @@ export function ownerOnlyGuard(opts: {
       ...['CLAUDE.md', 'settings.json', 'settings.local.json', 'skills', 'agents', 'scripts', 'projects'].map(
         (name): GuardRule => ({ path: join(claude, name), bash: 'write' }),
       ),
+      // Codex's user skills (its `~/.claude/skills`) and the system skills it
+      // ships, readable above.
+      { path: join(home, '.agents', 'skills'), bash: 'write' },
+      { path: join(home, '.codex', 'skills'), bash: 'write' },
       { path: join(home, '.local', 'bin'), bash: 'write' },
       { path: join(home, 'Library', 'LaunchAgents'), bash: 'write' },
       ...readOnlyRoots.map((path): GuardRule => ({ path, bash: 'write' })),
@@ -231,10 +242,11 @@ function skillTargets(skillsDir: string): string[] {
 /**
  * The guard's reason when a tool result is its refusal. Claude reports a
  * blocking hook as `PreToolUse:Bash hook error: ["node" ".../bridge-guard.mjs"]:
- * <stderr>`; the reason is the stderr's first sentence.
+ * <stderr>`, and the Codex adapter a refused call as `PreToolUse hook
+ * [codex-hook.mjs]: <stderr>`; the reason is the stderr's first sentence.
  */
 export function guardRefusal(output: string): string | undefined {
-  const match = /bridge-guard\.mjs"?\]:\s*([^。\n]+)/.exec(output);
+  const match = /(?:bridge-guard|codex-hook)\.mjs"?\]:\s*([^。\n]+)/.exec(output);
   return match?.[1]?.trim() || undefined;
 }
 
@@ -270,17 +282,22 @@ export function claudeGuardArgs(
     // The adapter writes this into the run's one `--settings` file, next to
     // the approval hook when the run is also gated.
     settings,
-    env: {
-      LARK_CHANNEL_GUARD: JSON.stringify({
-        home: guard.home,
-        rules: guard.rules,
-        allowedRoots: guard.allowedRoots,
-        allowPatterns: guard.allowPatterns,
-        deniedCommands: guard.deniedCommands,
-        ...(guard.deniedContent?.length ? { deniedContent: guard.deniedContent } : {}),
-        ...(guard.refusal ? { refusal: guard.refusal } : {}),
-      }),
-    },
+    env: guardHookEnv(guard),
+  };
+}
+
+/** The guard hook's configuration, passed in its environment (Claude and Codex alike). */
+export function guardHookEnv(guard: RunGuard): { LARK_CHANNEL_GUARD: string } {
+  return {
+    LARK_CHANNEL_GUARD: JSON.stringify({
+      home: guard.home,
+      rules: guard.rules,
+      allowedRoots: guard.allowedRoots,
+      allowPatterns: guard.allowPatterns,
+      deniedCommands: guard.deniedCommands,
+      ...(guard.deniedContent?.length ? { deniedContent: guard.deniedContent } : {}),
+      ...(guard.refusal ? { refusal: guard.refusal } : {}),
+    }),
   };
 }
 

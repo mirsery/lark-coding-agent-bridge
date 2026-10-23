@@ -16,6 +16,13 @@ export interface BuildCodexArgsInput {
   effort?: string;
   /** Native token threshold for smart-session auto-compaction. */
   compactWindowTokens?: number;
+  /** More `-c` overrides (the bridge's hook, see hooks.ts). */
+  config?: readonly string[];
+  /**
+   * Run hooks Codex hasn't been told to trust (`--dangerously-bypass-hook-trust`):
+   * the bridge's own hook, when it could not be trusted the normal way.
+   */
+  bypassHookTrust?: boolean;
 }
 
 /** Levels `model_reasoning_effort` may carry; anything else is dropped, never quoted into argv. */
@@ -49,6 +56,7 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
     ...codexCompactionArgs(input.compactWindowTokens),
     '-c',
     'shell_environment_policy.inherit="all"',
+    ...(input.config ?? []),
     ...(input.ignoreUserConfig === true ? ['--ignore-user-config'] : []),
     ...(input.ignoreRules === false ? [] : ['--ignore-rules']),
     '--skip-git-repo-check',
@@ -58,8 +66,12 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
 
   const imageFlags = (input.images ?? []).flatMap((path) => ['--image', path]);
 
+  // A top-level flag: before the subcommand.
+  const topLevel = input.bypassHookTrust ? ['--dangerously-bypass-hook-trust'] : [];
+
   if (input.threadId) {
     return [
+      ...topLevel,
       'exec',
       ...globalFlags,
       'resume',
@@ -71,6 +83,7 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
   }
 
   return [
+    ...topLevel,
     'exec',
     '--json',
     ...globalFlags,

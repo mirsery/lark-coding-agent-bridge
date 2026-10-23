@@ -118,13 +118,15 @@ export interface AgentRunOptions {
   */
   stopGraceMs?: number;
   /** Set when someone other than the bot owner started the run: what it may
-   * not touch. Adapters that can't enforce it ignore it. */
+   * not touch. Claude and Codex enforce it with a PreToolUse hook; adapters
+   * that can't enforce it ignore it. */
   guard?: RunGuard;
   approvals?: RunApprovals;
   /**
    * Shell command run before every file Read (a Claude PreToolUse hook on
-   * `Read`): opens a knowledge library's write window when the agent reads a
-   * bound skill. Never blocks the read. Adapters without hooks ignore it.
+   * `Read`; Codex has no Read tool, so its hook runs it for the files a shell
+   * command reads): opens a knowledge library's write window when the agent
+   * reads a bound skill. Never blocks the read. Adapters without hooks ignore it.
    */
   readHook?: string;
   /**
