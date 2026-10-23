@@ -144,6 +144,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, {
+        ...claudeArtifactEnv(process.env),
         ...buildLarkChannelEnv(this.larkChannel),
         ...(guard?.env ?? {}),
         // 会话智能压缩: Claude Code auto-compacts against this window instead
@@ -584,6 +585,18 @@ function writeSystemPromptFile(content: string): { path: string; cleanup: () => 
       }
     },
   };
+}
+
+/**
+ * Turns on Claude Code's claude.ai Artifact tools (`Artifact`, `ArtifactData`,
+ * `ArtifactComments`). `-p` makes the CLI's entrypoint `sdk-cli`, and on SDK
+ * entrypoints Claude Code leaves these tools out unless `CLAUDE_CODE_ARTIFACT`
+ * is set — so a run had no way to read a claude.ai/artifact link someone
+ * pasted (WebFetch only gets the empty page shell). A value already in the
+ * bridge's environment wins, so `CLAUDE_CODE_ARTIFACT=0` still turns them off.
+ */
+export function claudeArtifactEnv(base: NodeJS.ProcessEnv): Record<string, string> {
+  return base.CLAUDE_CODE_ARTIFACT === undefined ? { CLAUDE_CODE_ARTIFACT: '1' } : {};
 }
 
 /** A gated run whose approval hook could not be set up stays read-only (plan mode). */

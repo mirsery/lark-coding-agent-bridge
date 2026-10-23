@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const spawnMock = vi.hoisted(() => ({
   spawnProcess: vi.fn(),
@@ -85,6 +85,31 @@ describe('ClaudeAdapter system prompt wiring', () => {
       (spawnMock.spawnProcess.mock.calls[call]?.[2] as { env: NodeJS.ProcessEnv }).env;
     expect(envOf(0).CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('300000');
     expect(envOf(1).CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW);
+  });
+
+  describe('claude.ai Artifact tools', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    const spawnedEnv = (): NodeJS.ProcessEnv => {
+      spawnMock.spawnProcess.mockReturnValue(fakeChild());
+      new ClaudeAdapter().run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+      return (spawnMock.spawnProcess.mock.calls[0]?.[2] as { env: NodeJS.ProcessEnv }).env;
+    };
+
+    // `-p` runs as the `sdk-cli` entrypoint, where Claude Code leaves the
+    // Artifact tools out unless CLAUDE_CODE_ARTIFACT asks for them: without
+    // it a pasted claude.ai/artifact link could not be read at all.
+    it('asks Claude Code for them, which `-p` leaves out by default', () => {
+      vi.stubEnv('CLAUDE_CODE_ARTIFACT', undefined);
+      expect(spawnedEnv().CLAUDE_CODE_ARTIFACT).toBe('1');
+    });
+
+    it("keeps the bridge environment's own setting, so they can still be turned off", () => {
+      vi.stubEnv('CLAUDE_CODE_ARTIFACT', '0');
+      expect(spawnedEnv().CLAUDE_CODE_ARTIFACT).toBe('0');
+    });
   });
 
   function systemPromptFileContent(): string {
