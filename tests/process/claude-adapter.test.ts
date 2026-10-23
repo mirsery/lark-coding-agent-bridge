@@ -74,6 +74,14 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.argv).not.toContain('--model');
   });
 
+  it('keeps output when the child exits before the consumer starts reading events', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-delayed' }], exitAfterAnswer: true });
+    cleanup.push(fake.dir);
+    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'delayed', prompt: 'hello', cwd: fake.dir });
+    expect(await run.waitForExit(2000)).toBe(true);
+    expect(await collect(run.events)).toEqual([{ type: 'done', sessionId: 'sess-delayed', terminationReason: 'normal' }]);
+  });
+
   it('injects the active bridge profile env into spawned runs', async () => {
     const fake = await createFakeClaude({
       lines: [{ type: 'result', session_id: 'sess-profile' }],

@@ -226,10 +226,15 @@ export class ClaudeAdapter implements AgentAdapter {
     let stopRequested = false;
     let stopping: Promise<void> | undefined;
 
+    // Capture stdout before Sponsor lookup or any other consumer delay: a fast
+    // child may exit and drain its pipe before the event generator is started.
+    const stdout = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    const lines = stdout[Symbol.asyncIterator]();
+
     return {
       runId: opts.runId,
       pid: child.pid,
-      events: createEventStream(child, stderrChunks, () => runtimeError, onEvent, costBaseline, input, () => stopRequested),
+      events: createEventStream(child, stderrChunks, () => runtimeError, onEvent, costBaseline, input, () => stopRequested, stdout, lines),
       send: (prompt) => input.write(prompt),
       inject(prompt: string, preview: string): boolean {
         const ok = input.inject(prompt, preview);
@@ -373,6 +378,8 @@ async function* createEventStream(
   costBaseline: number,
   input: ClaudeInput,
   wasStopped: () => boolean,
+  rl: ReturnType<typeof createInterface>,
+  lines: AsyncIterator<string>,
 ): AsyncGenerator<AgentEvent> {
   // If fork itself failed synchronously, child.pid is undefined. The 'error'
   // event (ENOENT etc.) fires in the next tick, so also check getError().
@@ -386,7 +393,6 @@ async function* createEventStream(
     return;
   }
 
-  const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
   let sawStdout = false;
   let turnTerminal = false;
   // The last turn was refused by the plan quota (cleared once a turn does work).
@@ -423,7 +429,6 @@ async function* createEventStream(
     if (guard) clearTimeout(guard);
     guard = undefined;
   };
-  const lines = rl[Symbol.asyncIterator]();
   // A read the guard raced past stays pending; the next round awaits it
   // rather than asking for another line (which would skip this one).
   let pendingLine: Promise<IteratorResult<string>> | undefined;
