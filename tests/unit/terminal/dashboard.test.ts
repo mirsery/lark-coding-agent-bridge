@@ -54,14 +54,18 @@ it('turns at both edges without jumping and faces its direction of travel', () =
     expect(patch).toContain(`\x1b[3;${first.column}H${' '.repeat(16)}`);
   }
 });
-it('gives each session its own closed card and preserves the terminal background in every theme', () => {
+it('keeps all of a bot\'s sessions in its one closed card and preserves the terminal background in every theme', () => {
   const run = { runId: 'a', scope: 'a', chatId: 'chat', originMessageId: 'msg', promptPreview: '第一会话', startedAt: 0, ownerPid: process.pid, orphan: false };
   const snap = { now: 1000, host: 'host', cores: 8, load: 1, bots: [{ profile: 'test', name: 'Bot', agent: 'agent', online: true, runs: [run, { ...run, runId: 'b', scope: 'b', promptPreview: '第二会话' }] }] };
   const view = renderMonitor(snap, 160, 36, false);
-  expect(view.match(/╭/g)).toHaveLength(2);
-  expect(view.match(/╰/g)).toHaveLength(2);
+  expect(view.match(/╭/g)).toHaveLength(1);
+  expect(view.match(/╰/g)).toHaveLength(1);
+  expect(view.match(/Bot \/ agent/g)).toHaveLength(1);
+  expect(view).toContain('WORKING · 2 个会话');
   expect(view).toContain('第一会话');
   expect(view).toContain('第二会话');
+  expect(view.indexOf('第一会话')).toBeLessThan(view.indexOf('┈'));
+  expect(view.indexOf('┈')).toBeLessThan(view.indexOf('第二会话'));
   expect(view).not.toContain('\x1b');
   for (const theme of ['light', 'dark', 'terminal'] as const) {
     const colored = renderMonitor(snap, 160, 36, true, 0, false, theme);

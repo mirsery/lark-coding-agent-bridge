@@ -1,97 +1,10 @@
-import { loadRootConfig } from '../config/profile-store';
-import { quotaResetAt } from '../agent/quota';
-import { createSubscriptionReader, type MonitorSubscription } from './subscription';
+import { quotaResetAt, type QuotaWindow } from '../agent/quota';
 import { foreground, type MonitorTheme } from './theme';
-import { CAT_WIDTH, catPosition, renderCat } from './dashboard';
-import { createHostSampler, type HostMetrics } from './host';
-import { open, readdir } from 'node:fs/promises';
-import { cpus, hostname, loadavg } from 'node:os';
-import { join } from 'node:path';
-import { resolveAppPaths } from '../config/app-paths';
-import { isAlive, readAndPrune, type ProcessEntry } from '../runtime/registry';
-import { readRunRecords, RUN_STALE_AFTER_MS, type RunRecord } from '../runtime/run-registry';
+import { catPosition, renderCat } from './dashboard';
+import type { RunRecord } from '../runtime/run-registry';
+import type { Activity, MonitorBot, MonitorSnapshot } from './snapshot';
 
-interface Activity { ts: number; event: string; phase: string; tool?: string; traceId?: string; runId?: string; scope?: string }
-export interface MonitorBot { profile: string; name: string; agent: string; pid?: number; online: boolean; subscription?: MonitorSubscription; activity?: Activity; runs: Array<RunRecord & { orphan: boolean; activity?: Activity }> }
-export interface MonitorSnapshot { now: number; host: string; cores: number; load: number; bots: MonitorBot[]; metrics?: HostMetrics; networkHistory?: Array<{ read: number; write: number }> }
-
-/** Bounded log read: never load a growing multi-gigabyte log into memory. */
-interface LogCache { name: string; size: number; mtime: number; events: Activity[] }
-async function recentActivity(dir: string, cache: Map<string, LogCache>): Promise<Activity[]> {
-  try {
-    const names = (await readdir(dir)).filter(n => /^bridge-\d{8}\.jsonl$/.test(n)).sort();
-    const name = names.at(-1);
-    if (!name) return [];
-    const file = await open(join(dir, name), 'r');
-    try {
-      const info = await file.stat();
-      const size = info.size;
-      const cached = cache.get(dir);
-      if (cached?.name === name && cached.size === size && cached.mtime === info.mtimeMs) return cached.events;
-      const start = Math.max(0, size - 256 * 1024);
-      const buffer = Buffer.alloc(size - start);
-      const { bytesRead } = await file.read(buffer, 0, buffer.length, start);
-      const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
-      if (start) lines.shift();
-      const out: Activity[] = [];
-      for (const line of lines) {
-        try {
-          const r = JSON.parse(line) as Record<string, unknown>;
-          const ts = typeof r.ts === 'string' ? Date.parse(r.ts) : NaN;
-          if (!Number.isFinite(ts) || typeof r.event !== 'string' || typeof r.phase !== 'string') continue;
-          out.push({ ts, event: r.event, phase: r.phase,
-            tool: typeof r.tool === 'string' ? r.tool : undefined,
-            traceId: typeof r.traceId === 'string' ? r.traceId : undefined,
-            runId: typeof r.runId === 'string' ? r.runId : undefined,
-            scope: typeof r.scope === 'string' ? r.scope : undefined });
-        } catch { /* partial writes and malformed lines are skipped */ }
-      }
-      cache.set(dir, { name, size, mtime: info.mtimeMs, events: out });
-      return out;
-    } finally { await file.close(); }
-  } catch { return []; }
-}
-
-export function createMonitorReader(intervalMs = 10_000) {
-  const cache = new Map<string, LogCache>();
-  const readSubscription = createSubscriptionReader();
-  const sampleHost = createHostSampler(intervalMs);
-  const networkHistory: Array<{ read: number; write: number }> = [];
-  let ioSampledAt: number | undefined;
-  return async (rootDir: string, profile?: string, now = Date.now(), waitForSubscription = false): Promise<MonitorSnapshot> => {
-  const root = await loadRootConfig(join(rootDir, 'config.json')).catch(() => undefined);
-  const entries = readAndPrune(join(rootDir, 'registry', 'processes.json'));
-  let dirs: string[] = [];
-  try { dirs = (await readdir(join(rootDir, 'profiles'), { withFileTypes: true })).filter(d => d.isDirectory()).map(d => d.name); } catch { /* no profiles yet */ }
-  const names = [...new Set([...dirs, ...entries.map(e => e.profileName)])].filter(n => !profile || n === profile).sort();
-  const bots = await Promise.all(names.map(async name => {
-    const paths = resolveAppPaths({ rootDir, profile: name });
-    const records = await readRunRecords(paths.runsFile);
-    const events = await recentActivity(paths.logsDir, cache);
-    const entry: ProcessEntry | undefined = entries.find(e => e.profileName === name && isAlive(e.pid));
-    const config = root?.profiles[name];
-    const subscription = config ? await readSubscription(name, config, paths.profileDir, now, waitForSubscription) : undefined;
-    const activity = events.at(-1);
-    return { profile: name, name: entry?.botName ?? name, agent: entry?.agentKind ?? config?.agentKind ?? 'unknown', pid: entry?.pid,
-      online: Boolean(entry), activity, subscription,
-      runs: records.map(rec => {
-        const trace = events.find(e => e.runId === rec.runId)?.traceId;
-        const activity = events.filter(e => e.ts >= rec.startedAt && (e.runId === rec.runId || (trace && e.traceId === trace) || (!e.traceId && !e.runId && e.scope === rec.scope))).at(-1);
-        return { ...rec, orphan: !isAlive(rec.ownerPid) || now - rec.startedAt > RUN_STALE_AFTER_MS, activity };
-      }).sort((a, b) => Number(a.orphan) - Number(b.orphan) || a.startedAt - b.startedAt) };
-  }));
-  const metrics = await sampleHost(now);
-  if (metrics.io?.network && metrics.io.sampledAt !== ioSampledAt) {
-    ioSampledAt = metrics.io.sampledAt;
-    networkHistory.push({ ...metrics.io.network });
-    if (networkHistory.length > 24) networkHistory.shift();
-  }
-  return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics, networkHistory: [...networkHistory] };
-  };
-}
-export async function readMonitor(rootDir: string, profile?: string, now = Date.now()): Promise<MonitorSnapshot> {
-  return createMonitorReader()(rootDir, profile, now, true);
-}
+export { createMonitorReader, readMonitor, type Activity, type MonitorBot, type MonitorSnapshot } from './snapshot';
 
 /** Remove terminal control sequences from all untrusted labels and prompts. */
 export function clean(text: string): string {
@@ -106,10 +19,12 @@ export function fit(text: string, cells: number): string {
 function age(ms: number): string { const s = Math.floor(Math.max(0, ms) / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`; }
 function activityLabel(a?: Activity): string {
   if (a?.event === 'tool-in-flight') return a.tool ?? '工具执行';
+  if (a?.event === 'subagent-activity') return a.tool ? `子任务 · ${a.tool}` : '子任务';
   return '处理中';
 }
+function pad2(n: number): string { return String(n).padStart(2, '0'); }
 /** Wrap by terminal cells, preserving readable task summaries in narrow windows. */
-function summary(text: string, cells: number): string[] {
+function summary(text: string, cells: number, max = 2): string[] {
   const compact = clean(text).replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/https?:\/\/[^\s]+/g, url => {
     try { const u = new URL(url); return `[${u.pathname.split('/').filter(Boolean).at(-1) ?? u.hostname}]`; } catch { return url; }
   }).trim();
@@ -118,7 +33,7 @@ function summary(text: string, cells: number): string[] {
     const size = width(ch);
     if (used + size > cells) {
       lines.push(row); row = ''; used = 0;
-      if (lines.length === 2) { lines[1] = fit(lines[1]!, cells - 1).trimEnd() + '…'; return lines; }
+      if (lines.length === max) { lines[max - 1] = fit(lines[max - 1]!, cells - 1).trimEnd() + '…'; return lines; }
     }
     row += ch; used += size;
   }
@@ -134,15 +49,20 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   const paint = (text: string, code: number) => color ? `\x1b[${foreground(code, theme)}m${text}\x1b[0m` : text;
   const cells = (text: string) => [...clean(text)].reduce((n, c) => n + width(c), 0);
   const line = (text = '', code = 37, size = w) => paint(fit(text, size), code);
-  const pair = (left: string, right: string, code = 37, size = w) => {
+  const pair = (left: string, right: string, code = 37, size = w, rightCode = 90) => {
     if (size < 8) return line(left, code, size);
     const rightCells = Math.min(Math.floor(size / 2), cells(right));
-    return line(left, code, size - rightCells - 2) + '  ' + line(right, 90, rightCells);
+    return line(left, code, size - rightCells - 2) + '  ' + line(right, rightCode, rightCells);
+  };
+  // 实心方块比细线有更清楚的长度和颜色区分；未知指标保持空轨道。
+  const bar = (value: number | null, size: number) => {
+    const filled = value === null ? 0 : Math.round(Math.max(0, Math.min(100, value)) / 100 * size);
+    return paint('█'.repeat(filled), value !== null && value >= 90 ? 91 : value !== null && value >= 70 ? 93 : 92)
+      + paint('░'.repeat(size - filled), 90);
   };
   const rule = () => line('─'.repeat(w), 90);
-  const bots = [...s.bots].filter(b => b.online || b.runs.length || b.agent !== 'unknown')
-    .sort((a, b) => Number(b.runs.some(r => !r.orphan)) - Number(a.runs.some(r => !r.orphan)) || Number(b.online) - Number(a.online));
-  const ordered = bots.flatMap(bot => bot.runs.length ? bot.runs.map(run => ({ ...bot, runs: [run] })) : [bot]);
+  // Snapshot order (by profile) stays put: a bot's group never jumps when it gets busy.
+  const bots = s.bots.filter(b => b.online || b.runs.length || b.agent !== 'unknown');
   const online = s.bots.filter(b => b.online).length;
   const running = s.bots.flatMap(b => b.runs).filter(r => !r.orphan).length;
   const out = [pair('LARK  /  CONTROL', paused ? 'PAUSED' : new Date(s.now).toLocaleTimeString(), 35),
@@ -159,12 +79,6 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     const disk = m.disk && m.disk.total > 0 ? m.disk.used / m.disk.total * 100 : null;
     const io = m.io;
     const percent = (n: number | null) => n === null ? '—' : n.toFixed(1) + '%';
-    // 实心方块比细线有更清楚的长度和颜色区分；未知指标保持空轨道。
-    const bar = (value: number | null, size: number) => {
-      const filled = value === null ? 0 : Math.round(Math.max(0, Math.min(100, value)) / 100 * size);
-      return paint('█'.repeat(filled), value !== null && value >= 90 ? 91 : value !== null && value >= 70 ? 93 : 92)
-        + paint('░'.repeat(size - filled), 90);
-    };
     const half = Math.floor((w - 4) / 2);
     const barWidth = Math.max(8, Math.min(22, half - 24));
     const gauge = (label: string, value: number | null, caption: string) => line(label, 37, 6) + bar(value, barWidth) + line('  ' + caption, 37, Math.max(0, half - 6 - barWidth));
@@ -194,36 +108,55 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
       if (rows >= 24) out.push(line(`TEMP ${m.temperatureC == null ? '—' : m.temperatureC.toFixed(1) + '°C'}  ${io?.network ? 'NET ↓ ' + speed(io.network.read) + ' ↑ ' + speed(io.network.write) : 'NET —'}`));
     }
   }
-  out.push(line('会话  ' + '─'.repeat(Math.max(0, w - 6)), 35));
+  out.push(line('机器人  ' + '─'.repeat(Math.max(0, w - 8)), 35));
   const footer = [rule(), line((paused ? 'PAUSED  ·  ' : '') + 'q 退出  ·  空格暂停  ·  r 刷新' + (m ? '    *RAM 含系统缓存' : ''), 90)];
-  // Subscription belongs to a bot, while each card below belongs to a session.
-  const subscribed = bots.filter(bot => bot.subscription);
-  const slots = w >= 146 && ordered.length > 1 ? 2 : 1;
-  const taskReserve = ordered.length ? 6 + Number(ordered.length > slots) : 0;
-  for (let i = 0; i < subscribed.length; i++) {
-    const bot = subscribed[i]!;
-    const sub = bot.subscription!;
-    const quotaLines = [line(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}  ·  Sponsor: ${sub.sponsor ?? (sub.loading ? '读取中…' : '—')}`, bot.online ? 36 : 90)];
-    for (const [label, short] of [['5 小时窗口', '5h'], ['本周', '周']]) {
-      const window = sub.quota?.windows.find(window => window.label === label);
-      const used = window ? `${Math.round(window.usedPercent)}%` : '—';
-      const at = quotaResetAt(window?.resets, s.now);
-      const reset = at === undefined ? (window?.resets ?? '—') : new Date(at).toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
-      quotaLines.push(line(`    ${short} 已用 ${used} · 重置 ${reset}`, window && window.usedPercent >= 90 ? 91 : 90));
-    }
-    if (sub.quota?.blocked) quotaLines.push(line('    额度已用尽', 91));
-    const available = height - out.length - footer.length - taskReserve;
-    const later = i + 1 < subscribed.length;
-    if (quotaLines.length + Number(later) > available) {
-      if (available > 0) out.push(line(`+${subscribed.length - i} bots 额度 · 放大窗口查看`, 90));
-      break;
-    }
-    out.push(...quotaLines);
-  }
-  const gap = 4;
-  const outerWidth = Math.floor((w - (slots - 1) * gap) / slots);
-  const cardWidth = Math.max(1, outerWidth - 4);
   const bodyHeight = Math.max(0, height - out.length - footer.length);
+
+  const resetLabel = (resets: string | undefined): string => {
+    const at = quotaResetAt(resets, s.now);
+    if (at === undefined) return resets ?? '—';
+    const date = new Date(at);
+    const clock = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+    return date.toDateString() === new Date(s.now).toDateString() ? clock : `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${clock}`;
+  };
+  const QUOTA_WINDOWS = [['5 小时窗口', '5h'], ['本周', '周']] as const;
+  /** One window as `5h ███░░  42% · 重置 21:00`, exactly `size` cells; the bar shrinks first. */
+  const quotaSegment = (short: string, window: QuotaWindow | undefined, size: number): string => {
+    const tail = ` ${window ? `${Math.round(window.usedPercent)}%`.padStart(4) : '   —'} · 重置 ${window ? resetLabel(window.resets) : '—'}`;
+    const room = size - 3 - cells(tail);
+    const barWidth = room >= 4 ? Math.min(10, room) : 0;
+    return line(short, 37, Math.min(3, size)) + bar(window ? window.usedPercent : null, barWidth)
+      + line(tail, window && window.usedPercent >= 90 ? 91 : 90, Math.max(0, size - 3 - barWidth));
+  };
+  /**
+   * The bot's own lines, richest first: 0 = title, Sponsor, both quota
+   * windows; 1 = title and one compact quota line; 2 = title only.
+   */
+  const header = (bot: MonitorBot, inner: number, level: number): string[] => {
+    const active = bot.runs.filter(r => !r.orphan).length;
+    const state = !bot.online ? 'OFFLINE' : active ? `WORKING · ${active} 个会话` : 'IDLE';
+    const lines = [pair(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}`, state, bot.online ? 36 : 90, inner, active ? 92 : 90)];
+    const sub = bot.subscription;
+    if (!sub || level >= 2) return lines;
+    const windows = QUOTA_WINDOWS.map(([label, short]) => [short, sub.quota?.windows.find(window => window.label === label)] as const);
+    const sponsor = `Sponsor: ${sub.sponsor ?? (sub.loading ? '读取中…' : '—')}`;
+    const hot = Boolean(sub.quota?.blocked) || windows.some(([, window]) => window && window.usedPercent >= 90);
+    if (level === 1) {
+      const usage = sub.quota ? windows.map(([short, window]) => `${short} ${window ? Math.round(window.usedPercent) + '%' : '—'}`).join(' · ')
+        : sub.loading ? '额度读取中…' : '额度 —';
+      lines.push(line(`${sub.quota?.blocked ? '额度已用尽 · ' : ''}${usage}  ·  ${sponsor}`, hot ? 91 : 90, inner));
+      return lines;
+    }
+    lines.push(line(sponsor, 90, inner));
+    if (!sub.quota && sub.loading) lines.push(line('额度读取中…', 90, inner));
+    else {
+      const half = Math.floor((inner - 3) / 2);
+      if (half >= 31) lines.push(windows.map(([short, window], i) => quotaSegment(short, window, i ? inner - 3 - half : half)).join('   '));
+      else for (const [short, window] of windows) lines.push(quotaSegment(short, window, inner));
+    }
+    if (sub.quota?.blocked) lines.push(line('额度已用尽', 91, inner));
+    return lines;
+  };
   const origin = (run: RunRecord, size: number): string => {
     if (!run.chatType && !run.actorName) return fit('来源待同步', size).trimEnd();
     const place = run.chatType === 'p2p' ? '私聊' : run.chatName || '群名待同步';
@@ -231,52 +164,116 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     const personSize = Math.min(Math.floor((size - 3) / 2), cells(person));
     return fit(place, Math.max(0, size - personSize - 3)).trimEnd() + ' · ' + fit(person, Math.max(0, personSize)).trimEnd();
   };
-  const block = (bot: MonitorBot, budget: number): string[] => {
-    const active = bot.runs.filter(r => !r.orphan).length;
-    const state = !bot.online ? 'OFFLINE' : active ? 'WORKING' : 'IDLE';
-    const result = [pair(`${bot.online ? '●' : '○'} ${bot.name} / ${bot.agent}`, state, bot.online ? 36 : 90, cardWidth)];
+  type Run = MonitorBot['runs'][number];
+  const session = (run: Run, inner: number, previewLines: number, withSource = true): string[] => {
+    const side = inner >= 70 && withSource;
+    const source = origin(run, side ? Math.min(40, Math.floor(inner / 2)) : Math.max(1, inner - 2));
+    const previews = summary(run.promptPreview || '任务执行中', Math.max(1, inner - 2 - (side ? cells(source) + 2 : 0)), previewLines);
+    const result = [pair('▸ ' + (run.orphan ? '已中断 / 过期' : activityLabel(run.activity)), age(s.now - run.startedAt), run.orphan ? 33 : 90, inner)];
+    result.push(...previews.map((text, i) => side ? pair('  ' + text, i === 0 ? source : '', 37, inner) : line('  ' + text, 37, inner)));
+    if (!side && withSource) result.push(line('  ' + source, 90, inner));
+    return result;
+  };
+  /** Sessions in `room` lines; the first one may give up the `+N` reserve and its source row so something is always shown. */
+  const sessions = (bot: MonitorBot, inner: number, room: number): { lines: string[]; shown: number } => {
+    if (room < 1) return { lines: [], shown: 0 };
+    if (!bot.runs.length) return { lines: [line(bot.online ? '等待新任务' : '未运行', 90, inner)], shown: 0 };
+    const lines: string[] = [];
     let shown = 0;
     for (const run of bot.runs) {
-      const side = cardWidth >= 70;
-      const sourceWidth = side ? Math.min(40, Math.floor(cardWidth / 2)) : Math.max(1, cardWidth - 4);
-      const source = origin(run, sourceWidth);
-      const previews = summary(run.promptPreview || '任务执行中', Math.max(1, cardWidth - 4 - (side ? cells(source) + 2 : 0)));
-      const sourceRows = side ? 0 : 1;
-      // Keep one row available for the hidden-task count.
-      if (result.length + 1 + previews.length + sourceRows + Number(shown + 1 < bot.runs.length) > budget - 2) break;
-      result.push(pair('    ' + (run.orphan ? '已中断 / 过期' : activityLabel(run.activity)), age(s.now - run.startedAt), run.orphan ? 33 : 90, cardWidth));
-      result.push(...previews.map((text, i) => side
-        ? pair('    ' + text, i === 0 ? source : '', 37, cardWidth)
-        : line('    ' + text, 37, cardWidth)));
-      if (!side) result.push(line('    ' + source, 90, cardWidth));
+      const gap = shown ? 1 : 0;
+      const reserve = shown + 1 < bot.runs.length ? 1 : 0;
+      const tries = [[2, reserve, true], [1, reserve, true], [1, reserve, false], [1, 0, true], [1, 0, false]] as const;
+      let block: string[] | undefined;
+      for (const [previewLines, keep, withSource] of shown ? tries.slice(0, 2) : tries) {
+        const candidate = session(run, inner, previewLines, withSource);
+        if (lines.length + gap + candidate.length + keep <= room) { block = candidate; break; }
+      }
+      if (!block) break;
+      if (gap) lines.push(line('┈'.repeat(inner), 90, inner));
+      lines.push(...block);
       shown++;
     }
-    if (!bot.runs.length && result.length < budget - 2) result.push(line('    等待新任务', 90, cardWidth));
-    if (shown < bot.runs.length && result.length < budget - 2) result.push(line(`    +${bot.runs.length - shown} more tasks`, 90, cardWidth));
-    const inside = result.slice(0, Math.max(0, budget - 2));
-    const border = (left: string, right: string) => paint(left + '─'.repeat(outerWidth - 2) + right, bot.online ? 36 : 90);
-    return [border('╭', '╮'), ...inside.map(text => paint('│ ', 90) + text + paint(' │', 90)), border('╰', '╯')];
+    if (shown < bot.runs.length && lines.length < room) lines.push(line(`+${bot.runs.length - shown} 个会话 · 放大窗口查看`, 90, inner));
+    return { lines, shown };
   };
-  let hidden = 0; let used = 0;
-  for (let i = 0; i < ordered.length; i += slots) {
-    const remaining = bodyHeight - used;
-    if (remaining < 4) { hidden += ordered.length - i; break; }
-    const group = ordered.slice(i, i + slots);
-    const later = ordered.length > i + slots;
-    // Distribute height between bot rows, letting a sole row use all remaining space.
-    const budget = later ? Math.min(remaining - 1, Math.max(6, Math.floor((remaining - 1) / Math.ceil((ordered.length - i) / slots)))) : remaining;
-    const blocks = group.map(bot => block(bot, budget));
-    const groupHeight = Math.max(...blocks.map(b => b.length));
-    for (let r = 0; r < groupHeight; r++) {
-      out.push(blocks.map(b => {
-        const text = b[r] ?? '';
-        return text + ' '.repeat(Math.max(0, outerWidth - cells(text)));
-      }).join(' '.repeat(gap)));
+  // Only the full header (level 0) is set off from the sessions by a rule.
+  const headed = (bot: MonitorBot, inner: number, level: number) => {
+    const head = header(bot, inner, level);
+    return level === 0 ? [...head, line('─'.repeat(inner), 90, inner)] : head;
+  };
+  const naturalHeight = (bot: MonitorBot, inner: number, level: number) =>
+    2 + headed(bot, inner, level).length + sessions(bot, inner, 1000).lines.length;
+  // One session (status + preview), plus the `+N 个会话` note when there are more.
+  const minimumHeight = (bot: MonitorBot, inner: number, level: number) =>
+    2 + headed(bot, inner, level).length + (bot.runs.length ? (bot.runs.length > 1 ? 3 : 2) : 1);
+  /** A bot's bordered group, exactly `outer` cells wide and at most `budget` rows (padded to it with `fill`). */
+  const group = (bot: MonitorBot, outer: number, budget: number, fill: boolean): string[] => {
+    const framed = outer >= 8;
+    const inner = framed ? outer - 4 : outer;
+    const frame = framed ? 2 : 0;
+    let body: string[] = [];
+    for (const level of [0, 1, 2]) {
+      const head = headed(bot, inner, level);
+      const rest = sessions(bot, inner, budget - frame - head.length);
+      body = [...head, ...rest.lines];
+      if (body.length + frame <= budget && (rest.shown || (!bot.runs.length && rest.lines.length) || level === 2)) break;
     }
-    used += groupHeight;
+    body = body.slice(0, Math.max(0, budget - frame));
+    if (fill) while (body.length < budget - frame) body.push(line('', 37, inner));
+    if (!framed) return body;
+    const edge = bot.online ? 36 : 90;
+    const border = (left: string, right: string) => paint(left + '─'.repeat(outer - 2) + right, edge);
+    return [border('╭', '╮'), ...body.map(text => paint('│ ', edge) + text + paint(' │', edge)), border('╰', '╯')];
+  };
+
+  const gap = 2;
+  const perRow = w >= 120 && bots.length > 1 ? Math.max(1, Math.min(bots.length, Math.floor((w + gap) / (56 + gap)))) : 1;
+  const outer = Math.floor((w - (perRow - 1) * gap) / perRow);
+  const inner = outer >= 8 ? outer - 4 : outer;
+  let hidden = 0;
+  if (perRow > 1) {
+    // Side by side: each row of groups shares the height left, every column filled to the bottom.
+    let used = 0;
+    for (let i = 0; i < bots.length; i += perRow) {
+      const rowsLeft = Math.ceil((bots.length - i) / perRow);
+      const remaining = bodyHeight - used - (rowsLeft > 1 ? 1 : 0);
+      const budget = rowsLeft > 1 ? Math.floor(remaining / rowsLeft) : remaining;
+      const row = bots.slice(i, i + perRow);
+      if (budget < Math.max(...row.map(bot => minimumHeight(bot, inner, 2)))) { hidden = bots.length - i; break; }
+      const blocks = row.map(bot => group(bot, outer, budget, true));
+      const groupHeight = Math.max(...blocks.map(b => b.length));
+      for (let r = 0; r < groupHeight; r++) {
+        out.push(blocks.map(b => { const text = b[r] ?? ''; return text + ' '.repeat(Math.max(0, outer - cells(text))); }).join(' '.repeat(gap)).trimEnd());
+      }
+      used += groupHeight;
+    }
+  } else {
+    // Stacked: every bot gets its minimum first, then busy bots take what they need, in order.
+    let level = [0, 1, 2].find(l => bots.reduce((n, bot) => n + minimumHeight(bot, inner, l), 0) <= bodyHeight);
+    let shownBots = bots;
+    if (level === undefined) {
+      level = 2;
+      let room = bodyHeight;
+      shownBots = [];
+      for (const bot of bots) {
+        // Keep a row for the `+N` note, except when that would hide every bot.
+        const need = minimumHeight(bot, inner, 2) + (shownBots.length ? 1 : 0);
+        if (need > room) break;
+        shownBots.push(bot); room -= minimumHeight(bot, inner, 2);
+      }
+      hidden = bots.length - shownBots.length;
+    }
+    const budgets = shownBots.map(bot => minimumHeight(bot, inner, level));
+    let spare = bodyHeight - budgets.reduce((a, b) => a + b, 0) - (hidden ? 1 : 0);
+    shownBots.forEach((bot, i) => {
+      const extra = Math.max(0, Math.min(spare, naturalHeight(bot, inner, 0) - budgets[i]!));
+      budgets[i]! += extra; spare -= extra;
+    });
+    shownBots.forEach((bot, i) => out.push(...group(bot, outer, budgets[i]!, false)));
   }
-  if (!ordered.length && bodyHeight) out.push(line('等待 bot 上线', 90));
-  if (hidden && out.length < height - footer.length) out.push(line(`+${hidden} bots · enlarge window or use --profile`, 90));
+  if (!bots.length && bodyHeight) out.push(line('等待 bot 上线', 90));
+  if (hidden && out.length < height - footer.length) out.push(line(`+${hidden} 个 bot 未显示 · 放大窗口或用 --profile`, 90));
   out.push(...footer);
   return out.slice(0, height).map(text => indent + text).join('\n');
 }

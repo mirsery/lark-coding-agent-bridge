@@ -107,65 +107,90 @@ describe('responsive monitor layout', () => {
   expect(dm).toContain('张三');
 });
 
+const width = (line: string) => [...line].reduce((n, c) => n + ((c.codePointAt(0) ?? 0) >= 0x2e80 ? 2 : 1), 0);
+const quota = (fiveHour: number, week: number) => ({ windows: [
+  { label: '5 小时窗口', usedPercent: fiveHour, resets: '2026-10-23T12:00:00Z' },
+  { label: '本周', usedPercent: week, resets: '2026-10-25T12:00:00Z' },
+] });
+
 it('shows each bot sponsor and both quota windows with local reset times, including idle bots', () => {
   const snap = { now: Date.parse('2026-10-23T10:00:00Z'), host: 'host', cores: 8, load: 1,
     bots: ['alice', 'bob'].map((sponsor, index) => ({ profile: sponsor, name: sponsor, agent: 'agent', online: true, runs: [],
-      subscription: { sponsor, loading: false, quota: { windows: [
-        { label: '5 小时窗口', usedPercent: index ? 42 : 12, resets: '2026-10-23T12:00:00Z' },
-        { label: '本周', usedPercent: 67, resets: '2026-10-25T12:00:00Z' },
-      ] } } })) };
+      subscription: { sponsor, loading: false, quota: quota(index ? 42 : 12, 67) } })) };
   const output = renderMonitor(snap, 238, 67, false);
   expect(output).toContain('Sponsor: alice');
   expect(output).toContain('Sponsor: bob');
-  expect(output).toContain('5h 已用 12%');
-  expect(output).toContain('5h 已用 42%');
-  expect(output).toContain('周 已用 67%');
-  expect(output).toContain('重置');
+  expect(output).toMatch(/5h █+░+  12% · 重置 /);
+  expect(output).toMatch(/5h █+░+  42% · 重置 /);
+  expect(output).toMatch(/周 █+░+  67% · 重置 /);
   expect(output).not.toContain('2026-10-23T');
   for (const columns of [20, 48, 80, 150, 238]) {
     const lines = renderMonitor(snap, columns, 24, false).split('\n');
     expect(lines.length).toBeLessThan(24);
-    expect(lines.every(line => [...line].reduce((n, c) => n + ((c.codePointAt(0) ?? 0) >= 0x2e80 ? 2 : 1), 0) < columns)).toBe(true);
+    expect(lines.every(line => width(line) < columns)).toBe(true);
   }
   const unknown = renderMonitor({ ...snap, bots: [{ ...snap.bots[0]!, subscription: { loading: false } }] }, 110, 36, false);
-  expect(unknown).toContain('5h 已用 —');
-  expect(unknown).toContain('周 已用 —');
-  expect(unknown).not.toContain('已用 0%');
+  expect(unknown).toMatch(/5h ░+    — · 重置 —/);
+  expect(unknown).toMatch(/周 ░+    — · 重置 —/);
+  expect(unknown).not.toContain('0%');
+  const loading = renderMonitor({ ...snap, bots: [{ ...snap.bots[0]!, subscription: { loading: true } }] }, 110, 36, false);
+  expect(loading).toContain('Sponsor: 读取中…');
+  expect(loading).toContain('额度读取中…');
 });
 
-it('lists quotas once per bot below the session heading, outside all task cards', () => {
+it('groups each bot into one card: its sponsor and quota on top, its sessions below', () => {
   const run = { runId: 'one', scope: 'chat', chatId: 'chat', originMessageId: 'msg', promptPreview: '检查布局', startedAt: 0, ownerPid: process.pid, orphan: false };
-  const subscription = { sponsor: 'alice', loading: false, quota: { windows: [
-    { label: '5 小时窗口', usedPercent: 12, resets: '2026-10-23T12:00:00Z' },
-    { label: '本周', usedPercent: 67, resets: '2026-10-25T12:00:00Z' },
-  ] } };
+  const subscription = { sponsor: 'alice', loading: false, quota: quota(12, 67) };
+  // Idle first: the order is the snapshot's, a busy bot does not jump ahead.
   const snap = { now: Date.parse('2026-10-23T10:00:00Z'), host: 'host', cores: 8, load: 1, bots: [
-    { profile: 'busy', name: 'Busy', agent: 'agent', online: true, subscription, runs: [run, { ...run, runId: 'two' }] },
-    { profile: 'idle', name: 'Idle', agent: 'agent', online: true, subscription: { ...subscription, sponsor: 'bob' }, runs: [] },
+    { profile: 'idle', name: 'Idle', agent: 'agent', online: true, subscription: { sponsor: 'bob', loading: false, quota: quota(5, 30) }, runs: [] },
+    { profile: 'busy', name: 'Busy', agent: 'agent', online: true, subscription, runs: [run, { ...run, runId: 'two', promptPreview: '第二个会话' }] },
   ] };
   for (const columns of [80, 238]) {
     const output = renderMonitor(snap, columns, 67, false);
-    const beforeCards = output.slice(output.indexOf('会话'), output.indexOf('╭'));
-    expect(beforeCards).toContain('Busy / agent');
-    expect(beforeCards).toContain('Idle / agent');
-    expect(beforeCards).toContain('Sponsor: alice');
-    expect(beforeCards).toContain('Sponsor: bob');
-    expect(beforeCards).toContain('5h 已用 12%');
-    expect(beforeCards).toContain('周 已用 67%');
+    expect(output.match(/╭/g)).toHaveLength(2);
     expect(output.match(/Sponsor: alice/g)).toHaveLength(1);
-    expect(output.match(/5h 已用 12%/g)).toHaveLength(2);
-    expect(output.slice(output.indexOf('╭'))).not.toContain('Sponsor:');
-    expect(output.slice(output.indexOf('╭'))).not.toContain('已用');
-    expect(output.match(/╭/g)).toHaveLength(3);
-    expect(output).toContain('检查布局');
+    expect(output.match(/Busy \/ agent/g)).toHaveLength(1);
+    expect(output.match(/12% · 重置/g)).toHaveLength(1);
+    expect(output).toContain('WORKING · 2 个会话');
+    expect(output).toContain('等待新任务');
+    expect(output.indexOf('Idle / agent')).toBeLessThan(output.indexOf('Busy / agent'));
+    expect(output.indexOf('Sponsor: alice')).toBeLessThan(output.indexOf('检查布局'));
+    expect(output.indexOf('检查布局')).toBeLessThan(output.indexOf('第二个会话'));
+    expect(output).not.toContain('会话  ─');
   }
+  const wide = renderMonitor(snap, 238, 67, false).split('\n');
+  expect(wide.some(line => line.includes('Idle / agent') && line.includes('Busy / agent'))).toBe(true);
+  expect(wide.some(line => line.includes('Sponsor: bob') && line.includes('Sponsor: alice'))).toBe(true);
   for (const columns of [20, 48, 80, 110, 150, 238]) {
     for (const rows of [12, 24, 36]) {
       const output = renderMonitor(snap, columns, rows, false);
-      expect(output).toContain(rows >= 24 ? '检查布局' : 'Busy');
+      expect(output).toContain(rows >= 24 ? '检查布局' : 'Idle');
       const lines = output.split('\n');
       expect(lines.length).toBeLessThan(rows);
-      expect(lines.every(line => [...line].reduce((n, c) => n + ((c.codePointAt(0) ?? 0) >= 0x2e80 ? 2 : 1), 0) < columns)).toBe(true);
+      expect(lines.every(line => width(line) < columns)).toBe(true);
     }
   }
+});
+
+it('marks exhausted quota, offline bots, stale sessions and sessions that do not fit', () => {
+  const run = { runId: 'one', scope: 'chat', chatId: 'chat', originMessageId: 'msg', promptPreview: '排查告警', startedAt: 0, ownerPid: process.pid, orphan: false };
+  const snap = { now: Date.parse('2026-10-23T10:00:00Z'), host: 'host', cores: 8, load: 1, bots: [
+    { profile: 'codex', name: 'Poki', agent: 'codex', online: true, subscription: { sponsor: 'carol', loading: false, quota: { ...quota(100, 21), blocked: true } },
+      runs: [{ ...run, orphan: true }, ...Array.from({ length: 12 }, (_, i) => ({ ...run, runId: `r${i}` }))] },
+    { profile: 'claude', name: 'CC', agent: 'claude', online: false, runs: [] },
+  ] };
+  const output = renderMonitor(snap, 189, 46, false);
+  expect(output).toContain('额度已用尽');
+  expect(output).toMatch(/5h █{10} 100% · 重置/);
+  expect(output).toContain('已中断 / 过期');
+  expect(output).toContain('WORKING · 12 个会话');
+  expect(output).toMatch(/\+\d+ 个会话 · 放大窗口查看/);
+  expect(output).toContain('○ CC / claude');
+  expect(output).toContain('OFFLINE');
+  // Tight windows fall back to one compact quota line, the exhausted state first.
+  const tight = renderMonitor(snap, 80, 18, false);
+  expect(tight).toContain('额度已用尽 · 5h 100% · 周 21%  ·  Sponsor: carol');
+  expect(tight).toContain('+12 个会话 · 放大窗口查看');
+  expect(tight).toContain('未运行');
 });
