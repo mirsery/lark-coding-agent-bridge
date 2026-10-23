@@ -2,7 +2,7 @@ import { quotaResetAt, type QuotaWindow } from '../agent/quota';
 import { foreground, type MonitorTheme } from './theme';
 import { catPosition, renderCat } from './dashboard';
 import type { RunRecord } from '../runtime/run-registry';
-import type { Activity, MonitorBot, MonitorSnapshot } from './snapshot';
+import { activityLabel, type MonitorBot, type MonitorSnapshot } from './snapshot';
 
 export { createMonitorReader, readMonitor, type Activity, type MonitorBot, type MonitorSnapshot } from './snapshot';
 
@@ -17,11 +17,6 @@ export function fit(text: string, cells: number): string {
   return out + ' '.repeat(Math.max(0, cells - used));
 }
 function age(ms: number): string { const s = Math.floor(Math.max(0, ms) / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`; }
-function activityLabel(a?: Activity): string {
-  if (a?.event === 'tool-in-flight') return a.tool ?? '工具执行';
-  if (a?.event === 'subagent-activity') return a.tool ? `子任务 · ${a.tool}` : '子任务';
-  return '处理中';
-}
 function pad2(n: number): string { return String(n).padStart(2, '0'); }
 /** Wrap by terminal cells, preserving readable task summaries in narrow windows. */
 function summary(text: string, cells: number, max = 2): string[] {

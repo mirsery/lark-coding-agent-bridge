@@ -26,6 +26,8 @@ import { activateProfile, listBots, listProfiles } from './fleet';
 import { dreamView, mutateDream } from './dream';
 import { knowledgeView, mutateKnowledge, mutateSkills, skillsView } from './knowledge';
 import { listRuns, stopRun } from './runs';
+import { monitorView, type MonitorReader } from './monitor';
+import { createMonitorReader } from '../terminal/snapshot';
 import { onboardCreate, onboardState, onboardValidate } from './onboard';
 import { finishQrRegistration, qrStatus, startQrRegistration } from './qr-register';
 import {
@@ -40,6 +42,11 @@ import type { Controls } from '../commands';
 import type { UiServerDeps, UiServerHandle } from './types';
 
 const DEFAULT_HOST = '127.0.0.1';
+/** The status page polls every 5s; host metrics are sampled at most that often. */
+const MONITOR_SAMPLE_MS = 5_000;
+
+/** Deps plus the per-server state requests share (the status page's caches). */
+type ServerContext = UiServerDeps & { readMonitor: MonitorReader };
 
 /**
  * Start the supervisor's single management console. Binds 127.0.0.1, mints a
@@ -50,9 +57,12 @@ const DEFAULT_HOST = '127.0.0.1';
 export async function startUiServer(deps: UiServerDeps): Promise<UiServerHandle> {
   const host = deps.host ?? DEFAULT_HOST;
   const token = randomBytes(32).toString('hex');
+  // One reader per server, so the account cache (60s) and CPU deltas survive between polls.
+  const read = createMonitorReader(MONITOR_SAMPLE_MS);
+  const ctx: ServerContext = { ...deps, readMonitor: deps.readMonitor ?? ((rootDir, now) => read(rootDir, undefined, now)) };
 
   const server = createServer((req, res) => {
-    handle(req, res, deps, token).catch((err) => {
+    handle(req, res, ctx, token).catch((err) => {
       log.warn('ui', 'request-failed', { err: String(err) });
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' });
       else res.end();
@@ -78,7 +88,7 @@ export async function startUiServer(deps: UiServerDeps): Promise<UiServerHandle>
 async function handle(
   req: IncomingMessage,
   res: ServerResponse,
-  deps: UiServerDeps,
+  deps: ServerContext,
   token: string,
 ): Promise<void> {
   if (!isLocalRequest(req)) {
@@ -125,7 +135,7 @@ async function resolveTargetState(
 async function route(
   req: IncomingMessage,
   res: ServerResponse,
-  deps: UiServerDeps,
+  deps: ServerContext,
   url: URL,
 ): Promise<void> {
   const path = url.pathname;
@@ -147,6 +157,12 @@ async function route(
   // --- online channels ---
   if (path === '/api/bots' && g) {
     sendJson(res, 200, { bots: listBots(sup, deps.version, Date.now()) });
+    return;
+  }
+
+  // --- status page: bots with quota and sessions, host metrics ---
+  if (path === '/api/monitor' && g) {
+    sendJson(res, 200, await monitorView(sup, deps.readMonitor, deps.rootDir));
     return;
   }
 

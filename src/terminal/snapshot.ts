@@ -17,6 +17,13 @@ export interface Activity { ts: number; event: string; phase: string; tool?: str
 export interface MonitorBot { profile: string; name: string; agent: string; pid?: number; online: boolean; subscription?: MonitorSubscription; activity?: Activity; runs: Array<RunRecord & { orphan: boolean; activity?: Activity }> }
 export interface MonitorSnapshot { now: number; host: string; cores: number; load: number; bots: MonitorBot[]; metrics?: HostMetrics; networkHistory?: Array<{ read: number; write: number }> }
 
+/** What a run is doing right now, in words both the terminal and the console show. */
+export function activityLabel(a?: Activity): string {
+  if (a?.event === 'tool-in-flight') return a.tool ?? '工具执行';
+  if (a?.event === 'subagent-activity') return a.tool ? `子任务 · ${a.tool}` : '子任务';
+  return '处理中';
+}
+
 /** Bounded log read: never load a growing multi-gigabyte log into memory. */
 interface LogCache { name: string; size: number; mtime: number; events: Activity[] }
 async function recentActivity(dir: string, cache: Map<string, LogCache>): Promise<Activity[]> {

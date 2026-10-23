@@ -195,6 +195,8 @@ lark-channel-bridge start --web-ui
 
 ⚠️ **不要对同一个 profile 同时用这两种方式。** 如果某个 profile 已经有单 profile 后台服务在跑，这时又单独起了 `run --web-ui` / `start --web-ui`，控制台会尝试去接管这个 profile，但拿不到它的 runtime lock（已经被前一个进程持有），于是静默失败并把它显示为**未运行**——即便原来那个 daemon 其实还活着、还在正常收发消息。控制台目前只能感知自己托管的 profile，感知不到被其他进程保活的 profile。想用控制台的话，先停掉单 profile 后台服务（`lark-channel-bridge stop --profile <name>`），再让控制台来接管启动。
 
+控制台侧栏的「运行概览」与终端面板同源：顶部是主机 CPU / 内存 / 磁盘 / 网络；下面每个 bot 一张卡片，顺序固定，展示 Sponsor、5 小时和本周额度条及本地重置时间（≥ 90% 标红，用尽标「额度已用尽」），卡片里列出该 bot 的会话（当前步骤、已运行、摘要、所在会话和发起人）。页面每 5 秒刷新；控制台进程托管的任务可以直接停止，其他进程的任务只能查看。
+
 ### 多 profile：分别运行 Claude 和 Codex
 
 默认情况下，bridge 使用当前激活的 profile；可以通过 `profile use <name>` 切换。每个 profile 会维护独立的应用凭据、会话、工作目录和日志。只有在需要同时连接多个 PersonalAgent 应用，或分别运行 Claude 和 Codex 时，才需要创建多个 profile：

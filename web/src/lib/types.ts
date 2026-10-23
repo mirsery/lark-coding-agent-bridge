@@ -102,6 +102,58 @@ export interface RunInfo {
   status: "running" | "orphan";
 }
 
+/** One session on the status page: a task row plus who started it and its latest step. */
+export interface MonitorRun extends RunInfo {
+  chatType?: "p2p" | "group";
+  actorName?: string;
+  /** 处理中 / a tool name / 子任务 · …, as the terminal monitor shows it. */
+  activity: string;
+  activityAt?: number;
+}
+
+export interface QuotaWindowInfo {
+  /** 5 小时窗口 / 本周 */
+  label: string;
+  usedPercent: number;
+  /** As the CLI words it; resetAt is the parsed instant when readable. */
+  resets?: string;
+  resetAt?: number;
+}
+
+/** One bot's group on the status page. */
+export interface MonitorBot {
+  profile: string;
+  name: string;
+  agent: string;
+  online: boolean;
+  /** Its runs live in the console's process, so they can be stopped here. */
+  hosted: boolean;
+  sponsor?: string;
+  quota?: { windows: QuotaWindowInfo[]; blocked?: boolean };
+  quotaLoading: boolean;
+  runs: MonitorRun[];
+}
+
+export interface HostMetricsInfo {
+  cpuPercent: number | null;
+  temperatureC?: number | null;
+  memoryTotal: number;
+  memoryNonFree: number;
+  uptimeSeconds: number;
+  disk?: { total: number; used: number; available: number };
+  io?: { disk: { read: number; write: number } | null; network: { read: number; write: number } | null };
+}
+
+export interface MonitorInfo {
+  now: number;
+  host: string;
+  cores: number;
+  load: number;
+  metrics?: HostMetricsInfo;
+  networkHistory: Array<{ read: number; write: number }>;
+  bots: MonitorBot[];
+}
+
 /** Owner user-identity auth status (for the "我的群" picker). */
 export interface UserAuthStatus {
   loggedIn: boolean;

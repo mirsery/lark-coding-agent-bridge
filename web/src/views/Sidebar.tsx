@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ListTodo, Plus } from "lucide-react";
+import { Activity, Plus } from "lucide-react";
 import { apiGet } from "@/lib/api";
 import type { ProfileInfo } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -49,8 +49,8 @@ export function Sidebar({
             (tasksActive ? "bg-primary/15 text-foreground" : "hover:bg-accent")
           }
         >
-          <ListTodo className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="min-w-0 flex-1 truncate font-medium">任务</span>
+          <Activity className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="min-w-0 flex-1 truncate font-medium">运行概览</span>
         </button>
       </div>
 

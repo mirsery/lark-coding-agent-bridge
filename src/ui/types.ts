@@ -3,6 +3,7 @@ import type { KnownChat } from '../bot/lark-info';
 import type { MutableProfileState } from '../config/config-ops';
 import type { Controls } from '../commands';
 import type { ManagedStatus } from '../runtime/supervisor';
+import type { MonitorReader } from './monitor';
 
 /**
  * The live per-profile runtime the console edits. The supervisor's `Controls`
@@ -39,6 +40,8 @@ export interface UiServerDeps {
   host?: string;
   /** Bind port; 0 (default) picks an ephemeral port. */
   port?: number;
+  /** Status-page snapshot reader; defaults to the terminal monitor's (account probes, host sampling). */
+  readMonitor?: MonitorReader;
 }
 
 export interface UiServerHandle {

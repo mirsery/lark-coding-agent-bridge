@@ -14,6 +14,7 @@ import {
 import { register } from '../../../src/runtime/registry';
 import { startUiServer } from '../../../src/ui/server';
 import type { UiServerHandle, UiSupervisor } from '../../../src/ui/types';
+import type { MonitorSnapshot } from '../../../src/terminal/snapshot';
 
 const app = { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' as const };
 
@@ -25,6 +26,8 @@ let base: string;
 // profile -> controls (a MutableProfileState/Controls-ish object)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let online: Map<string, any>;
+// What the status page's snapshot reader returns (never probes a real agent CLI).
+let snapshot: MonitorSnapshot;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function makeControls(profile: string): Promise<any> {
@@ -99,7 +102,13 @@ beforeEach(async () => {
   online = new Map();
   online.set('claude', await makeControls('claude')); // claude online, work offline
 
-  handle = await startUiServer({ supervisor: stubSupervisor(), version: 'test', rootDir });
+  snapshot = { now: 0, host: 'host', cores: 8, load: 1, bots: [] };
+  handle = await startUiServer({
+    supervisor: stubSupervisor(),
+    version: 'test',
+    rootDir,
+    readMonitor: async (_root, now) => ({ ...snapshot, now }),
+  });
   base = `http://127.0.0.1:${handle.port}`;
 });
 
@@ -354,6 +363,49 @@ describe('ui server (supervisor-backed)', () => {
       status: 'running',
     });
     expect(runs[0].elapsedMs).toBeGreaterThanOrEqual(5_000);
+  });
+
+  it('groups the status page by bot with sponsor, quota and enriched sessions', async () => {
+    const startedAt = Date.now() - 5_000;
+    online.get('claude').runsMonitor = {
+      snapshot: () => [{ scope: 'oc_chat_a', source: 'im', chatId: 'oc_chat_a', promptPreview: '写周报', startedAt, queueDepth: 2 }],
+      interrupt: () => true,
+    };
+    online.get('claude').knownChats = [{ id: 'oc_chat_a', name: '研发群' }];
+    const record = { runId: 'r1', scope: 'oc_chat_a', chatId: 'oc_chat_a', originMessageId: 'om_1', promptPreview: '写周报', startedAt, ownerPid: process.pid,
+      chatType: 'group' as const, actorName: '李爽', orphan: false, activity: { ts: startedAt + 1_000, event: 'tool-in-flight', phase: 'start', tool: 'Bash' } };
+    snapshot = {
+      now: 0, host: 'mac.local', cores: 8, load: 1.5,
+      metrics: { cpuPercent: 12, memoryTotal: 16, memoryNonFree: 8, uptimeSeconds: 60 },
+      networkHistory: [{ read: 1, write: 2 }],
+      bots: [
+        { profile: 'claude', name: 'stale-name', agent: 'claude', online: true, runs: [record],
+          subscription: { sponsor: 'alice', loading: false, quota: { blocked: true, windows: [
+            { label: '5 小时窗口', usedPercent: 100, resets: '2026-10-23T12:00:00Z' },
+            { label: '本周', usedPercent: 21, resets: 'whenever' },
+          ] } } },
+        { profile: 'ghost', name: 'ghost', agent: 'unknown', online: false, runs: [] },
+        { profile: 'work', name: 'work', agent: 'claude', online: false, runs: [], subscription: { loading: true } },
+      ],
+    };
+
+    const view = await json(await get('/api/monitor', handle.token));
+    expect(view).toMatchObject({ host: 'mac', cores: 8, metrics: { cpuPercent: 12 }, networkHistory: [{ read: 1, write: 2 }] });
+    // Stable snapshot order; a profile with nothing to show is left out.
+    expect(view.bots.map((b: { profile: string }) => b.profile)).toEqual(['claude', 'work']);
+    const [claude, work] = view.bots;
+    expect(claude).toMatchObject({ name: 'bot-claude', agent: 'claude', online: true, hosted: true, sponsor: 'alice', quotaLoading: false });
+    expect(claude.quota).toEqual({ blocked: true, windows: [
+      { label: '5 小时窗口', usedPercent: 100, resets: '2026-10-23T12:00:00Z', resetAt: Date.parse('2026-10-23T12:00:00Z') },
+      { label: '本周', usedPercent: 21, resets: 'whenever' },
+    ] });
+    expect(claude.runs).toHaveLength(1);
+    expect(claude.runs[0]).toMatchObject({ scope: 'oc_chat_a', chatName: '研发群', chatType: 'group', actorName: '李爽',
+      activity: 'Bash', activityAt: startedAt + 1_000, queueDepth: 2, status: 'running', promptPreview: '写周报' });
+    expect(work).toMatchObject({ online: false, hosted: false, quotaLoading: true, runs: [] });
+    expect(work.quota).toBeUndefined();
+
+    expect((await get('/api/monitor')).status).toBe(401);
   });
 
   it('stops a hosted run and rejects stop for a non-hosted profile', async () => {
