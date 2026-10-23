@@ -779,7 +779,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 
 改动 bridge 和 agent 自身只接受 bot 主人本人的请求。一批消息里只要有一条不是主人本人发的（包括其他 bot 转交、引用或转述主人的话），这一轮就按访客任务运行，在工具层面拦截（Claude Code 与 Codex 都是；与上面的审批同时生效，审批放行的操作照样拦）：
 
-- **不能改**：bridge 源码、`~/.lark-channel`（配置、密钥、日志都读不到，用户发来的附件除外）、`~/.claude` 下的 CLAUDE.md / settings / skills / agents / 记忆、`~/.local/bin`、`~/Library/LaunchAgents`；也不能运行启停 bridge 或 `launchctl` 的命令。
+- **不能改**：bridge 源码、`~/.lark-channel`（配置、密钥、日志都读不到，用户发来的附件除外）、`~/.claude` 下的 CLAUDE.md / settings / skills / agents / 记忆、`~/.local/bin`、`~/Library/LaunchAgents`；也不能运行启停 bridge 或 `launchctl` 的命令。claude.ai artifact 只能读别人分享的链接，不能以主人的账户发布、列出或管理（发布会把本机文件传上去）。
 - **只能看主人开放的目录**：主目录下只能读写 `guestRoots`、当前工作目录、skill（含 Codex 的 `~/.agents/skills`、`~/.codex/skills`，只读）和附件；`guestReadOnlyRoots` 只读（可以读文件、搜索、用只读 git 查历史）。主目录以外（系统目录、`/tmp`）不受限。
 - `/resume` 只列本会话用过的历史会话，管理员发 `/resume all` 看全部；非管理员发 `/status` 只看到当前任务进度和待续跑时间。
 

@@ -87,6 +87,25 @@ describe('guest runs: owner-only areas', () => {
     expect(hook('Read', { file_path: `${LC}/profiles/claude/skill-libraries/lib/skills/x/SKILL.md` }).code).toBe(0);
   });
 
+  it("lets a claude.ai artifact be read, never published or managed as the owner's account", () => {
+    const url = 'https://claude.ai/artifact/0f6e8a0c-1234-4abc-9def-0123456789ab';
+    expect(hook('Artifact', { action: 'read', url, prompt: 'summarise' }).code).toBe(0);
+    // Publishing is the default action and uploads local files.
+    for (const input of [
+      { file_path: `${WORKSPACE}/page.html` },
+      { action: 'publish', file_path: `${HOME}/.ssh/id_rsa`, asset: true, url },
+      { action: 'list' },
+      { action: 'delete', url },
+      { action: 'pin', url },
+    ]) {
+      const res = hook('Artifact', input);
+      expect(res.code).toBe(2);
+      expect(res.stderr).toContain('仅限主人本人');
+    }
+    expect(hook('ArtifactData', { url }).code).toBe(2);
+    expect(hook('ArtifactComments', { url }).code).toBe(2);
+  });
+
   it('lets a knowledge library mirror be read but not edited, and keeps the work clone out of reach', () => {
     const mirror = `${LC}/profiles/claude/knowledge-libraries/dept/shared/experience/a.md`;
     expect(hook('Read', { file_path: mirror }).code).toBe(0);
@@ -289,7 +308,7 @@ describe('guest runs: Claude flags', () => {
     expect(args).toContain(`Read(/${LC}/config.json*)`);
     const [hook] = settings.hooks.PreToolUse as { matcher: string; hooks: { command: string }[] }[];
     expect(hook!.matcher).toBe(
-      'Bash|Read|Edit|MultiEdit|Write|NotebookEdit|Glob|Grep',
+      'Bash|Read|Edit|MultiEdit|Write|NotebookEdit|Glob|Grep|Artifact|ArtifactData|ArtifactComments',
     );
     expect(hook!.hooks[0]!.command).toBe(
       `"/usr/local/bin/node" "${guard.hookScript}"`,
@@ -447,6 +466,12 @@ describe('restricted chats', () => {
     expect(run(owner, 'Bash', { command: 'python3 ~/.occam/tasks/x/decrypt.py in.csv out.xlsx' }).code).toBe(0);
     expect(run(owner, 'Bash', { command: 'lark-cli im +messages-send --chat-id oc_x --file a.xlsx' }).code).toBe(0);
     expect(run(owner, 'Read', { file_path: `${HOME}/Desktop/notes.md` }).code).toBe(0);
+  });
+
+  it("keeps the owner's claude.ai artifacts the owner's, and a guest's read-only", () => {
+    expect(run(owner, 'Artifact', { file_path: `${WORKSPACE}/page.html` }).code).toBe(0);
+    expect(run(guest, 'Artifact', { file_path: `${WORKSPACE}/page.html` }).code).toBe(2);
+    expect(run(guest, 'Artifact', { action: 'read', url: 'https://claude.ai/artifact/x' }).code).toBe(0);
   });
 
   it('fences the denied paths for file tools and in the Claude flags', () => {

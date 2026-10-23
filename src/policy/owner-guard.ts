@@ -45,6 +45,12 @@ export interface RunGuard {
   readDeny: string[];
   /** Extra Claude permission rules to deny (`access.guestDeniedTools`); Claude only. */
   deniedTools: string[];
+  /**
+   * Claude's claude.ai Artifact tools may only read a shared artifact (guest
+   * runs): publishing uploads local files under the owner's claude.ai account,
+   * and the other actions manage the owner's artifacts.
+   */
+  readOnlyArtifacts?: boolean;
   /** Regexes for refused shell commands (`access.guestDeniedCommands`). */
   deniedCommands: string[];
   /** Regexes refused in what a file tool writes (a restricted chat's commands). */
@@ -157,6 +163,7 @@ export function ownerOnlyGuard(opts: {
       join(lc, 'profiles', '*', 'lark-cli', '**'),
       join(lc, 'profiles', '*', 'logs', '**'),
     ],
+    readOnlyArtifacts: true,
     deniedTools: (opts.deniedTools ?? []).filter((t) => !(opts.grantedTools ?? []).includes(t)),
     deniedCommands: (opts.deniedCommands ?? []).filter((re) => !(opts.grantedTools ?? []).includes(re)),
     hookScript: join(root, 'bin', 'bridge-guard.mjs'),
@@ -271,7 +278,7 @@ export function claudeGuardArgs(
     hooks: {
       PreToolUse: [
         {
-          matcher: 'Bash|Read|Edit|MultiEdit|Write|NotebookEdit|Glob|Grep',
+          matcher: 'Bash|Read|Edit|MultiEdit|Write|NotebookEdit|Glob|Grep|Artifact|ArtifactData|ArtifactComments',
           hooks: [{ type: 'command', command: `"${nodeBinary}" "${guard.hookScript}"` }],
         },
       ],
@@ -296,6 +303,7 @@ export function guardHookEnv(guard: RunGuard): { LARK_CHANNEL_GUARD: string } {
       allowPatterns: guard.allowPatterns,
       deniedCommands: guard.deniedCommands,
       ...(guard.deniedContent?.length ? { deniedContent: guard.deniedContent } : {}),
+      ...(guard.readOnlyArtifacts ? { readOnlyArtifacts: true } : {}),
       ...(guard.refusal ? { refusal: guard.refusal } : {}),
     }),
   };

@@ -113,6 +113,10 @@ const FILE_TOOLS = {
   Grep: ['path', 'glob'],
 };
 const WRITING_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+// Claude's claude.ai Artifact tools. Publishing (the default action) uploads
+// local files under the owner's claude.ai account and the rest manage the
+// owner's artifacts, so a guest run may only read one somebody shared.
+const ARTIFACT_TOOLS = new Set(['Artifact', 'ArtifactData', 'ArtifactComments']);
 
 function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -598,6 +602,10 @@ export function decide(toolName, input, cfg, cwd = process.cwd()) {
   const config = { ...cfg, home: cfg.home ?? homedir() };
   if (toolName === 'Bash') return decideBash(input?.command, config, cwd);
   if (toolName in FILE_TOOLS) return decideFile(toolName, input, config, cwd);
+  if (ARTIFACT_TOOLS.has(toolName) && config.readOnlyArtifacts) {
+    if (toolName === 'Artifact' && input?.action === 'read') return null;
+    return '发布或管理 claude.ai artifact 属于仅限主人的操作（访客任务只能读别人分享的 artifact）';
+  }
   return null;
 }
 

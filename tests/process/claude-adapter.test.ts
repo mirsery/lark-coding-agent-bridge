@@ -388,7 +388,7 @@ describe('ClaudeAdapter process contract', () => {
     // Claude takes a single `--settings`: both hooks must live in it.
     expect(record.argv.filter((a) => a === '--settings')).toHaveLength(1);
     const hooks = (record.settings as { hooks: { PreToolUse: Array<{ matcher: string }> } }).hooks.PreToolUse;
-    expect(hooks.map((h) => h.matcher)).toEqual(['Bash|Read|Edit|MultiEdit|Write|NotebookEdit|Glob|Grep', '*']);
+    expect(hooks.map((h) => h.matcher)).toEqual(['Bash|Read|Edit|MultiEdit|Write|NotebookEdit|Glob|Grep|Artifact|ArtifactData|ArtifactComments', '*']);
     // The guard's other flags still reach argv.
     expect(record.argv).toContain('--disallowedTools');
   });
