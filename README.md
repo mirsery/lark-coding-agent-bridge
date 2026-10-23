@@ -164,6 +164,8 @@ lark-channel-bridge monitor --once
 lark-channel-bridge monitor --json
 ```
 
+Each bot card also shows its Sponsor, five-hour and weekly usage percentages, and reset times in the local timezone, including while idle. Account readings refresh asynchronously once a minute; unavailable values show `—`. One-shot and JSON output wait for the reading. With multiple Claude accounts, the card shows the account selected for the next task and its quota, falling back to that account’s latest run report. Short viewports prioritize bot and task information.
+
 The examples above refresh every five seconds; omitting `--interval` uses a ten-second sampling default. The walking cat independently clears its previous position and updates only its own area at two frames per second, without collecting metrics or reading logs. Use `--no-animation` to disable animation; small viewports hide the cat.
 
 On macOS, physical disk read/write rates and physical network download/upload rates use counter deltas, excluding loopback and tunnel duplicates. Initial or unavailable samples show `—`; I/O sampling runs at most once every five seconds.

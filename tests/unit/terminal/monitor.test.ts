@@ -106,3 +106,29 @@ describe('responsive monitor layout', () => {
   expect(dm).toContain('私聊');
   expect(dm).toContain('张三');
 });
+
+it('shows each bot sponsor and both quota windows with local reset times, including idle bots', () => {
+  const snap = { now: Date.parse('2026-10-23T10:00:00Z'), host: 'host', cores: 8, load: 1,
+    bots: ['alice', 'bob'].map((sponsor, index) => ({ profile: sponsor, name: sponsor, agent: 'agent', online: true, runs: [],
+      subscription: { sponsor, loading: false, quota: { windows: [
+        { label: '5 小时窗口', usedPercent: index ? 42 : 12, resets: '2026-10-23T12:00:00Z' },
+        { label: '本周', usedPercent: 67, resets: '2026-10-25T12:00:00Z' },
+      ] } } })) };
+  const output = renderMonitor(snap, 238, 67, false);
+  expect(output).toContain('Sponsor: alice');
+  expect(output).toContain('Sponsor: bob');
+  expect(output).toContain('5h 已用 12%');
+  expect(output).toContain('5h 已用 42%');
+  expect(output).toContain('周 已用 67%');
+  expect(output).toContain('重置');
+  expect(output).not.toContain('2026-10-23T');
+  for (const columns of [20, 48, 80, 150, 238]) {
+    const lines = renderMonitor(snap, columns, 24, false).split('\n');
+    expect(lines.length).toBeLessThan(24);
+    expect(lines.every(line => [...line].reduce((n, c) => n + ((c.codePointAt(0) ?? 0) >= 0x2e80 ? 2 : 1), 0) < columns)).toBe(true);
+  }
+  const unknown = renderMonitor({ ...snap, bots: [{ ...snap.bots[0]!, subscription: { loading: false } }] }, 110, 36, false);
+  expect(unknown).toContain('5h 已用 —');
+  expect(unknown).toContain('周 已用 —');
+  expect(unknown).not.toContain('已用 0%');
+});

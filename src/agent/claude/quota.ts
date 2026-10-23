@@ -32,6 +32,10 @@ export async function readClaudeQuota(
   return mostRoom(readings);
 }
 
+export async function readClaudeAccountQuota(opts: QuotaReadOptions, env: Record<string, string>, binary = 'claude'): Promise<QuotaReading | undefined> {
+  return readUsage(opts, binary, env);
+}
+
 async function readUsage(opts: QuotaReadOptions, binary: string, env: Record<string, string>): Promise<QuotaReading | undefined> {
   const result = await runCapture(binary, opts.cwd, ['-p', '/usage'], {
     timeoutMs: opts.timeoutMs ?? 60_000,

@@ -20,7 +20,7 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
   const readMonitor = createMonitorReader(seconds * 1000);
   const root = resolveAppPaths().rootDir;
   if (opts.once || opts.json || !process.stdout.isTTY || !process.stdin.isTTY) {
-    const snap = await readMonitor(root, opts.profile);
+    const snap = await readMonitor(root, opts.profile, Date.now(), true);
     console.log(opts.json ? JSON.stringify(snap, null, 2) : renderMonitor(snap, process.stdout.columns || 110, 1000, false));
     return;
   }
