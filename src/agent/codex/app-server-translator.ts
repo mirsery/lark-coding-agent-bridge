@@ -1,5 +1,6 @@
 import { log } from '../../core/logger';
 import type { AgentEvent } from '../types';
+import { isUsageLimitMessage, USAGE_LIMIT_ERROR_INFO } from './rate-limit';
 
 /**
  * Turns `codex app-server` notifications for one turn into bridge events,
@@ -14,6 +15,7 @@ export class CodexAppServerTranslator {
   private readonly threadId: string;
   private pendingAgentMessage: string | undefined;
   private lastError: string | undefined;
+  private usageLimitMessage: string | undefined;
   private terminal = false;
   private readonly usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 };
   private sawUsage = false;
@@ -43,6 +45,11 @@ export class CodexAppServerTranslator {
     return this.terminal;
   }
 
+  /** The plan's quota refused the turn: Codex's wording, which says when it resets. */
+  get usageLimit(): string | undefined {
+    return this.usageLimitMessage;
+  }
+
   notification(method: string, params: Record<string, unknown>): AgentEvent[] {
     if (this.terminal) return [];
     switch (method) {
@@ -58,7 +65,9 @@ export class CodexAppServerTranslator {
         this.addUsage(record(record(params.tokenUsage)?.last));
         return [];
       case 'error': {
-        const message = str(record(params.error)?.message);
+        const error = record(params.error);
+        const message = str(error?.message);
+        this.noteUsageLimit(error);
         if (message) {
           this.lastError = message;
           log.warn('codex-app-server', 'error_event', { message: message.slice(0, 500), willRetry: params.willRetry === true });
@@ -126,6 +135,7 @@ export class CodexAppServerTranslator {
     this.terminal = true;
     const status = str(turn?.status);
     if (status === 'failed') {
+      this.noteUsageLimit(record(turn?.error));
       const message = str(record(turn?.error)?.message) ?? this.lastError ?? 'codex turn failed';
       return this.prependPending([{ type: 'error', message: truncate(message), terminationReason: 'failed' }]);
     }
@@ -143,6 +153,13 @@ export class CodexAppServerTranslator {
       terminationReason: status === 'interrupted' ? 'interrupted' : 'normal',
     });
     return events;
+  }
+
+  private noteUsageLimit(error: Record<string, unknown> | undefined): void {
+    const message = str(error?.message);
+    if (error?.codexErrorInfo === USAGE_LIMIT_ERROR_INFO || isUsageLimitMessage(message)) {
+      this.usageLimitMessage = message ?? this.usageLimitMessage ?? 'usage limit reached';
+    }
   }
 
   private addUsage(last: Record<string, unknown> | undefined): void {

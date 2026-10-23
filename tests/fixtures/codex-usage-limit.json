@@ -1,0 +1,120 @@
+{
+  "_note": "codex-cli 0.163, 2026-10-23, Plus plan with the 5-hour window used up (resets 20:35 +08:00). Credit ids and account id redacted.",
+  "appServer": {
+    "error": {
+      "method": "error",
+      "params": {
+        "error": {
+          "message": "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 8:35 PM.",
+          "codexErrorInfo": "usageLimitExceeded",
+          "additionalDetails": null,
+          "misalignment": null
+        },
+        "willRetry": false,
+        "threadId": "01a16878-ff0a-7913-81ee-eed9347c718b",
+        "turnId": "01a16879-12fd-71e3-ab9a-0d168bb38ebc"
+      },
+      "emittedAtMs": 1792754136472
+    },
+    "turnCompleted": {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "01a16878-ff0a-7913-81ee-eed9347c718b",
+        "turn": {
+          "id": "01a16879-12fd-71e3-ab9a-0d168bb38ebc",
+          "rootTurnId": "01a16879-12fd-71e3-ab9a-0d168bb38ebc",
+          "items": [],
+          "itemsView": "notLoaded",
+          "status": "failed",
+          "error": {
+            "message": "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 8:35 PM.",
+            "codexErrorInfo": "usageLimitExceeded",
+            "additionalDetails": null,
+            "misalignment": null
+          },
+          "startedAt": 1792754127,
+          "completedAt": 1792754136,
+          "durationMs": 8856
+        }
+      },
+      "emittedAtMs": 1792754136477
+    },
+    "rateLimitsRead": {
+      "ordinaryUsageAllowed": false,
+      "rateLimits": {
+        "limitId": "codex",
+        "limitName": null,
+        "normalModelSlug": null,
+        "primary": {
+          "usedPercent": 100,
+          "windowDurationMins": 300,
+          "resetsAt": 1792758907
+        },
+        "secondary": {
+          "usedPercent": 21,
+          "windowDurationMins": 10080,
+          "resetsAt": 1793326168
+        },
+        "credits": {
+          "hasCredits": false,
+          "unlimited": false,
+          "balance": "0"
+        },
+        "individualLimit": null,
+        "spendControlReached": false,
+        "planType": "plus",
+        "rateLimitReachedType": "rate_limit_reached"
+      },
+      "rateLimitsByLimitId": {
+        "codex": {
+          "limitId": "codex",
+          "limitName": null,
+          "normalModelSlug": null,
+          "primary": {
+            "usedPercent": 100,
+            "windowDurationMins": 300,
+            "resetsAt": 1792758907
+          },
+          "secondary": {
+            "usedPercent": 21,
+            "windowDurationMins": 10080,
+            "resetsAt": 1793326168
+          },
+          "credits": {
+            "hasCredits": false,
+            "unlimited": false,
+            "balance": "0"
+          },
+          "individualLimit": null,
+          "spendControlReached": false,
+          "planType": "plus",
+          "rateLimitReachedType": "rate_limit_reached"
+        }
+      },
+      "rateLimitResetCredits": {
+        "availableCount": 2,
+        "credits": []
+      },
+      "accountId": "redacted"
+    }
+  },
+  "exec": [
+    {
+      "type": "thread.started",
+      "thread_id": "01a1687f-3c83-7a21-b180-1184fb2b186e"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "error",
+      "message": "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 8:35 PM."
+    },
+    {
+      "type": "turn.failed",
+      "error": {
+        "message": "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 8:35 PM."
+      }
+    }
+  ]
+}

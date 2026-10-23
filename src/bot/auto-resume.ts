@@ -61,7 +61,7 @@ export function resumePromptFor(resume: PendingResume): string {
     );
   }
   return (
-    `[自动续跑] 上一轮任务因 Claude ${limitLabel(resume.limitType)}用完而暂停，额度已经重置。` +
+    `[自动续跑] 上一轮任务因${limitLabel(resume.limitType)}用完而暂停，额度已经重置。` +
     '请从中断的地方继续完成原任务，不要重复已经完成的步骤；如果原任务其实已经完成，简短说明即可。'
   );
 }

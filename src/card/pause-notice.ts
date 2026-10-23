@@ -5,7 +5,7 @@ import type { RunLimit } from './run-state';
 export function pauseNotice(limit: RunLimit | undefined): string {
   const label = limitLabel(limit?.limitType);
   const reset = limit?.resetsAt ? `（${formatMoment(limit.resetsAt)} 重置）` : '';
-  const why = `⏸ **任务暂停**：Claude ${label}已用完${reset}。`;
+  const why = `⏸ **任务暂停**：${label}已用完${reset}。`;
   if (limit?.autoResumeAt) {
     return (
       `${why}\n将在 **${formatMoment(limit.autoResumeAt)}** 自动继续，届时新开一张卡片接着做；` +

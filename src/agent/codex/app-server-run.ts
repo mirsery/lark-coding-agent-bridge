@@ -7,6 +7,7 @@ import { spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import type { AgentEvent, AgentRun, RunApprovals } from '../types';
 import { isReadOnlyCommand } from '../../runtime/approvals';
 import { CodexAppServerTranslator } from './app-server-translator';
+import { codexRateLimitEvent } from './rate-limit';
 
 type AppServerChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
@@ -38,6 +39,8 @@ export interface CodexAppServerRunOptions {
 }
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 90_000;
+/** How long a refused turn waits for the rate-limit snapshot before giving up on it. */
+const RATE_LIMIT_READ_TIMEOUT_MS = 5_000;
 
 interface Pending {
   resolve: (result: Record<string, unknown>) => void;
@@ -97,11 +100,11 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`, 'utf8');
     return true;
   };
-  const request = (method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> =>
+  const request = (method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> =>
     new Promise((resolve, reject) => {
       const id = ++nextId;
       pending.set(id, { resolve, reject });
-      if (!write({ id, method, params })) {
+      if (!write({ id, method, ...(params ? { params } : {}) })) {
         pending.delete(id);
         reject(new Error(`codex app-server no longer accepts requests (${method})`));
       }
@@ -151,6 +154,33 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
       turnId = undefined;
       const next = startTurn(left.map((supplement) => supplement.prompt).join('\n\n'), undefined);
       if (usage) next?.carryUsage(usage);
+    });
+  };
+
+  /**
+   * The plan's quota refused the turn. Hold its end until Codex says which
+   * window ran out and when it reopens (`account/rateLimits/read`, never a
+   * reset credit), and report that first: the run then ends paused and the
+   * bridge resumes it after the reset, as with Claude.
+   */
+  const holdForQuota = (events: AgentEvent[], message: string): void => {
+    held = events;
+    const at = Date.now();
+    void Promise.race([
+      request('account/rateLimits/read').catch(() => undefined),
+      delay(RATE_LIMIT_READ_TIMEOUT_MS).then(() => undefined),
+    ]).then((snapshot) => {
+      const closing = held;
+      if (!closing) return;
+      held = undefined;
+      const limit = codexRateLimitEvent(snapshot, { blocked: true, message, at });
+      log.info('codex-app-server', 'usage-limit', {
+        limitType: limit?.limitType ?? null,
+        resetsAt: limit?.resetsAt ? new Date(limit.resetsAt).toISOString() : null,
+        fromSnapshot: snapshot !== undefined,
+      });
+      if (limit) queue.push(limit);
+      emit(closing);
     });
   };
 
@@ -229,9 +259,18 @@ export function startCodexAppServerRun(opts: CodexAppServerRunOptions): AgentRun
       }
     }
     if (!turn) return;
+    if (method === 'account/rateLimits/updated' && !turn.done) {
+      const update = codexRateLimitEvent(params, { blocked: false, at: Date.now() });
+      if (update) queue.push(update);
+    }
     const events = turn.notification(method, params);
-    if (turn.done && unread.size > 0 && events.at(-1)?.type === 'done' && !stopRequested) holdForSupplements(events);
-    else emit(events);
+    if (!turn.done) return emit(events);
+    const usageLimit = turn.usageLimit;
+    if (usageLimit && events.at(-1)?.type === 'error' && !stopRequested) return holdForQuota(events, usageLimit);
+    if (unread.size > 0 && events.at(-1)?.type === 'done' && !stopRequested) return holdForSupplements(events);
+    // Supplements still unread when a turn fails or stops are gone with it.
+    unread.clear();
+    emit(events);
   };
 
   const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });

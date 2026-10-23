@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CodexAdapter } from '../../src/agent/codex/adapter.js';
 import type { AgentEvent, AgentRun, AgentRunOptions } from '../../src/agent/types.js';
+import { initialState, reduce } from '../../src/card/run-state.js';
 
 const cleanup: string[] = [];
 afterEach(async () => {
@@ -17,6 +18,8 @@ afterEach(async () => {
  * first send the client an approval request. Turns containing STEER wait for
  * a turn/steer, echo it back as a userMessage item and answer it; LATE turns
  * refuse the steer (the turn was already ending) and finish without it.
+ * LIMIT turns fail the way a used-up plan does; account/rateLimits/read then
+ * reports the 5-hour window full.
  * Every message it receives is
  * appended to messages.jsonl; argv goes to argv.json.
  */
@@ -54,6 +57,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     const g = gated; gated = undefined;
     return finish(g.threadId, g.turnId, 'completed', 'decisions: ' + decisions.join(','));
   }
+  if (msg.method === 'account/rateLimits/read') {
+    return send({ id: msg.id, result: { ordinaryUsageAllowed: false, rateLimits: { limitId: 'codex', primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 1792758907 }, secondary: { usedPercent: 21, windowDurationMins: 10080, resetsAt: 1793326168 }, rateLimitReachedType: 'rate_limit_reached' } } });
+  }
   if (msg.method === 'turn/steer') {
     const s = steering; steering = undefined;
     if (!s || s.late || msg.params.expectedTurnId !== s.turnId) {
@@ -81,6 +87,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return send({ id: 99, method: 'item/commandExecution/requestApproval', params: { threadId, turnId } });
     }
     if (text.includes('SLOW')) { slow = { threadId, turnId }; return; }
+    if (text.includes('LIMIT')) {
+      const error = { message: 'You’ve hit your usage limit. Upgrade to Pro, visit https://chatgpt.com/settings/usage to purchase more credits or try again at 8:35 PM.', codexErrorInfo: 'usageLimitExceeded' };
+      send({ method: 'error', params: { error, willRetry: false, threadId, turnId } });
+      return send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'failed', error } } });
+    }
     if (text.includes('STEER') || text.includes('LATE')) { steering = { threadId, turnId, late: text.includes('LATE') }; return; }
     if (text.includes('TOUCH')) {
       gated = { threadId, turnId, step: 'command' };
@@ -333,6 +344,23 @@ process.stdin.resume(); process.stdin.on('end', () => { console.log(JSON.stringi
     const starts = (await fake.messages()).filter((m) => m.method === 'turn/start');
     expect(starts).toHaveLength(2);
     expect(starts[1]?.params.input[0].text).toBe('one more thing');
+    await run.stop();
+  });
+
+  it('pauses on a used-up plan with the window and reset Codex reports, without touching reset credits', async () => {
+    const fake = await createFakeAppServer();
+    const cwd = await realpath(fake.dir);
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir, codexHome: join(fake.dir, 'home') });
+    const run = await preparedRun(adapter, { runId: 'q1', prompt: 'LIMIT reached', cwd });
+    const turn = await nextTurn(run.events[Symbol.asyncIterator]());
+    expect(turn.slice(-2)).toEqual([
+      expect.objectContaining({ type: 'rate_limit', blocked: true, limitType: 'five_hour', resetsAt: 1792758907_000 }),
+      expect.objectContaining({ type: 'error', message: expect.stringContaining('usage limit') }),
+    ]);
+    expect(turn.reduce(reduce, initialState)).toMatchObject({ terminal: 'paused', limit: { limitType: 'five_hour', resetsAt: 1792758907_000 } });
+    const methods = (await fake.messages()).map((m) => m.method);
+    expect(methods).toContain('account/rateLimits/read');
+    expect(methods.filter((m) => /credit/i.test(m ?? ''))).toEqual([]);
     await run.stop();
   });
 

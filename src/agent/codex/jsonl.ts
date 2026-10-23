@@ -1,5 +1,6 @@
 import type { AgentEvent } from '../types';
 import { log } from '../../core/logger';
+import { codexUsageLimitFromMessage, isUsageLimitMessage } from './rate-limit';
 
 export type CodexFinishReason = 'failed' | 'interrupted' | 'timeout';
 
@@ -57,7 +58,11 @@ export class CodexJsonlTranslator {
     this.terminal = true;
     if (reason === 'failed') {
       const detail = this.lastNonTerminalError ? `: ${this.lastNonTerminalError}` : '';
+      const limit = isUsageLimitMessage(this.lastNonTerminalError)
+        ? [codexUsageLimitFromMessage(this.lastNonTerminalError!, Date.now())]
+        : [];
       return this.prependPendingText([
+        ...limit,
         {
           type: 'error',
           message: truncate(`codex stream ended before a terminal event${detail}`, 4096),
@@ -198,13 +203,9 @@ export class CodexJsonlTranslator {
   private translateTerminalError(raw: Record<string, unknown>, fallback: string): AgentEvent[] {
     this.terminal = true;
     const message = errorMessage(raw, fallback);
-    return [
-      {
-        type: 'error',
-        message: truncate(message, 4096),
-        terminationReason: 'failed',
-      },
-    ];
+    const error: AgentEvent = { type: 'error', message: truncate(message, 4096), terminationReason: 'failed' };
+    // The plan's quota ran out: say so first, so the run pauses until the reset.
+    return isUsageLimitMessage(message) ? [codexUsageLimitFromMessage(message, Date.now()), error] : [error];
   }
 
   private translateNonTerminalError(raw: Record<string, unknown>, fallback: string): AgentEvent[] {
