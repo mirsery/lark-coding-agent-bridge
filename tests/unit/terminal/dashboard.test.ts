@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { CAT_WIDTH, catParts, catPatch, catPosition, renderCat } from '../../../src/terminal/dashboard';
+import { CAT_WIDTH, catPatch, catPosition, renderCat } from '../../../src/terminal/dashboard';
 import { renderMonitor } from '../../../src/terminal/monitor';
 
 it('animates only a bounded top corner without clearing or scrolling the viewport', () => {
@@ -102,29 +102,4 @@ it('draws the capped mascot pushing an A-branded cabinet, mirrored without mirro
   expect(renderCat(0, 'left')[0]).toContain('__.--./\\');
   // Legs and wheels alternate between frames.
   expect(renderCat(0, 'right')[4]).not.toEqual(renderCat(1, 'right')[4]);
-});
-
-it('paints the mascot like the sticker: an orange cat in a dark hoodie pushing a plain cabinet', () => {
-  for (const direction of ['left', 'right'] as const) {
-    for (const frame of [0, 1]) {
-      const art = renderCat(frame, direction);
-      const parts = catParts(frame, direction);
-      expect(parts.map(row => row.length)).toEqual(art.map(row => row.length));
-      // Every stroke belongs to a part, and the cabinet's letter to the cart.
-      art.forEach((row, i) => [...row].forEach((char, j) => { if (char !== ' ') expect(parts[i]![j]).not.toBe(' '); }));
-      expect(parts[1]![art[1]!.indexOf('A')]).toBe('k');
-      expect(parts[1]![art[1]!.indexOf('o.o')]).toBe('c');
-      expect(parts[2]![art[2]!.indexOf('###')]).toBe('h');
-    }
-  }
-  const patch = catPatch(160, 36, 1, true, 'dark');
-  expect(patch).toContain('\x1b[38;5;222m( o.o )');
-  expect(patch).toContain('\x1b[38;5;245m|###|');
-  expect(patch).toContain('\x1b[39m| A  ||');
-  expect(patch.endsWith('\x1b[0m')).toBe(true);
-  const snap = { now: 1000, host: 'host', cores: 8, load: 1, bots: [] };
-  const view = renderMonitor(snap, 160, 36, true, 0, false, 'dark');
-  expect(view).toContain('\x1b[38;5;222m( o.o )\x1b[0m');
-  expect(view).toContain('\x1b[38;5;245m|###|\x1b[0m');
-  expect(renderMonitor(snap, 160, 36, false)).toContain('( o.o )       | A  ||');
 });

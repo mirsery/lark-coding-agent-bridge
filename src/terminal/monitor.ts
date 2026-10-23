@@ -1,6 +1,6 @@
 import { quotaResetAt, type QuotaWindow } from '../agent/quota';
 import { foreground, type MonitorTheme } from './theme';
-import { catParts, catPosition, paintCat, renderCat } from './dashboard';
+import { catPosition, renderCat } from './dashboard';
 import type { RunRecord } from '../runtime/run-registry';
 import { activityLabel, type MonitorBot, type MonitorSnapshot } from './snapshot';
 
@@ -64,13 +64,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     line(`${s.host.replace(/\.local$/, '')}  ·  ${s.cores} cores  ·  ${online} bots online  ·  ${running} tasks`, 90)];
   const cat = catPosition(columns, rows, frame);
   if (cat) {
-    const lead = ' '.repeat(cat.column - 1 - indent.length);
-    const parts = catParts(frame, cat.direction);
-    renderCat(frame, cat.direction).forEach((art, i) => out.push(
-      color && lead.length + art.length <= w
-        ? lead + paintCat(art, parts[i]!, paint) + ' '.repeat(w - lead.length - art.length)
-        : line(lead + art, 93),
-    ));
+    for (const art of renderCat(frame, cat.direction)) out.push(line(' '.repeat(cat.column - 1 - indent.length) + art, 36));
   }
   const m = s.metrics;
   if (m) {
