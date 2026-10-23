@@ -156,7 +156,10 @@ Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
 See bot availability, current tasks, execution stages and elapsed time alongside CPU, memory, free disk space and host uptime. A single TUI uses standard ANSI controls without terminal-specific split panes or APIs. Purple section titles and solid green/yellow/red bars show CPU, memory and disk; network download and upload rates are shown as plain numbers. In its own lane, the AlphaESS mascot, a cat in a cap, pushes an energy-storage cabinet on a cart back and forth, turning at each edge. When it walks left, the drawing is mirrored but the cabinet’s “A” logo stays readable. Below the metrics, each bot gets one bordered group: its name, agent and state on top, then its Sponsor and quota, then its sessions with state, summary, origin and elapsed time. The background and body text follow the terminal settings. Background detection automatically selects light or dark foreground colors for charts, headings and borders. Terminals without background queries use their native ANSI palette; `--theme light` / `--theme dark` overrides foreground colors without changing the terminal theme.
 
-![Live terminal dashboard with demonstration data](docs/images/terminal-monitor.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/terminal-monitor-dark.png">
+  <img alt="Live terminal dashboard with demonstration data, shown in the colors matching your GitHub theme" src="docs/images/terminal-monitor-light.png">
+</picture>
 
 ```bash
 lark-channel-bridge monitor --interval 5
@@ -196,6 +199,8 @@ Pick one mode per machine:
 ⚠️ **Do not run both for the same profile.** If a profile already has a per-profile daemon running and you separately start `run --web-ui` / `start --web-ui`, the console tries to host that profile too, fails to acquire its runtime lock (already held by the other process), and silently falls back to showing it as **not running** — even though the original daemon is still alive and answering messages. The console currently only reports profiles it hosts itself; it does not detect profiles kept alive by another process. If you want the console, stop the per-profile daemon first (`lark-channel-bridge stop --profile <name>`) and let the console start it instead.
 
 The console’s **运行概览** page shows the same data as the terminal dashboard. The top row shows host CPU, memory, disk and network. Below it, each bot has its own card, in a stable order, with its Sponsor and its five-hour and weekly quota bars with local reset times. Usage at 90% or more turns red, and a `额度已用尽` badge marks an exhausted quota. Each bot’s sessions are listed under it, showing the current step, elapsed time, summary, chat and starter. The page refreshes every five seconds. Runs hosted by the console process can be stopped from the page; runs owned by other processes are view-only.
+
+![The web console’s 运行概览 page with demonstration data](docs/images/web-console-overview.png)
 
 ### Multiple profiles: Claude and Codex
 

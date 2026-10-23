@@ -156,7 +156,10 @@ daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
 
 在宿主机终端查看 bot 工作状态、当前任务、执行阶段和耗时，以及 CPU、内存、磁盘可用空间与运行时间。单个 TUI 使用通用 ANSI 终端能力，不依赖终端软件的分屏或专属接口。上方使用紫色分区标题、绿黄红实心条形图展示 CPU / 内存 / 磁盘，网络直接显示上下行速率；AlphaESS 吉祥物（戴帽子的小猫）推着平板车上的储能柜，在独立区域左右往返，到达边缘后转身折返；向左走时图形镜像，柜子上的「A」不跟着翻转。下方每个 bot 一组带边框卡片：顶部是名称、agent 和状态，接着是 Sponsor 与额度，再往下是它的各个会话（状态、摘要、来源和耗时）。背景与正文颜色沿用终端设置；自动查询终端背景，分别使用适合亮色或暗色的图表、标题和边框配色。终端不支持背景查询时使用原生 ANSI 调色板，也可用 `--theme light` / `--theme dark` 手动选择前景配色；不会修改终端主题。
 
-![终端实时面板示例（演示数据）](docs/images/terminal-monitor.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/terminal-monitor-dark.png">
+  <img alt="终端实时面板示例（演示数据），配色随 GitHub 明暗主题切换" src="docs/images/terminal-monitor-light.png">
+</picture>
 
 ```bash
 lark-channel-bridge monitor --interval 5
@@ -196,6 +199,8 @@ lark-channel-bridge start --web-ui
 ⚠️ **不要对同一个 profile 同时用这两种方式。** 如果某个 profile 已经有单 profile 后台服务在跑，这时又单独起了 `run --web-ui` / `start --web-ui`，控制台会尝试去接管这个 profile，但拿不到它的 runtime lock（已经被前一个进程持有），于是静默失败并把它显示为**未运行**——即便原来那个 daemon 其实还活着、还在正常收发消息。控制台目前只能感知自己托管的 profile，感知不到被其他进程保活的 profile。想用控制台的话，先停掉单 profile 后台服务（`lark-channel-bridge stop --profile <name>`），再让控制台来接管启动。
 
 控制台侧栏的「运行概览」与终端面板同源：顶部是主机 CPU / 内存 / 磁盘 / 网络；下面每个 bot 一张卡片，顺序固定，展示 Sponsor、5 小时和本周额度条及本地重置时间（≥ 90% 标红，用尽标「额度已用尽」），卡片里列出该 bot 的会话（当前步骤、已运行、摘要、所在会话和发起人）。页面每 5 秒刷新；控制台进程托管的任务可以直接停止，其他进程的任务只能查看。
+
+![Web 控制台「运行概览」示例（演示数据）](docs/images/web-console-overview.png)
 
 ### 多 profile：分别运行 Claude 和 Codex
 
