@@ -13,7 +13,8 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 - **COT process messages**: optionally send a process message with agent progress text and tool calls, then send the final answer separately.
 - **Session continuity**: each chat, topic, or document comment thread keeps its own session.
 - **Queueing and batching**: messages sent in quick succession are handled together; messages sent during a run are queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
-- **Auto-resume after the quota runs out** (Claude): a run that hits the plan's quota pauses and picks up again once the quota resets.
+- **Mid-run supplements**: while a run is going, a message from its starter or the bot owner that quotes the run's message or reply card, or starts with 「补充」「追加」「+」 (or 「/补充」「/追加」), goes straight to the running agent, which reads it after the current tool call; the message gets a 「Get」 reaction and the card a 「➕ 收到补充」 line. Codex takes them in app-server mode (`turn/steer`; a supplement the turn didn't read is handled as the next turn of the same run); under the `codex exec` fallback they queue as usual.
+- **Auto-resume after the quota runs out**: a run that hits the plan's quota pauses and picks up again once the quota resets (Claude and Codex).
 - **Task ledger resume**: the bot owner's long tasks pick up from their task ledger after an unexpected interruption (process killed, bridge restarted).
 - **Multiple workspaces**: use `/cd` to switch the current project, and `/ws` to save and reuse common project directories.
 - **Images and files**: send them to the bot directly, and the bridge downloads them locally for the agent.
@@ -575,11 +576,12 @@ The threshold is the profile's `preferences.longRunNoticeMinutes` (minutes, `0` 
 - **Oversized answers**: Feishu caps card size. An answer too long for the card is truncated there and sent in full as a separate message.
 - **Failed card updates**: when Feishu rejects a card update (over the limit, card deleted), the bridge says so in the chat and sends the answer on its own, so it never gets stuck in a frozen card.
 
-### Auto-resume when the quota runs out (Claude)
+### Auto-resume when the quota runs out
 
-When the Claude plan's quota (5-hour or 7-day window) runs out, the run isn't a failure: the card is marked 「额度用完，已暂停」 (orange) with when the quota resets and when the run continues. At that time (one minute after the reset) the bridge picks the task up in the same conversation, in a new card, and notes on the old card that it went on.
+When the Claude or Codex plan's quota (5-hour or 7-day window) runs out, the run isn't a failure: the card is marked 「额度用完，已暂停」 (orange) with when the quota resets and when the run continues. At that time (one minute after the reset) the bridge picks the task up in the same conversation, in a new card, and notes on the old card that it went on.
 
-- When Claude didn't say when the quota resets, it retries after 30 minutes. A task auto-resumes at most 6 times.
+- For Codex the reset time comes from the quota windows read in the same process (read-only, never spending a reset credit), else from the error text.
+- When the agent didn't say when the quota resets, it retries after 30 minutes. A task auto-resumes at most 6 times.
 - The resume runs on behalf of whoever started the task, and their access is checked again when it fires.
 - Pending resumes are kept in the profile's `auto-resume.json` and survive a restart. `/status` shows the resume time; the starter, admins and `access.stoppers` can cancel it with `/stop`.
 
