@@ -225,6 +225,9 @@ class ManagedProfile {
         );
       }
       const nextControls = this.makeControls(nextRuntime.appPaths, next, nextRuntime.profileConfig);
+      // Same app, same owner: if the new channel's first owner lookup fails
+      // (the network trouble behind a keepalive restart), it keeps this id.
+      if (!appChanged && this.controls.botOwnerId) nextControls.botOwnerId = this.controls.botOwnerId;
       const nextBridge = await this.startChannelFn({
         cfg: next,
         agent: nextAgent,

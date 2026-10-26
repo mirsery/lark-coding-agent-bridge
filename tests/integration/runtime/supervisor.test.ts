@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import {
@@ -9,6 +9,7 @@ import {
   saveRootConfig,
 } from '../../../src/config/profile-store';
 import { Supervisor } from '../../../src/runtime/supervisor';
+import { writeVersionExecutable } from '../../helpers/fake-executable';
 
 const roots: string[] = [];
 const started: string[] = [];
@@ -95,5 +96,24 @@ describe('Supervisor', () => {
     await sup.startProfile('claude');
     await sup.startProfile('claude');
     expect(started.filter((p) => p === 'claude')).toHaveLength(1);
+  });
+
+  it('keeps the known owner across a same-app restart', async () => {
+    // restart() checks the agent binary unconditionally.
+    const bin = join(root, 'bin');
+    await writeVersionExecutable(bin, 'claude', '2.1.0');
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}${delimiter}${savedPath ?? ''}`;
+    try {
+      await sup.startProfile('claude');
+      sup.controlsFor('claude')!.botOwnerId = 'ou_owner';
+
+      await sup.restartProfile('claude');
+
+      expect(started.filter((p) => p === 'claude')).toHaveLength(2);
+      expect(sup.controlsFor('claude')!.botOwnerId).toBe('ou_owner');
+    } finally {
+      process.env.PATH = savedPath;
+    }
   });
 });

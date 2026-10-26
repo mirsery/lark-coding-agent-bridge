@@ -832,7 +832,23 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     controls.meeting = meetingManager;
   }
 
-  await channel.connect();
+  // Owner before socket: Feishu starts delivering as soon as the handshake
+  // completes, and every message that lands while the owner is still
+  // `unknown` is judged a guest's (DMs refused, group runs read-only).
+  const ownerRefresh = createOwnerRefreshController({
+    controls,
+    source: channel,
+    appId: cfg.accounts.app.id,
+  });
+  await ownerRefresh.start();
+
+  try {
+    await channel.connect();
+  } catch (err) {
+    ownerRefresh.stop();
+    abandonUnconnectedSocket(channel);
+    throw err;
+  }
 
   // Runs owned by a daemon that is gone — SIGKILL, crash, power loss. Register
   // every resumable scope locally before retention's startup sweep; the later
@@ -929,12 +945,6 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     controls.dream = dream;
   }
 
-  const ownerRefresh = createOwnerRefreshController({
-    controls,
-    source: channel,
-    appId: cfg.accounts.app.id,
-  });
-  await ownerRefresh.start();
   const knownChatsRefresh = startKnownChatsRefreshTimer(channel, controls);
 
   const identity = channel.botIdentity;
@@ -1084,6 +1094,22 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       }
     },
   };
+}
+
+/**
+ * A handshake timeout rejects `connect()` but leaves the SDK's WSClient
+ * retrying in the background (`autoReconnect: true`), and `disconnect()` is a
+ * no-op until a first handshake succeeds. Left alone, that client connects
+ * later as a second socket for the same app: Feishu splits events between it
+ * and the live channel, and this half-started bridge — no keepalive, never
+ * torn down — handles its share.
+ */
+function abandonUnconnectedSocket(channel: LarkChannel): void {
+  try {
+    channel.rawWsClient?.close({});
+  } catch (err) {
+    log.warn('ws', 'abandon-failed', { err: String(err) });
+  }
 }
 
 function startKnownChatsRefreshTimer(
