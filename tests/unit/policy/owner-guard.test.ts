@@ -75,6 +75,8 @@ describe('guest runs: owner-only areas', () => {
     ['pushing from a knowledge library work clone', 'cd ~/.lark-channel/profiles/claude/knowledge-libraries/dept.work && git push'],
     ['opening a write window by hand', 'echo {} > ~/.lark-channel/profiles/claude/knowledge-libraries/dept.window.json'],
     ['reading other bridge data', 'cat ~/.lark-channel/profiles/claude/sessions.json'],
+    ['globbing the bridge data dir', 'ls -d ~/.lark-channel*'],
+    ['climbing out of the workspace into the bridge data', 'cat ~/.lark-channel-workspaces/claude/default/../../../.lark-channel/config.json'],
   ])('refuses %s', (_label, command) => {
     const res = bash(command);
     expect(res.code).toBe(2);
@@ -127,6 +129,8 @@ describe('guest runs: file scope', () => {
     ['a relative escape from the workspace', 'cat ../../../Desktop/coding/lark/thing-hub/README.md'],
     ['a private dir put on PATH', 'export PATH=~/Documents/bin:$PATH && ls'],
     ['a script reading private files', `python3 -c "print(open('${HOME}/.ssh/id_rsa').read())"`],
+    ["another chat's workspace", 'ls ~/.lark-channel-workspaces/claude/other'],
+    ['a sibling that only shares the bridge data prefix', 'cat ~/.lark-channel-old/config.json'],
   ])('refuses %s', (_label, command) => {
     const res = bash(command);
     expect(res.code).toBe(2);
@@ -148,6 +152,10 @@ describe('guest runs: file scope', () => {
     ['putting the tool dir on PATH', 'export PATH=$HOME/.local/bin:$PATH; alphaq-tool --json --list'],
     ['ordinary work in tmp', 'grep -r foo /tmp/repo > /tmp/hits.txt && wc -l /tmp/hits.txt'],
     ['relative paths in the workspace', 'mkdir -p out/logs && ls ./out'],
+    // `~/.lark-channel-workspaces` only shares a prefix with the fenced `~/.lark-channel`.
+    ['the workspace named by its absolute path', `ls ~/.lark-channel-workspaces/claude/default/ && cat ${WORKSPACE}/notes.md`],
+    ['writing into the workspace by its absolute path', 'echo x > ~/.lark-channel-workspaces/claude/default/out.txt'],
+    ['copying an attachment into the workspace', 'cp ~/.lark-channel/profiles/claude/media/abc.jpg ~/.lark-channel-workspaces/claude/default/abc.jpg'],
     ['querying EFK', 'curl -s -u elastic:x "http://efk-prod-aus.alphaess.com:5601/api/console/proxy?path=logs-*/_search&method=POST"'],
   ])('allows %s', (_label, command) => {
     expect(bash(command).code).toBe(0);

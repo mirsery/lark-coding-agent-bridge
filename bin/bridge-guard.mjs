@@ -163,16 +163,22 @@ function commandPaths(cmd, cwd, skipRoot = false) {
   return out;
 }
 
+// A name going on past a fenced path (`~/.lark-channel-workspaces` after
+// `~/.lark-channel`) is another place; the scope check still covers it.
+const NAME_GOES_ON = /^[\w.-]/;
+const namesPlaceIn = (text, path) => text.startsWith(path) && !NAME_GOES_ON.test(text.slice(path.length));
+
 /** Does `segment` mention `rule.path` outside its allowed sub-paths? */
 function mentions(segment, rule) {
   let from = 0;
   for (;;) {
     const at = segment.indexOf(rule.path, from);
     if (at === -1) return false;
+    from = at + rule.path.length;
+    if (NAME_GOES_ON.test(segment.slice(from))) continue;
     const rest = segment.slice(at);
     const allowed = (rule.allow ?? []).some((re) => new RegExp(`^${re}`).test(rest));
     if (!allowed) return true;
-    from = at + rule.path.length;
   }
 }
 
@@ -207,8 +213,8 @@ function runsInlineCode(seg) {
 
 function writesInto(seg, rule, verb = isWriteVerb(seg)) {
   if (verb) return true;
-  if (seg.targets?.some((target) => target.startsWith(rule.path))) return true;
-  return new RegExp(`>{1,2}\\s*['"]?${escapeRe(rule.path)}`).test(seg.text);
+  if (seg.targets?.some((target) => namesPlaceIn(target, rule.path))) return true;
+  return new RegExp(`>{1,2}\\s*['"]?${escapeRe(rule.path)}(?![\\w.-])`).test(seg.text);
 }
 
 /** Refusal for writing under `rule`, saying so when the place is still readable. */
