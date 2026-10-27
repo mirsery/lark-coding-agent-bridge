@@ -1,5 +1,5 @@
 import { TerminalTheme, type MonitorTheme } from '../../terminal/theme';
-import { catPatch } from '../../terminal/dashboard';
+import { catPatch, conversationLabel } from '../../terminal/dashboard';
 import type { MonitorSnapshot } from '../../terminal/monitor';
 import { resolveAppPaths } from '../../config/app-paths';
 import { createMonitorReader, renderMonitor } from '../../terminal/monitor';
@@ -67,7 +67,7 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
   if (opts.animation !== false) animation = setInterval(() => {
     if (stopped || paused || !snapshot) return;
     frame++;
-    process.stdout.write(catPatch(process.stdout.columns, process.stdout.rows, frame, color, theme()));
+    process.stdout.write(catPatch(process.stdout.columns, process.stdout.rows, frame, color, theme(), conversationLabel(snapshot)));
   }, 500);
   await tick();
 }

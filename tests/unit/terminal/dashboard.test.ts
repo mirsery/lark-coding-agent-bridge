@@ -1,6 +1,19 @@
 import { expect, it } from 'vitest';
-import { CAT_WIDTH, catPatch, catPosition, renderCat } from '../../../src/terminal/dashboard';
+import { CAT_WIDTH, catPatch, catPosition, conversationLabel, renderCat } from '../../../src/terminal/dashboard';
 import { renderMonitor } from '../../../src/terminal/monitor';
+
+it('moves active conversation names with the mascot and ignores stale runs', () => {
+  const run = { runId: 'a', scope: 'a', chatId: 'a', originMessageId: 'a', promptPreview: '', startedAt: 0, ownerPid: 1, orphan: false, actorName: '李爽' };
+  const snapshot = { now: 0, host: 'host', cores: 1, load: 0, bots: [{ profile: 'p', name: 'Poki', agent: 'codex', online: true, runs: [run, { ...run, actorName: '旧任务', orphan: true }] }] };
+  const label = conversationLabel(snapshot);
+  expect(label).toBe('李爽');
+  expect(renderMonitor(snapshot, 80, 30, false).split('\n')[2]).toContain(label);
+  for (let frame = 0; frame < 100; frame++) {
+    const position = catPosition(80, 30, frame, label)!;
+    expect(position.column + CAT_WIDTH + 2 + 4).toBeLessThanOrEqual(80);
+    expect(catPatch(80, 30, frame, false, 'terminal', label)).toContain(label);
+  }
+});
 
 it('animates only a bounded top corner without clearing or scrolling the viewport', () => {
   expect(renderCat(0)).not.toEqual(renderCat(1));

@@ -34,7 +34,7 @@ function terminal() {
 it('keeps 2 fps animation and resize separate from 10 second sampling, pauses, and cleans up', async () => {
   vi.useFakeTimers();
   const write = terminal();
-  mocks.read.mockReset().mockResolvedValue({ now: 0 });
+  mocks.read.mockReset().mockResolvedValue({ now: 0, bots: [] });
   const signals = process.listenerCount('SIGTERM');
   await runMonitor({ color: false });
   expect(mocks.read).toHaveBeenCalledTimes(1);

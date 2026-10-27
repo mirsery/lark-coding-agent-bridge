@@ -1,6 +1,6 @@
 import { quotaResetAt, type QuotaWindow } from '../agent/quota';
 import { foreground, type MonitorTheme } from './theme';
-import { catPosition, renderCat } from './dashboard';
+import { catPosition, conversationLabel, renderCat } from './dashboard';
 import type { RunRecord } from '../runtime/run-registry';
 import { activityLabel, type MonitorBot, type MonitorSnapshot } from './snapshot';
 
@@ -62,9 +62,10 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   const running = s.bots.flatMap(b => b.runs).filter(r => !r.orphan).length;
   const out = [pair('LARK  /  CONTROL', paused ? 'PAUSED' : new Date(s.now).toLocaleTimeString(), 35),
     line(`${s.host.replace(/\.local$/, '')}  ·  ${s.cores} cores  ·  ${online} bots online  ·  ${running} tasks`, 90)];
-  const cat = catPosition(columns, rows, frame);
+  const label = conversationLabel(s);
+  const cat = catPosition(columns, rows, frame, label);
   if (cat) {
-    for (const art of renderCat(frame, cat.direction)) out.push(line(' '.repeat(cat.column - 1 - indent.length) + art, 36));
+    for (const [index, art] of renderCat(frame, cat.direction).entries()) out.push(line(' '.repeat(cat.column - 1 - indent.length) + art + (index === 0 && label ? '  ' + label : ''), 36));
   }
   const m = s.metrics;
   if (m) {
