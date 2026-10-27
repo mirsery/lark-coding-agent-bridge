@@ -2144,11 +2144,33 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       // Whether the last card rendered had to cut the answer to fit.
       let cardTrimmed = false;
       let lastLiveCard: object | undefined;
-      const cardHealth = new CardPatchHealth((code) => {
-        void channel
-          .send(chatId, { markdown: cardBrokenNotice(code) }, sendOpts)
-          .catch((err) => log.fail('stream', err, { step: 'card-broken-notice' }));
-      });
+      // The "card is stuck" notice, taken back if the card starts updating again.
+      let brokenNotice: Promise<string | undefined> | undefined;
+      const cardHealth = new CardPatchHealth(
+        (code) => {
+          brokenNotice = channel
+            .send(chatId, { markdown: cardBrokenNotice(code) }, sendOpts)
+            .then((result) => result.messageId)
+            .catch((err) => {
+              log.fail('stream', err, { step: 'card-broken-notice' });
+              return undefined;
+            });
+        },
+        {
+          onRecovered: () => {
+            const notice = brokenNotice;
+            brokenNotice = undefined;
+            void notice?.then(async (messageId) => {
+              if (!messageId) return;
+              try {
+                await channel.recallMessage(messageId);
+              } catch (err) {
+                log.fail('stream', err, { step: 'card-broken-notice-recall' });
+              }
+            });
+          },
+        },
+      );
       // The card as the user should see it now: live clock while running,
       // shrunk to fit Feishu's size limit (see fitCardToBudget).
       const renderLiveCard = (state: RunState): object => {

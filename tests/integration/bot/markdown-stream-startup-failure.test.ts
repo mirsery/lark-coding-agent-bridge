@@ -70,6 +70,8 @@ interface FakeLarkChannel {
   send(chatId: string, content: unknown, options?: unknown): Promise<{ messageId: string }>;
   updated: Array<{ messageId: string; card: unknown }>;
   updateCard(messageId: string, card: object): Promise<void>;
+  recalled: string[];
+  recallMessage(messageId: string): Promise<void>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
   addReaction(messageId: string, emojiType: string): Promise<string>;
   removeReaction(messageId: string, reactionId: string): Promise<void>;
@@ -866,6 +868,41 @@ describe('markdown stream startup failures', () => {
     expect(JSON.stringify(h.channel.updated[0]?.card)).toContain('ANSWER_SENTINEL');
   });
 
+  it('takes the stuck-card notice back once the card updates again', async () => {
+    vi.spyOn(log, 'fail').mockImplementation(() => {});
+    let patches = 0;
+    const h = await createHarness({
+      agentKind: 'claude',
+      messageReply: 'card',
+      events: [
+        { type: 'text', delta: 'A' },
+        { type: 'text', delta: 'B' },
+        { type: 'text', delta: 'C' },
+        { type: 'text', delta: 'ANSWER_SENTINEL' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: sdkLikeCardStream(async () => {
+        if (patches++ < 3) {
+          throw Object.assign(new Error('Request failed with status code 400'), {
+            response: { data: { code: 230099 } },
+          });
+        }
+      }),
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_card_recovers', 'run'));
+    await waitFor(() => h.channel.recalled.length === 1);
+
+    const noticeIndex = h.channel.sent.findIndex((m) =>
+      JSON.stringify(m.content).includes('进度卡片更新不了了'),
+    );
+    expect(noticeIndex).toBeGreaterThanOrEqual(0);
+    expect(h.channel.recalled).toEqual([`sent_${noticeIndex + 1}`]);
+    // The card holds the answer, so nothing is rescued.
+    expect(h.channel.updated).toHaveLength(0);
+  });
+
   it('sends the full answer separately when it outgrows the card', async () => {
     const cards: unknown[] = [];
     const long = `${'很长的分析内容。'.repeat(2500)}END_SENTINEL`;
@@ -1422,10 +1459,12 @@ function createFakeLarkChannel(harnessOptions: {
   const handlers: MessageHandlerMap = {};
   const sent: FakeLarkChannel['sent'] = [];
   const updated: FakeLarkChannel['updated'] = [];
+  const recalled: FakeLarkChannel['recalled'] = [];
   const channel: FakeLarkChannel = {
     handlers,
     sent,
     updated,
+    recalled,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -1478,6 +1517,9 @@ function createFakeLarkChannel(harnessOptions: {
     async updateCard(messageId, card) {
       updated.push({ messageId, card });
       if (harnessOptions.updateCard) await harnessOptions.updateCard(messageId, card);
+    },
+    async recallMessage(messageId) {
+      recalled.push(messageId);
     },
     stream: harnessOptions.stream ?? (async () => {
       await new Promise<void>(() => {});

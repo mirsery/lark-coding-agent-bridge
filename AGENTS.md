@@ -77,6 +77,7 @@
 - **排队中的消息落盘**（`pending.json`，`PendingStore`）：重启 / 重连后 10 分钟内的自动补处理，更早的回一条通知请对方重发；重启时被停掉的后台任务也会在会话里说明。
 - **新增斜杠命令要过三处**：`handlers` 表；是否进 `ADMIN_COMMANDS`；帮助卡（`src/card/templates.ts`）。别名（如 `/reset` 之于 `/new`）的权限要和本名一致：本名进了权限表，别名也要进，否则就是绕过。卡片按钮走 `runCommandHandler`，同样受管理员检查。
 - **流式卡片收尾失败要补发答案**：SDK 的流式卡片中途更新失败只会变成 unhandledRejection，最后一次更新失败才让 `stream()` 报错——此时卡片停在半路、答案没上屏（长任务的工具面板常让飞书以 230099 拒卡：表格数超限 / 卡片生成失败）。`awaitRenderAwareStream` 的 `rescue` 负责补发：卡片模式只发答案本身，依次试原卡片原地更新 → 新卡片 → 纯 post；markdown 模式直接发 post。Codex（答案本来就单独发）不走 rescue；`target_revoked`（被回答的消息已撤回）不补发。测试：`tests/integration/bot/markdown-stream-startup-failure.test.ts`。
+- **进度卡更新失败的提示**（`src/bot/card-patch-health.ts`）：`instrumentCardPatches` 接管 SDK 的 `patch`，连续 3 次失败才发「进度卡片更新不了了」。飞书限流（230020「Update the single messages too frequently」、99991400）另算：长任务即使 15 秒才更新一次也会撞上，通常一分钟内自己解除，所以不计入这 3 次，改为退避（5s 起翻倍，封顶 30s，等完再发最新的卡），连续卡住 3 分钟才提示；卡片恢复更新就撤回已发的提示。SDK 的 `classifyError` 把 230020 归成 `target_revoked`，不要拿它判断撤回。
 - **飞书审核**：消息可能被审核拒（错误码 230028），`reply()` 会退回一句中性文案；卡片里不要放完整邮箱（会被拒），账号只显示 `@` 前的用户名。
 - **持久化状态**一律 `writeFileAtomic` + `mode: 0o600`（契约测试守护）。
 - **测试隔离**：`tests/setup/clear-bridge-env.ts` 会清掉 `LARK_CHANNEL*` / `LARKSUITE_CLI_CONFIG_DIR`。在 bridge 会话里跑测试时别依赖真实 profile；读宿主配置的代码要显式置空这些变量，不要继承父进程。
