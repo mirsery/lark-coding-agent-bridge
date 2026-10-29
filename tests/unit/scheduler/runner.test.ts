@@ -88,6 +88,42 @@ beforeEach(() => {
 });
 
 describe('scheduled job runs', () => {
+  it('registers the run and its ledger until completion', async () => {
+    const flow = flowEmitting([
+      { type: 'text', delta: '📒 任务台账：~/.lark-channel/tasks/test.md' },
+      ...answer,
+    ]);
+    mocks.startRunFlow.mockResolvedValue(flow);
+    const runs = { start: vi.fn(), annotate: vi.fn(), finish: vi.fn() };
+    await runScheduledJob(Object.assign(makeDeps(), { runs }), job({ anchorMessageId: 'om_anchor' }));
+    expect(runs.start).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run_1', scope: 'cron:abc123', chatId: 'oc_chat', originMessageId: 'om_anchor',
+      resumeAs: { senderId: OWNER, chatType: 'group' },
+    }));
+    expect(runs.annotate).toHaveBeenCalledWith('run_1', { ledger: '~/.lark-channel/tasks/test.md' });
+    expect(runs.finish).toHaveBeenCalledWith('run_1');
+  });
+
+  it('schedules a ledger resume after the agent is killed', async () => {
+    mocks.startRunFlow.mockResolvedValue(flowEmitting([
+      { type: 'text', delta: '📒 任务台账：~/.lark-channel/tasks/test.md' },
+      { type: 'error', message: 'exited with code 137', terminationReason: 'failed' },
+    ]));
+    const autoResumer = { schedule: vi.fn().mockResolvedValue(undefined) };
+    await runScheduledJob(Object.assign(makeDeps(), { autoResumer }), job({ anchorMessageId: 'om_anchor' }));
+    expect(autoResumer.schedule).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'cron:abc123', reason: 'killed', ledger: '~/.lark-channel/tasks/test.md',
+    }));
+  });
+
+  it('keeps shutdown records for the interruption sweep', async () => {
+    const flow = flowEmitting([{ type: 'done', terminationReason: 'normal' }]);
+    Object.assign(flow.execution.handle, { stopCause: 'shutdown', interrupted: true });
+    mocks.startRunFlow.mockResolvedValue(flow);
+    const runs = { start: vi.fn(), annotate: vi.fn(), finish: vi.fn() };
+    await runScheduledJob(Object.assign(makeDeps(), { runs }), job());
+    expect(runs.finish).not.toHaveBeenCalled();
+  });
   it('runs the job and delivers the answer to its chat', async () => {
     mocks.startRunFlow.mockResolvedValue(flowEmitting(answer));
     const deps = makeDeps();

@@ -903,6 +903,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       ...(sessionCatalog ? { sessionCatalog } : {}),
       workspaces,
       controls,
+      ...(runs ? { runs } : {}),
+      autoResumer,
     });
     scheduler.start();
     controls.scheduler = scheduler;

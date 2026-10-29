@@ -54,6 +54,12 @@ export async function sendInterruptedNotice(
   autoResume = false,
 ): Promise<void> {
   const text = interruptedNoticeText(rec, cause, now, autoResume);
+  if (!rec.originMessageId) {
+    await channel.send(rec.chatId, { text }).catch((err) => {
+      log.warn('interrupted-notice', 'send-failed', { scope: rec.scope, err: String(err) });
+    });
+    return;
+  }
   const opts = {
     replyTo: rec.originMessageId,
     ...(rec.threadId ? { replyInThread: true } : {}),

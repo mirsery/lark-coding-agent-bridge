@@ -4,6 +4,8 @@ import { agentCapability } from '../agent/capability';
 import { agentDescriptor } from '../agent/registry';
 import { modelLabel, resolveEffortArg } from '../agent/models';
 import { processAgentStream } from '../bot/agent-stream';
+import type { AutoResumer } from '../bot/auto-resume';
+import { INTERRUPT_RESUME_DELAY_MS, isKilledExit } from '../bot/task-ledger';
 import { recordRunSessionEvent, startRunFlow } from '../bot/run-flow';
 import { renderCard, type RunCardRenderOptions } from '../card/run-renderer';
 import type { RunState } from '../card/run-state';
@@ -16,6 +18,7 @@ import { effortPrefForChat, getMessageReplyMode, getRunIdleTimeoutMs, getShowToo
 import { log } from '../core/logger';
 import { canUseDm, canUseGroup, isCreator } from '../policy/access';
 import type { RunExecutor } from '../runtime/run-executor';
+import type { RunRegistry } from '../runtime/run-registry';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -31,6 +34,8 @@ export interface JobRunnerDeps {
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
   controls: Controls;
+  runs?: RunRegistry;
+  autoResumer?: AutoResumer;
 }
 
 /** Session scope for a job — one conversation per job, never shared with a chat. */
@@ -137,6 +142,23 @@ export async function runScheduledJob(
     resumed: Boolean(flow.resumeFrom),
   });
 
+  const handle = flow.execution.handle;
+  deps.runs?.start({
+    runId: flow.execution.runId,
+    scope: scopeId,
+    chatId: job.chatId,
+    originMessageId: job.anchorMessageId ?? '',
+    ...(job.threadId ? { threadId: job.threadId } : {}),
+    promptPreview: job.prompt.split(/\r?\n/, 1)[0] ?? '',
+    chatType: job.chatType === 'p2p' ? 'p2p' : 'group',
+    actorId: job.creatorId,
+    startedAt,
+    ...(job.anchorMessageId && isCreator(deps.controls, job.creatorId)
+      ? { resumeAs: { senderId: job.creatorId, chatType: job.chatType } }
+      : {}),
+  });
+  handle.onLedger = (ledger) => deps.runs?.annotate(flow.execution.runId, { ledger });
+
   let state: RunState;
   try {
     state = await processAgentStream(
@@ -157,8 +179,34 @@ export async function runScheduledJob(
     );
   } catch (err) {
     log.fail('scheduler', err, { jobId: job.id, step: 'stream' });
+    if (handle.stopCause !== 'shutdown') deps.runs?.finish(flow.execution.runId);
     return fail(err instanceof Error ? err.message : String(err));
   }
+
+  if (
+    state.terminal === 'error' &&
+    isKilledExit(state.errorMsg) &&
+    handle.ledger &&
+    job.anchorMessageId &&
+    isCreator(deps.controls, job.creatorId) &&
+    deps.autoResumer
+  ) {
+    await deps.autoResumer.schedule({
+      scope: scopeId,
+      chatId: job.chatId,
+      chatType: job.chatType,
+      ...(job.threadId ? { threadId: job.threadId } : {}),
+      senderId: job.creatorId,
+      originMessageId: job.anchorMessageId,
+      resumeAt: Date.now() + INTERRUPT_RESUME_DELAY_MS,
+      kind: 'interrupted',
+      ledger: handle.ledger,
+      reason: 'killed',
+      attempt: 1,
+      createdAt: Date.now(),
+    });
+  }
+  if (handle.stopCause !== 'shutdown') deps.runs?.finish(flow.execution.runId);
 
   const visible = getShowToolCalls(deps.controls.cfg)
     ? state

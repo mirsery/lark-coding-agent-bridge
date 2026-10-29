@@ -30,7 +30,7 @@ export interface RunsMonitor {
 }
 
 /** Scopes that are not plain `chatId[:threadId]` IM scopes. */
-const NON_IM_PREFIX = /^(comment|meeting):/;
+const NON_IM_PREFIX = /^(comment|meeting|cron):/;
 
 export function createRunsMonitor(deps: {
   activeRuns: ActiveRuns;
