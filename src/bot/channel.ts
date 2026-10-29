@@ -586,8 +586,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         // the chat info API/cache, while message events already carry threadId.
         // Treat threadId as authoritative for IM messages so scope and replies
         // stay isolated per topic.
-        const mode = firstMsg.threadId ? 'topic' : resolvedMode;
-        if (firstMsg.threadId && resolvedMode !== 'topic') {
+        const mode = firstMsg.chatType === 'p2p' ? 'p2p' : firstMsg.threadId ? 'topic' : resolvedMode;
+        if (firstMsg.chatType !== 'p2p' && firstMsg.threadId && resolvedMode !== 'topic') {
           chatModeCache.invalidate(firstMsg.chatId);
           logThreadModeOverride({
             chatId: firstMsg.chatId,
@@ -1247,7 +1247,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // the event dropped `thread_id`, backfill it from the raw message — the same
   // recovery the card-click path uses.
   let threadId = msg.threadId;
-  if (!threadId && resolvedMode === 'topic') {
+  if (msg.chatType !== 'p2p' && !threadId && resolvedMode === 'topic') {
     threadId = await lookupMessageThreadId(channel, msg.messageId);
     if (threadId) {
       log.info('intake', 'thread-id-backfilled', {
@@ -1264,8 +1264,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // Some groups are converted into topic groups after creation. In that state
   // getChatMode can lag behind the message event shape, so threadId is the
   // stronger signal for topic-scoped sessions and reply routing.
-  const chatMode = threadId ? 'topic' : resolvedMode;
-  if (threadId && resolvedMode !== 'topic') {
+  const chatMode = msg.chatType === 'p2p' ? 'p2p' : threadId ? 'topic' : resolvedMode;
+  if (msg.chatType !== 'p2p' && threadId && resolvedMode !== 'topic') {
     chatModeCache.invalidate(msg.chatId);
     logThreadModeOverride({
       chatId: msg.chatId,

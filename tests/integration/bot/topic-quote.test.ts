@@ -82,6 +82,22 @@ afterEach(async () => {
 });
 
 describe('topic message quote handling', () => {
+  it('keeps a private message with a thread id in private chat mode', async () => {
+    const h = await createHarness({ chatMode: 'group', agentEvents: [
+      { type: 'text', delta: '好的' },
+      { type: 'done', terminationReason: 'normal' },
+    ] });
+    await startTestBridge(h);
+    await h.channel.handlers.message?.({
+      ...message({ messageId: 'om_dm', rootId: 'om_root', parentId: 'om_root', threadId: 'omt_dm', content: '你好' }),
+      chatType: 'p2p',
+    });
+    await waitFor(() => h.channel.streams.length === 1);
+    expect(h.channel.streams[0]?.options).not.toHaveProperty('replyInThread');
+    expect(h.agent.runOptions[0]?.prompt).toContain('"chatType":"p2p"');
+    expect(h.agent.runOptions[0]?.prompt).not.toContain('<chat_context>');
+  });
+
   it('does not quote the topic root when a user directly mentions the bot inside the topic', async () => {
     const h = await createHarness();
 
