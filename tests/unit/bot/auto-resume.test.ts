@@ -6,6 +6,7 @@ import type { AgentEvent } from '../../../src/agent/types.js';
 import { translateEvent } from '../../../src/agent/claude/stream-json.js';
 import {
   AutoResumer,
+  ensureResumeAnchor,
   MAX_AUTO_RESUMES,
   RESUME_GRACE_MS,
   UNKNOWN_RESET_RETRY_MS,
@@ -135,6 +136,31 @@ describe('resume timing', () => {
 });
 
 describe('AutoResumer', () => {
+  it('creates an anchor only for resumes without an original message', async () => {
+    const send = vi.fn().mockResolvedValue({ messageId: 'om_new' });
+    const original = pending({ originMessageId: 'om_old' });
+    expect(await ensureResumeAnchor({ send } as never, original)).toEqual(original);
+    expect(send).not.toHaveBeenCalled();
+    const unanchored = pending({ originMessageId: '' });
+    expect(await ensureResumeAnchor({ send } as never, unanchored)).toMatchObject({ originMessageId: 'om_new' });
+    expect(send).toHaveBeenCalledWith(unanchored.chatId, expect.any(Object));
+  });
+  it('keeps a firing resume visible and cancellable during handoff', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const resumes = new AutoResumer({ fire: async () => { started(); await gate; } });
+    await resumes.schedule(pending());
+    const firing = resumes.tick(5000);
+    await ready;
+    expect(resumes.list()).toHaveLength(1);
+    expect(await resumes.cancel('oc_dm', 'stop-command')).toBeDefined();
+    expect(resumes.isFiringCancelled('oc_dm')).toBe(true);
+    release();
+    await firing;
+    expect(resumes.hasScope('oc_dm')).toBe(false);
+  });
   function pending(overrides: Partial<PendingResume> = {}): PendingResume {
     return {
       scope: 'oc_dm',

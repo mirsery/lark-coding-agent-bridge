@@ -88,6 +88,21 @@ beforeEach(() => {
 });
 
 describe('scheduled job runs', () => {
+  it('allows an owner job without a message anchor to resume after being killed', async () => {
+    mocks.startRunFlow.mockResolvedValue(flowEmitting([
+      { type: 'text', delta: '📒 任务台账：~/.lark-channel/tasks/test.md' },
+      { type: 'error', message: 'exited with code 137', terminationReason: 'failed' },
+    ]));
+    const runs = { start: vi.fn(), annotate: vi.fn(), finish: vi.fn() };
+    const autoResumer = { schedule: vi.fn().mockResolvedValue(undefined) };
+    await runScheduledJob(Object.assign(makeDeps(), { runs, autoResumer }), job());
+    expect(runs.start).toHaveBeenCalledWith(expect.objectContaining({
+      originMessageId: '', resumeAs: { senderId: OWNER, chatType: 'group' },
+    }));
+    expect(autoResumer.schedule).toHaveBeenCalledWith(expect.objectContaining({
+      originMessageId: '', scope: 'cron:abc123', reason: 'killed',
+    }));
+  });
   it('registers the run and its ledger until completion', async () => {
     const flow = flowEmitting([
       { type: 'text', delta: '📒 任务台账：~/.lark-channel/tasks/test.md' },

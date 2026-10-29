@@ -102,6 +102,7 @@ import {
   AutoResumer,
   INTERRUPT_REASONS,
   MAX_AUTO_RESUMES,
+  ensureResumeAnchor,
   formatMoment,
   resumeAtFor,
   resumePromptFor,
@@ -648,7 +649,17 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         .updateCard(resume.cardMessageId, withResumedNote(resume.card, Date.now()))
         .catch((err) => log.warn('auto-resume', 'card-note-failed', { err: String(err) }));
     }
-    pending.push(resume.scope, autoResumeMessage(resume));
+    let anchored: PendingResume;
+    try {
+      anchored = await ensureResumeAnchor(channel, resume);
+    } catch (err) {
+      log.warn('auto-resume', 'anchor-failed', { scope: resume.scope, err: String(err) });
+      if (!autoResumer.isFiringCancelled(resume.scope)) {
+        await autoResumer.schedule({ ...resume, resumeAt: Date.now() + INTERRUPT_RESUME_DELAY_MS });
+      }
+      return;
+    }
+    if (!autoResumer.isFiringCancelled(resume.scope)) pending.push(anchored.scope, autoResumeMessage(anchored));
   };
 
   // Opening tasks left by skills (a new topic's brief): started on the
@@ -856,7 +867,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   if (runs) {
     const orphans = runs.takeOrphans();
     if (orphans.length > 0) {
-      const resumed = await resumeInterruptedRecords(autoResumer, orphans, 'restart');
+      const resumed = await resumeInterruptedRecords(autoResumer, orphans, 'restart', controls);
       void reportInterruptedRuns(channel, orphans, 'restart', Date.now(), resumed).catch(
         (err: unknown) => log.warn('interrupted-notice', 'sweep-failed', { err: String(err) }),
       );
@@ -1059,7 +1070,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         // Bounded: launchd is already counting down to SIGKILL, and a hung
         // Feishu call must not be what stops us from exiting cleanly.
         const own = runs.takeOwn();
-        const resumed = await resumeInterruptedRecords(autoResumer, own, 'shutdown').catch(
+        const resumed = await resumeInterruptedRecords(autoResumer, own, 'shutdown', controls).catch(
           (err: unknown) => {
             log.fail('auto-resume', err, { step: 'shutdown' });
             return new Set<string>();
@@ -2583,16 +2594,22 @@ function resumeChatType(msg: NormalizedMessage, mode: ChatMode): 'p2p' | 'group'
 function interruptedResumeFor(
   rec: RunRecord,
   reason: 'restart' | 'shutdown',
+  controls: Controls,
   now: number = Date.now(),
 ): PendingResume | undefined {
-  if (!rec.ledger || !rec.resumeAs) return undefined;
+  const resumeAs = rec.resumeAs ?? (
+    rec.scope.startsWith('cron:') && rec.actorId && rec.chatType && isCreator(controls, rec.actorId)
+      ? { senderId: rec.actorId, chatType: rec.threadId ? 'topic' as const : rec.chatType }
+      : undefined
+  );
+  if (!rec.ledger || !resumeAs) return undefined;
   return {
     scope: rec.scope,
     chatId: rec.chatId,
-    chatType: rec.resumeAs.chatType,
+    chatType: resumeAs.chatType,
     ...(rec.threadId ? { threadId: rec.threadId } : {}),
-    senderId: rec.resumeAs.senderId,
-    ...(rec.resumeAs.senderName ? { senderName: rec.resumeAs.senderName } : {}),
+    senderId: resumeAs.senderId,
+    ...('senderName' in resumeAs && resumeAs.senderName ? { senderName: resumeAs.senderName } : {}),
     originMessageId: rec.originMessageId,
     resumeAt: now + INTERRUPT_RESUME_DELAY_MS,
     kind: 'interrupted',
@@ -2608,10 +2625,11 @@ async function resumeInterruptedRecords(
   autoResumer: AutoResumer,
   records: RunRecord[],
   reason: 'restart' | 'shutdown',
+  controls: Controls,
 ): Promise<Set<string>> {
   const scheduled: Array<{ runId: string; resume: PendingResume }> = [];
   for (const rec of records) {
-    const resume = interruptedResumeFor(rec, reason);
+    const resume = interruptedResumeFor(rec, reason, controls);
     if (!resume) continue;
     scheduled.push({ runId: rec.runId, resume });
   }

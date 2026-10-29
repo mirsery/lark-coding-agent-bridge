@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
 import type { RunLimit } from '../card/run-state';
+import type { LarkChannel } from '@larksuite/channel';
 
 /** Wait this long past the reset before resuming, so the new window is open. */
 export const RESUME_GRACE_MS = 60_000;
@@ -96,6 +97,15 @@ export interface PendingResume {
   createdAt: number;
 }
 
+export async function ensureResumeAnchor(channel: Pick<LarkChannel, 'send'>, resume: PendingResume): Promise<PendingResume> {
+  if (resume.originMessageId) return resume;
+  const sent = await channel.send(resume.chatId, {
+    text: '⏯ 定时任务将按台账自动续跑。原消息不可用，续跑结果将从此消息继续。',
+  });
+  if (!sent.messageId) throw new Error('auto-resume anchor message has no id');
+  return { ...resume, originMessageId: sent.messageId };
+}
+
 interface ResumeFile {
   resumes: Record<string, PendingResume>;
 }
@@ -121,7 +131,8 @@ export interface AutoResumerOptions {
 export class AutoResumer {
   private resumes = new Map<string, PendingResume>();
   /** Scopes whose due callback has started but has not handed off the run yet. */
-  private readonly firing = new Set<string>();
+  private readonly firing = new Map<string, PendingResume>();
+  private readonly cancelledFiring = new Set<string>();
   /** Attempt number of the resume that last fired per scope, to chain retries. */
   private readonly fired = new Map<string, number>();
   private timer: NodeJS.Timeout | undefined;
@@ -167,6 +178,14 @@ export class AutoResumer {
     return this.resumes.get(scope);
   }
 
+  list(): PendingResume[] {
+    return [...this.firing.values(), ...this.resumes.values()];
+  }
+
+  isFiringCancelled(scope: string): boolean {
+    return this.cancelledFiring.has(scope);
+  }
+
   /** Whether a resume is waiting or is currently handing off to the run queue. */
   hasScope(scope: string): boolean {
     return this.resumes.has(scope) || this.firing.has(scope);
@@ -191,9 +210,10 @@ export class AutoResumer {
 
   /** Drop the pending resume for `scope`, if any, and return it. */
   async cancel(scope: string, reason: string): Promise<PendingResume | undefined> {
-    const existing = this.resumes.get(scope);
+    const existing = this.resumes.get(scope) ?? this.firing.get(scope);
     this.fired.delete(scope);
     if (!existing) return undefined;
+    if (this.firing.has(scope)) this.cancelledFiring.add(scope);
     this.resumes.delete(scope);
     log.info('auto-resume', 'cancelled', { scope, reason });
     await this.persist();
@@ -207,7 +227,7 @@ export class AutoResumer {
     );
     if (due.length === 0) return;
     for (const r of due) {
-      this.firing.add(r.scope);
+      this.firing.set(r.scope, r);
       this.resumes.delete(r.scope);
       this.fired.set(r.scope, r.attempt);
     }
@@ -215,11 +235,12 @@ export class AutoResumer {
     for (const r of due) {
       log.info('auto-resume', 'fire', { scope: r.scope, kind: r.kind ?? 'quota', attempt: r.attempt });
       try {
-        await this.opts.fire(r);
+        if (!this.cancelledFiring.has(r.scope)) await this.opts.fire(r);
       } catch (err) {
         log.fail('auto-resume', err, { scope: r.scope, step: 'fire' });
       } finally {
         this.firing.delete(r.scope);
+        this.cancelledFiring.delete(r.scope);
       }
     }
   }

@@ -1083,6 +1083,32 @@ describe('markdown stream startup failures', () => {
     expect(h.agent.runs[1]?.opts.prompt).toContain('进程被终止');
   });
 
+  it('resumes a cron task without an origin message using a new anchor', async () => {
+    const streams: Array<{ cards: unknown[] }> = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      messageReply: 'card',
+      events: [[{ type: 'text', delta: 'RESUMED_WITHOUT_ANCHOR' }, { type: 'done', terminationReason: 'normal' }]],
+      stream: async (_chatId, input) => {
+        const record = { cards: [] as unknown[] };
+        streams.push(record);
+        await sdkLikeCardStream(async (card) => { record.cards.push(card); })(_chatId, input);
+      },
+    });
+    Object.assign(h.controls, { botOwnerId: 'ou_user', ownerRefreshState: 'ok' });
+    await startTestBridge(h);
+    const resumes = h.controls.autoResumer!;
+    await resumes.schedule({
+      scope: 'cron:old', chatId: 'oc_dm', chatType: 'p2p', senderId: 'ou_user',
+      originMessageId: '', resumeAt: 1, kind: 'interrupted', ledger: '/tmp/old-ledger.md',
+      reason: 'restart', attempt: 1, createdAt: 1,
+    });
+    await resumes.tick(1);
+    await waitFor(() => JSON.stringify(streams[0]?.cards ?? []).includes('RESUMED_WITHOUT_ANCHOR'));
+    expect(h.agent.runs[0]?.opts.prompt).toContain('/tmp/old-ledger.md');
+    expect(JSON.stringify(h.channel.sent)).toContain('原消息不可用');
+  });
+
   it('registers every startup orphan before the topic-retention sweep', async () => {
     const h = await createHarness();
     const appPaths = testAppPaths(h.tmp);
@@ -1115,6 +1141,29 @@ describe('markdown stream startup failures', () => {
       expect(h.controls.autoResumer?.hasScope(scope)).toBe(true);
       expect(h.sessions.getRaw(scope)).toBeDefined();
     }
+  });
+
+  it('recovers an old owner cron record without an anchor or resumeAs', async () => {
+    const h = await createHarness();
+    Object.assign(h.controls, { botOwnerId: 'ou_user', ownerRefreshState: 'ok' });
+    const appPaths = testAppPaths(h.tmp);
+    await writeFile(appPaths.runsFile, JSON.stringify({
+      old: {
+        runId: 'old', scope: 'cron:old', chatId: 'oc_dm', chatType: 'p2p', actorId: 'ou_user',
+        originMessageId: '', promptPreview: '旧任务', startedAt: Date.now(),
+        ownerPid: 2_147_483_647, ledger: '/tmp/old-ledger.md',
+      },
+      other: {
+        runId: 'other', scope: 'cron:other', chatId: 'oc_dm', chatType: 'p2p', actorId: 'ou_other',
+        originMessageId: '', promptPreview: '其他任务', startedAt: Date.now(),
+        ownerPid: 2_147_483_647, ledger: '/tmp/other-ledger.md',
+      },
+    }));
+    await startTestBridge(h, appPaths);
+    expect(h.controls.autoResumer?.get('cron:old')).toMatchObject({
+      senderId: 'ou_user', originMessageId: '', ledger: '/tmp/old-ledger.md', reason: 'restart',
+    });
+    expect(h.controls.autoResumer?.get('cron:other')).toBeUndefined();
   });
 
   it("does not resume someone else's killed task on its own", async () => {

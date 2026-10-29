@@ -1159,11 +1159,38 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const scope = targetScope || ctx.scope;
+  let stoppedCron = 0;
+  let deniedCron = false;
+  if (!targetScope) {
+    const pending = ctx.controls.autoResumer?.list() ?? [];
+    const matching = (item: { scope: string; chatId?: string; threadId?: string }) =>
+      item.scope.startsWith('cron:') && item.chatId === ctx.msg.chatId && item.threadId === ctx.msg.threadId;
+    const cronScopes = new Set([
+      ...(ctx.controls.runsMonitor?.snapshot().filter(matching).map((run) => run.scope) ?? []),
+      ...pending.filter(matching).map((run) => run.scope),
+    ]);
+    for (const cronScope of cronScopes) {
+      const waitingCron = pending.find((entry) => entry.scope === cronScope);
+      const cronInitiators = ctx.activeRuns.initiatorsForScope(cronScope) ??
+        (waitingCron ? new Set([waitingCron.senderId]) : undefined);
+      if (!canStopRun(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId, cronInitiators).ok) {
+        deniedCron = true;
+        continue;
+      }
+      const stopped = ctx.activeRuns.interruptDetailed(cronScope);
+      const cancelled = waitingCron && await ctx.controls.autoResumer?.cancel(cronScope, 'stop-command');
+      if (stopped.active || stopped.background || cancelled) stoppedCron++;
+    }
+  }
   // A stopped task waiting to be resumed counts as its starter's run too.
   const waiting = targetScope ? undefined : ctx.controls.autoResumer?.get(scope);
   const initiators =
     ctx.activeRuns.initiatorsForScope(scope) ?? (waiting ? new Set([waiting.senderId]) : undefined);
   if (!canStopRun(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId, initiators).ok) {
+    if (stoppedCron) {
+      await reply(ctx, `已停止或取消 ${stoppedCron} 个定时任务。`);
+      return;
+    }
     await reply(ctx, '❌ 只有任务的发起人、bot 主人、管理员或终止白名单里的人可以终止这个任务。');
     return;
   }
@@ -1173,7 +1200,7 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
   if (!ok && waiting) {
     await ctx.controls.autoResumer?.cancel(scope, 'stop-command');
     log.info('command', 'stop-auto-resume', { scope });
-    await reply(ctx, `已取消自动续跑（原定 ${formatMoment(waiting.resumeAt)}）。需要时发「继续」即可接着做。`);
+    await reply(ctx, `已取消自动续跑（原定 ${formatMoment(waiting.resumeAt)}）。${stoppedCron ? `另已停止或取消 ${stoppedCron} 个定时任务。` : ''}需要时发「继续」即可接着做。`);
     return;
   }
   log.info('command', 'stop', {
@@ -1189,6 +1216,9 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
         ? `已请求停止 \`${scope}\`。`
         : `未找到正在运行的任务：\`${scope}\`。`,
     );
+  }
+  else if (stoppedCron) {
+    await reply(ctx, `已停止或取消 ${stoppedCron} 个定时任务。${deniedCron ? '其他任务无权停止。' : ''}`);
   }
   // No reply for the current IM scope when a run was in flight: its render
   // loop marks the card as interrupted. Background work has no card to mark.

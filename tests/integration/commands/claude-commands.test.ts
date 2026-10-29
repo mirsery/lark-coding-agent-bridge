@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
+import { AutoResumer } from '../../../src/bot/auto-resume.js';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -263,6 +264,47 @@ describe('Claude slash command visible behavior', () => {
 
     expect(h.channel.sent).toEqual([]);
     expect(activeRun.stopped).toBe(true);
+  });
+
+  it('stops cron runs and cancels pending resumes only in the originating conversation', async () => {
+    const h = await createHarness();
+    const same = h.agent.run({ runId: 'same', prompt: 'running' }) as FakeAgentRun;
+    const other = h.agent.run({ runId: 'other', prompt: 'running' }) as FakeAgentRun;
+    h.activeRuns.register('cron:same', same);
+    h.activeRuns.register('cron:other', other);
+    h.controls.runsMonitor = {
+      snapshot: () => [
+        { scope: 'cron:same', source: 'im', chatId: 'chat-1', promptPreview: '', startedAt: 1, queueDepth: 0 },
+        { scope: 'cron:other', source: 'im', chatId: 'chat-2', promptPreview: '', startedAt: 1, queueDepth: 0 },
+      ],
+      interrupt: () => false,
+    };
+    const resumes = new AutoResumer({ fire: async () => {} });
+    h.controls.autoResumer = resumes;
+    await resumes.schedule({ scope: 'cron:waiting', chatId: 'chat-1', chatType: 'p2p', senderId: 'ou-user', originMessageId: '', resumeAt: 1, attempt: 1, createdAt: 1 });
+    await resumes.schedule({ scope: 'cron:topic', chatId: 'chat-1', threadId: 'thread-1', chatType: 'topic', senderId: 'ou-user', originMessageId: '', resumeAt: 1, attempt: 1, createdAt: 1 });
+
+    await h.run('/stop');
+    expect(same.stopped).toBe(true);
+    expect(other.stopped).toBe(false);
+    expect(resumes.get('cron:waiting')).toBeUndefined();
+    expect(resumes.get('cron:topic')).toBeDefined();
+    expect(lastMarkdown(h.channel)).toContain('定时任务');
+  });
+
+  it('does not let a different user stop a cron task from the same conversation', async () => {
+    const h = await createHarness();
+    h.controls.profileConfig.access.admins = [];
+    h.controls.botOwnerId = 'ou-owner';
+    const active = h.agent.run({ runId: 'cron-private', prompt: 'running' }) as FakeAgentRun;
+    h.activeRuns.register('cron:private', active).initiators?.add('ou-another');
+    h.controls.runsMonitor = {
+      snapshot: () => [{ scope: 'cron:private', source: 'im', chatId: 'chat-1', promptPreview: '', startedAt: 1, queueDepth: 0 }],
+      interrupt: () => false,
+    };
+    await h.run('/stop');
+    expect(active.stopped).toBe(false);
+    expect(lastMarkdown(h.channel)).toContain('只有任务的发起人');
   });
 
   it('lets admins stop and configure comment scopes explicitly', async () => {

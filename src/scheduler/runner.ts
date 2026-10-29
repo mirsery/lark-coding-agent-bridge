@@ -153,7 +153,7 @@ export async function runScheduledJob(
     chatType: job.chatType === 'p2p' ? 'p2p' : 'group',
     actorId: job.creatorId,
     startedAt,
-    ...(job.anchorMessageId && isCreator(deps.controls, job.creatorId)
+    ...(isCreator(deps.controls, job.creatorId)
       ? { resumeAs: { senderId: job.creatorId, chatType: job.chatType } }
       : {}),
   });
@@ -187,7 +187,6 @@ export async function runScheduledJob(
     state.terminal === 'error' &&
     isKilledExit(state.errorMsg) &&
     handle.ledger &&
-    job.anchorMessageId &&
     isCreator(deps.controls, job.creatorId) &&
     deps.autoResumer
   ) {
@@ -197,7 +196,7 @@ export async function runScheduledJob(
       chatType: job.chatType,
       ...(job.threadId ? { threadId: job.threadId } : {}),
       senderId: job.creatorId,
-      originMessageId: job.anchorMessageId,
+      originMessageId: job.anchorMessageId ?? '',
       resumeAt: Date.now() + INTERRUPT_RESUME_DELAY_MS,
       kind: 'interrupted',
       ledger: handle.ledger,
