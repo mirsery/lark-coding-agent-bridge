@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { probeClaudeSession } from '../../../src/agent/claude/session-probe';
+import { claudeSessionHasKnowledge, probeClaudeSession } from '../../../src/agent/claude/session-probe';
 import { probeCodexSession } from '../../../src/agent/codex/session-probe';
 import { buildAgentPrompt, extractUserInputText } from '../../../src/agent/prompt';
 
@@ -68,6 +68,77 @@ describe('probeClaudeSession', () => {
   it('is undefined for a session without a transcript', async () => {
     const config = await tmp('claude-config-');
     expect(await probeClaudeSession('missing', '/ws', { CLAUDE_CONFIG_DIR: config })).toBeUndefined();
+  });
+
+  it('reads the last answer and the latest ledger announcement, skipping marker-only answers', async () => {
+    const config = await tmp('claude-config-');
+    const project = join(config, 'projects', '-ws');
+    await mkdir(project, { recursive: true });
+    const text = (t: string) => [{ type: 'text', text: t }];
+    const lines = [
+      { type: 'user', message: { content: bridgePrompt('做个大任务') } },
+      { type: 'assistant', message: { content: text('开始了。\n📒 任务台账：~/.lark-channel/tasks/big.md') } },
+      { type: 'assistant', message: { content: text('顺手更新了任务台账') } },
+      { type: 'user', message: { content: bridgePrompt('做完了吗') } },
+      {
+        type: 'assistant',
+        timestamp: '2026-10-12T02:00:08.000Z',
+        message: { content: text('做完了，已推送。'), usage: { input_tokens: 5, cache_read_input_tokens: 100 } },
+      },
+      { type: 'assistant', message: { content: text('[[NO_REPLY]]') } },
+    ];
+    await writeFile(join(project, 'sess-2.jsonl'), `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+
+    const probe = await probeClaudeSession('sess-2', '/ws', { CLAUDE_CONFIG_DIR: config });
+    expect(probe).toMatchObject({
+      contextTokens: 105,
+      lastUserText: '做完了吗',
+      lastAnswerText: '做完了，已推送。',
+    });
+    expect(probe?.ledgerText).toContain('~/.lark-channel/tasks/big.md');
+  });
+});
+
+describe('claudeSessionHasKnowledge', () => {
+  const knowledgePrompt = (version: string) =>
+    buildAgentPrompt({
+      context: { chatId: 'oc_x', chatType: 'p2p', senderId: 'ou_x', source: 'im' },
+      userInput: '问题',
+      knowledge: { version, profileMemory: ['记忆'] } as never,
+    });
+
+  async function transcript(lines: unknown[]): Promise<string> {
+    const config = await tmp('claude-config-');
+    const project = join(config, 'projects', '-ws');
+    await mkdir(project, { recursive: true });
+    await writeFile(join(project, 'sess-k.jsonl'), `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+    return config;
+  }
+
+  it('finds the version in a main-thread prompt since the last compaction', async () => {
+    const config = await transcript([
+      { type: 'user', message: { content: knowledgePrompt('abc123') } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: '好' }] } },
+    ]);
+    const env = { CLAUDE_CONFIG_DIR: config };
+    expect(claudeSessionHasKnowledge('sess-k', '/ws', 'abc123', env)).toBe(true);
+    expect(claudeSessionHasKnowledge('sess-k', '/ws', 'def456', env)).toBe(false);
+    expect(claudeSessionHasKnowledge('sess-k', '/ws', 'not-hex', env)).toBe(false);
+    expect(claudeSessionHasKnowledge('missing', '/ws', 'abc123', env)).toBe(false);
+  });
+
+  it('forgets the block once the conversation was compacted after it', async () => {
+    const config = await transcript([
+      { type: 'user', message: { content: knowledgePrompt('abc123') } },
+      { type: 'system', subtype: 'compact_boundary' },
+      { type: 'user', message: { content: bridgePrompt('后来的问题') } },
+    ]);
+    expect(claudeSessionHasKnowledge('sess-k', '/ws', 'abc123', { CLAUDE_CONFIG_DIR: config })).toBe(false);
+  });
+
+  it('ignores a subagent prompt that carries the version', async () => {
+    const config = await transcript([{ type: 'user', isSidechain: true, message: { content: knowledgePrompt('abc123') } }]);
+    expect(claudeSessionHasKnowledge('sess-k', '/ws', 'abc123', { CLAUDE_CONFIG_DIR: config })).toBe(false);
   });
 });
 

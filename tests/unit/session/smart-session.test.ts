@@ -48,11 +48,34 @@ describe('decideRotation', () => {
     ).toMatchObject({ reason: 'agent-done' });
   });
 
-  it('honours an agent-requested close whatever the idle time', () => {
+  it('honours an agent-requested close once the follow-up grace has passed', () => {
     expect(
-      decideRotation({ settings, now, pending: { summary: '修完了' }, probe: { lastActivityAt: now - MIN } }),
+      decideRotation({ settings, now, pending: { summary: '修完了' }, probe: { lastActivityAt: now - 10 * MIN } }),
     ).toMatchObject({ reason: 'agent-done', summary: '修完了' });
     expect(decideRotation({ settings, now, pending: {}, probe: undefined })).toMatchObject({ reason: 'agent-done' });
+  });
+
+  it('treats a message within the grace as a follow-up on the finished task', () => {
+    expect(
+      decideRotation({ settings, now, pending: { summary: '修完了' }, probe: { lastActivityAt: now - 2 * MIN } }),
+    ).toBeUndefined();
+    expect(
+      decideRotation({
+        settings: { ...settings, doneGraceMinutes: 0 },
+        now,
+        pending: {},
+        probe: { lastActivityAt: now - MIN },
+      }),
+    ).toMatchObject({ reason: 'agent-done' });
+  });
+
+  it('keeps the conversation for a quote, up to the hard idle limit', () => {
+    const large = { lastActivityAt: now - 120 * MIN, contextTokens: 200_000 };
+    expect(decideRotation({ settings, now, quoted: true, probe: large })).toBeUndefined();
+    expect(decideRotation({ settings, now, quoted: true, pending: {}, probe: large })).toBeUndefined();
+    expect(
+      decideRotation({ settings, now, quoted: true, probe: { lastActivityAt: now - 600 * MIN, contextTokens: 200_000 } }),
+    ).toMatchObject({ reason: 'idle-long', quoted: true });
   });
 });
 
@@ -90,6 +113,22 @@ describe('hand-off and notice', () => {
     expect(section).toContain('/resume');
   });
 
+  it('carries the last answer, the ledger and the quote hint', () => {
+    const section = handoffSection({
+      reason: 'idle-long',
+      idleMinutes: 600,
+      lastAnswerText: `${'结论'.repeat(400)}\n[[NEW_SESSION: 做完了]]`,
+      ledger: '~/.lark-channel/tasks/foo.md',
+      quoted: true,
+    });
+    const body = JSON.parse(section.split('\n')[1] ?? '{}') as Record<string, string>;
+    expect(body.previousLastAnswer).toHaveLength(601);
+    expect(body.previousLastAnswer?.endsWith('…')).toBe(true);
+    expect(body.ledger).toBe('~/.lark-channel/tasks/foo.md');
+    expect(body.note).toContain('quoted_messages');
+    expect(handoffSection({ reason: 'agent-done', lastAnswerText: '好了\n[[NEW_SESSION]]' })).not.toContain('NEW_SESSION');
+  });
+
   it('explains the renewal in one line', () => {
     expect(rotationNotice({ reason: 'idle-large', idleMinutes: 180, contextTokens: 450_000 })).toContain('3 小时前');
     expect(rotationNotice({ reason: 'idle-large', idleMinutes: 180, contextTokens: 450_000 })).toContain('45 万');
@@ -111,5 +150,12 @@ describe('getSmartSession', () => {
     expect(
       getSmartSession(cfg({ smartSession: true, smartSessionTuning: { idleMinutes: 90, minContextTokens: 1 } })),
     ).toMatchObject({ idleMinutes: 90, minContextTokens: SMART_SESSION_DEFAULTS.minContextTokens });
+  });
+
+  it('takes the follow-up grace, zero included', () => {
+    expect(getSmartSession(cfg({ smartSession: true, smartSessionTuning: { doneGraceMinutes: 0 } }))?.doneGraceMinutes).toBe(0);
+    expect(getSmartSession(cfg({ smartSession: true, smartSessionTuning: { doneGraceMinutes: -1 } }))?.doneGraceMinutes).toBe(
+      SMART_SESSION_DEFAULTS.doneGraceMinutes,
+    );
   });
 });

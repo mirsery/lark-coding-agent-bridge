@@ -18,7 +18,9 @@ import {
 import type { BackgroundTurnHandler, RunExecution, RunExecutor } from '../runtime/run-executor';
 import type { GateContext } from '../runtime/approvals';
 import { RunRejected, type RunRejectedCode } from '../runtime/errors';
-import type { AgentSessionProbe } from '../agent/session-probe';
+import { sessionHasKnowledge, type AgentSessionProbe } from '../agent/session-probe';
+import { log } from '../core/logger';
+import { findLedger } from './task-ledger';
 import { effortPrefForChat, type SmartSessionSettings } from '../config/schema';
 import type { SessionCatalog } from '../session/catalog';
 import {
@@ -67,8 +69,16 @@ export interface StartRunFlowInput {
     settings: SmartSessionSettings;
     /** The agent asked to close the conversation at the end of its last answer. */
     pending?: PendingRotation;
+    /** The message quotes an earlier one (see decideRotation). */
+    quoted?: boolean;
     probe: (handle: string, cwd: string) => Promise<AgentSessionProbe | undefined>;
   };
+  /**
+   * The prompt's `<bridge_knowledge>` section (`full`, exactly as in the
+   * prompt) and the stub that replaces it when the conversation the run
+   * resumes still holds this `version` in full (agents that can tell).
+   */
+  knowledge?: { version: string; full: string; stub: string };
   observability?: {
     profile: string;
     agent: string;
@@ -172,9 +182,12 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       settings: input.rotation.settings,
       probe,
       ...(input.rotation.pending ? { pending: input.rotation.pending } : {}),
+      ...(input.rotation.quoted ? { quoted: true } : {}),
       resumeHandle: resumeFrom,
       now: input.now,
     });
+    const ledger = rotated && probe?.ledgerText ? findLedger(probe.ledgerText) : undefined;
+    if (rotated && ledger) rotated = { ...rotated, ledger };
     if (rotated) {
       // Same as `/new`: the conversation stays listed in /resume.
       input.sessionCatalog?.archiveActive({
@@ -188,6 +201,22 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       resumeFrom = undefined;
       runPolicy = { ...policy, prompt: `${handoffSection(rotated)}\n\n${policy.prompt}` };
     }
+  }
+  // The conversation already holds this knowledge block (unchanged since, and
+  // not compacted away): send a stub instead of another full copy.
+  if (
+    input.knowledge &&
+    resumeFrom &&
+    runPolicy.prompt.includes(input.knowledge.full) &&
+    sessionHasKnowledge(input.profileConfig, resumeFrom, workspace.cwdRealpath, input.knowledge.version)
+  ) {
+    const { full, stub } = input.knowledge;
+    runPolicy = { ...runPolicy, prompt: runPolicy.prompt.replace(full, () => stub) };
+    log.info('knowledge', 'stub', {
+      scope: input.scopeId,
+      version: input.knowledge.version,
+      savedChars: full.length - stub.length,
+    });
   }
   const sessionId = descriptor.sessionHandle === 'sessionId' ? resumeFrom : undefined;
   const threadId = descriptor.sessionHandle === 'threadId' ? resumeFrom : undefined;

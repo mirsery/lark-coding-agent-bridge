@@ -1,7 +1,14 @@
+import { createHash } from 'node:crypto';
 import type { LibraryEntry, LibraryWriteTarget } from './knowledge-libraries';
 import type { KnowledgeStore, MemoryEntry, SkillSummary } from './store';
 
 export interface KnowledgeContext {
+  /**
+   * Hash of everything below (see {@link withKnowledgeVersion}). A resumed
+   * conversation that still holds the block of this version gets a short stub
+   * instead (see {@link knowledgeStub}).
+   */
+  version?: string;
   /** Notes that apply to every chat in this profile. */
   profileMemory?: string[];
   /** Notes recorded for this chat / topic only (a topic also gets its group's). */
@@ -247,4 +254,21 @@ export function withoutSkillWrite(context: KnowledgeContext | undefined): Knowle
   if (!context?.libraryWriteOnSkill) return context;
   const { libraryWriteOnSkill: _dropped, ...rest } = context;
   return Object.keys(rest).length > 0 ? rest : undefined;
+}
+
+/** `context` stamped with a short hash of its content, as the prompt will carry it. */
+export function withKnowledgeVersion(context: KnowledgeContext | undefined): KnowledgeContext | undefined {
+  if (!context) return undefined;
+  const { version: _old, ...body } = context;
+  const version = createHash('sha256').update(JSON.stringify(body)).digest('hex').slice(0, 16);
+  return { version, ...body };
+}
+
+/**
+ * What a resumed conversation gets instead of the block when it still holds
+ * this version in full (after its last compaction): the version it should
+ * look back to, and a file with the same content in case it cannot find it.
+ */
+export function knowledgeStub(version: string, snapshot?: string): { unchangedSince: string; snapshot?: string } {
+  return { unchangedSince: version, ...(snapshot ? { snapshot } : {}) };
 }

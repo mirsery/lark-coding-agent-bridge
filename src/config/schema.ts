@@ -418,6 +418,11 @@ export interface SmartSessionTuning {
   hardIdleMinutes?: number;
   /** Context window the agent CLI auto-compacts against, in tokens. Default 300000. */
   compactWindowTokens?: number;
+  /**
+   * An agent-requested close (`[[NEW_SESSION]]`) waits this long: a message
+   * sooner than this is a follow-up and continues the conversation. Default 10.
+   */
+  doneGraceMinutes?: number;
 }
 
 export interface SmartSessionSettings {
@@ -425,6 +430,7 @@ export interface SmartSessionSettings {
   minContextTokens: number;
   hardIdleMinutes: number;
   compactWindowTokens: number;
+  doneGraceMinutes: number;
 }
 
 export const SMART_SESSION_DEFAULTS: SmartSessionSettings = {
@@ -432,6 +438,7 @@ export const SMART_SESSION_DEFAULTS: SmartSessionSettings = {
   minContextTokens: 150_000,
   hardIdleMinutes: 480,
   compactWindowTokens: 300_000,
+  doneGraceMinutes: 10,
 };
 
 /**
@@ -604,6 +611,7 @@ export function getSmartSession(cfg: AppConfig): SmartSessionSettings | undefine
     minContextTokens: pick(tuning.minContextTokens, 10_000, 2_000_000, SMART_SESSION_DEFAULTS.minContextTokens),
     hardIdleMinutes: pick(tuning.hardIdleMinutes, 30, 30 * 24 * 60, SMART_SESSION_DEFAULTS.hardIdleMinutes),
     compactWindowTokens: pick(tuning.compactWindowTokens, 100_000, 2_000_000, SMART_SESSION_DEFAULTS.compactWindowTokens),
+    doneGraceMinutes: pick(tuning.doneGraceMinutes, 0, 24 * 60, SMART_SESSION_DEFAULTS.doneGraceMinutes),
   };
 }
 

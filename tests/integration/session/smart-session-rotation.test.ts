@@ -1,3 +1,5 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { claudeCapability, codexCapability } from '../../../src/agent/capability.js';
@@ -74,7 +76,7 @@ describe('会话智能压缩 — run-flow rotation', () => {
     const h = await harnessWithActiveSession('codex');
     const run = await start(h, {
       pending: { summary: '排查完 ALF021024080047 的校准问题' },
-      probe: async () => ({ lastActivityAt: NOW - 60_000, contextTokens: 20_000 }),
+      probe: async () => ({ lastActivityAt: NOW - 15 * 60_000, contextTokens: 20_000 }),
     });
 
     expect(run.ok).toBe(true);
@@ -82,6 +84,85 @@ describe('会话智能压缩 — run-flow rotation', () => {
     expect(run.rotated?.reason).toBe('agent-done');
     expect(h.agent.runOptions[1]?.threadId).toBeUndefined();
     expect(h.agent.runOptions[1]?.prompt).toContain('排查完 ALF021024080047 的校准问题');
+  });
+
+  it('keeps the conversation for a follow-up right after an agent-requested close', async () => {
+    const h = await harnessWithActiveSession('claude');
+    const run = await start(h, {
+      pending: { summary: '修完了' },
+      probe: async () => ({ lastActivityAt: NOW - 2 * 60_000, contextTokens: 20_000 }),
+    });
+    expect(run.ok && run.resumeFrom).toBe('sess-old');
+  });
+
+  it('keeps a quoted conversation until the hard idle limit, then hands off with a quote hint', async () => {
+    const warm = await harnessWithActiveSession('claude');
+    const kept = await start(warm, {
+      quoted: true,
+      probe: async () => ({ lastActivityAt: NOW - 2 * HOUR, contextTokens: 400_000 }),
+    });
+    expect(kept.ok && kept.resumeFrom).toBe('sess-old');
+
+    const cold = await harnessWithActiveSession('claude');
+    const rotated = await start(cold, {
+      quoted: true,
+      probe: async () => ({ lastActivityAt: NOW - 9 * HOUR, contextTokens: 400_000 }),
+    });
+    expect(rotated.ok && rotated.rotated?.reason).toBe('idle-long');
+    expect(cold.agent.runOptions[1]?.prompt).toContain('quoted_messages');
+  });
+
+  it('hands off the last answer and the task ledger it announced', async () => {
+    const h = await harnessWithActiveSession('claude');
+    const run = await start(h, {
+      probe: async () => ({
+        lastActivityAt: NOW - 9 * HOUR,
+        contextTokens: 40_000,
+        lastAnswerText: '第一阶段做完，下一步跑门禁。',
+        ledgerText: '开工。\n📒 任务台账：~/.lark-channel/tasks/big-job.md',
+      }),
+    });
+    expect(run.ok && run.rotated?.ledger).toBe('~/.lark-channel/tasks/big-job.md');
+    const prompt = h.agent.runOptions[1]?.prompt ?? '';
+    expect(prompt).toContain('第一阶段做完，下一步跑门禁。');
+    expect(prompt).toContain('~/.lark-channel/tasks/big-job.md');
+  });
+
+  it('sends a knowledge stub to a resumed conversation that still holds the block', async () => {
+    const config = await mkdtemp(join(tmpdir(), 'claude-config-'));
+    const project = join(config, 'projects', '-elsewhere');
+    await mkdir(project, { recursive: true });
+    const full = '<bridge_knowledge>\n{"version":"abc123","profileMemory":["m"]}\n</bridge_knowledge>';
+    const stub = '<bridge_knowledge>\n{"unchangedSince":"abc123"}\n</bridge_knowledge>';
+    await writeFile(
+      join(project, 'sess-old.jsonl'),
+      `${JSON.stringify({ type: 'user', message: { content: `${full}\n\n<user_input>x</user_input>` } })}\n`,
+    );
+    const previous = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = config;
+    cleanups.push(async () => {
+      if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previous;
+      await rm(config, { recursive: true, force: true });
+    });
+    const knowledge = { version: 'abc123', full, stub };
+    const prompt = `${full}\n\nhello`;
+
+    const resumed = await harnessWithActiveSession('claude');
+    await start(resumed, { probe: async () => ({ lastActivityAt: NOW - 60_000 }) }, { knowledge, prompt });
+    expect(resumed.agent.runOptions[1]?.prompt).toBe(`${stub}\n\nhello`);
+
+    const changed = await harnessWithActiveSession('claude');
+    await start(changed, undefined, { knowledge: { ...knowledge, version: 'def456' }, prompt });
+    expect(changed.agent.runOptions[1]?.prompt).toBe(prompt);
+
+    const rotated = await harnessWithActiveSession('claude');
+    await start(rotated, { probe: async () => ({ lastActivityAt: NOW - 9 * HOUR }) }, { knowledge, prompt });
+    expect(rotated.agent.runOptions[1]?.prompt).toContain(full);
+
+    const codex = await harnessWithActiveSession('codex');
+    await start(codex, undefined, { knowledge, prompt });
+    expect(codex.agent.runOptions[1]?.prompt).toBe(prompt);
   });
 
   it('never probes or rotates without the rotation option', async () => {
@@ -123,8 +204,14 @@ function identity(h: Harness, run: { cwdRealpath: string; policy: { policyFinger
 
 async function start(
   h: Harness,
-  rotation: { probe: (handle: string, cwd: string) => Promise<AgentSessionProbe | undefined>; pending?: PendingRotation } | undefined,
-  extra: { compactWindowTokens?: number } = {},
+  rotation:
+    | {
+        probe: (handle: string, cwd: string) => Promise<AgentSessionProbe | undefined>;
+        pending?: PendingRotation;
+        quoted?: boolean;
+      }
+    | undefined,
+  extra: { compactWindowTokens?: number; knowledge?: StartRunFlowInput['knowledge']; prompt?: string } = {},
 ) {
   const input = {
     scopeId: 'chat-1',
@@ -149,6 +236,7 @@ async function start(
             settings: SMART_SESSION_DEFAULTS,
             probe: rotation.probe,
             ...(rotation.pending ? { pending: rotation.pending } : {}),
+            ...(rotation.quoted ? { quoted: true } : {}),
           },
         }
       : {}),

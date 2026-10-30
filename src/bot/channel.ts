@@ -18,6 +18,7 @@ import {
 } from '../agent/models';
 import {
   buildAgentPrompt,
+  promptSection,
   type BridgePromptInteractiveCard,
   type BridgePromptKnowledge,
   type BridgePromptMention,
@@ -128,7 +129,8 @@ import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { reportInterruptedRuns } from './interrupted-notice';
 import { RunRegistry } from '../runtime/run-registry';
-import { buildKnowledgeContext, withoutSkillWrite } from '../knowledge/inject';
+import { buildKnowledgeContext, knowledgeStub, withKnowledgeVersion, withoutSkillWrite } from '../knowledge/inject';
+import { writeKnowledgeSnapshot } from '../knowledge/snapshot';
 import { getKnowledgeSyncIntervalMinutes, KnowledgeAutoSync } from '../knowledge/auto-sync';
 import { armSkillReadHook, KnowledgeLibraries } from '../knowledge/knowledge-libraries';
 import { getSkillSyncIntervalMinutes, SkillLibraries } from '../knowledge/libraries';
@@ -618,6 +620,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           recalled,
           botOverload,
           ...(knowledge ? { knowledge } : {}),
+          ...(deps.appPaths?.profileDir
+            ? { knowledgeSnapshotDir: join(deps.appPaths.profileDir, 'knowledge-snapshots') }
+            : {}),
         });
       } catch (err) {
         log.fail('flush', err);
@@ -1486,6 +1491,8 @@ interface RunBatchDeps {
   mode: ChatMode;
   runs?: RunRegistry;
   knowledge?: KnowledgeStore;
+  /** Where each knowledge block version is kept for the stub to point at. */
+  knowledgeSnapshotDir?: string;
   autoResumer?: AutoResumer;
   activeRuns?: ActiveRuns;
   recalled?: RecalledMessages;
@@ -1684,7 +1691,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     ownerRun && knowledge && controls.knowledgeLibraries
       ? await armSkillReadHook(controls.knowledgeLibraries, knowledge, scope)
       : undefined;
-  const knowledgeContext = readHook ? builtKnowledge : withoutSkillWrite(builtKnowledge);
+  const knowledgeContext = withKnowledgeVersion(readHook ? builtKnowledge : withoutSkillWrite(builtKnowledge));
+  // A resumed conversation that still holds this version gets a stub instead
+  // (see startRunFlow); the snapshot keeps the full block readable for it.
+  const knowledgeSnapshot =
+    knowledgeContext && deps.knowledgeSnapshotDir
+      ? await writeKnowledgeSnapshot(deps.knowledgeSnapshotDir, knowledgeContext)
+      : undefined;
+  const knowledgeSwap = knowledgeContext?.version
+    ? {
+        version: knowledgeContext.version,
+        full: promptSection('bridge_knowledge', knowledgeContext),
+        stub: promptSection('bridge_knowledge', knowledgeStub(knowledgeContext.version, knowledgeSnapshot)),
+      }
+    : undefined;
   const prompt = buildPrompt(
     batch,
     attachments,
@@ -1764,10 +1784,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     : undefined;
   // 会话智能压缩: an agent-requested close is consumed by this message either
   // way. Never rotate under a process this scope still keeps (its background
-  // work would be cut off — and a fresh submit would reuse it anyway) or when
-  // the user quotes an earlier message, which points back into the old context.
+  // work would be cut off — and a fresh submit would reuse it anyway). A quote
+  // points back into the old context, so it keeps the conversation — up to
+  // hardIdleMinutes (decideRotation).
   const pendingRotation = pendingRotations.take(scope);
-  const rotationBlocked = executor.hasLiveProcess(scope) || quotes.length > 0;
+  const rotationBlocked = executor.hasLiveProcess(scope);
   // 长任务完成提醒 measures from here: queueing behind the concurrency cap is
   // waiting the requester does too.
   const runSubmittedAt = Date.now();
@@ -1805,6 +1826,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     ...(runGuard ? { guard: runGuard } : {}),
     ...(restrictedCwd ? { cwd: restrictedCwd } : {}),
     ...(readHook ? { readHook } : {}),
+    ...(knowledgeSwap ? { knowledge: knowledgeSwap } : {}),
     ...(smartSession
       ? {
           compactWindowTokens: smartSession.compactWindowTokens,
@@ -1814,6 +1836,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
                 rotation: {
                   settings: smartSession,
                   ...(pendingRotation ? { pending: pendingRotation } : {}),
+                  ...(quotes.length > 0 ? { quoted: true } : {}),
                   probe: (handle: string, cwd: string) => probeAgentSession(controls.profileConfig, handle, cwd),
                 },
               }),

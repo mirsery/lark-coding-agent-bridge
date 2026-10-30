@@ -13,7 +13,13 @@ import type { SmartSessionSettings } from '../config/schema';
  *   (`idle-long`).
  * - the agent said so: it ended its previous answer with
  *   {@link NEW_SESSION_MARKER} because the task was finished
- *   (`agent-done`).
+ *   (`agent-done`) — unless the next message comes within
+ *   `doneGraceMinutes`, which in practice is a follow-up on that very task
+ *   ("push the branch", "now write the test steps for this change").
+ *
+ * A message quoting an earlier one points back into the conversation, so it
+ * keeps it — but only until `hardIdleMinutes`: by then the prompt cache is long
+ * gone and the quote itself carries what the user points at.
  *
  * Rotating archives the conversation (it stays in `/resume`) and starts the
  * next turn fresh, with a short hand-off note so the agent knows there was one.
@@ -28,6 +34,12 @@ export interface RotationVerdict {
   /** One-line summary of the archived conversation, when the agent gave one. */
   summary?: string;
   lastUserText?: string;
+  /** The answer the archived conversation ended with, as the user saw it. */
+  lastAnswerText?: string;
+  /** Task ledger the archived conversation announced (`~/…`). */
+  ledger?: string;
+  /** The message that rotated it quotes an earlier one (shown in its prompt). */
+  quoted?: boolean;
 }
 
 /** A rotation the agent asked for at the end of its last answer, applied on the next message. */
@@ -47,6 +59,8 @@ export interface DecideRotationInput {
   pending?: PendingRotation;
   /** The conversation the next message would resume; a pending request for another one is ignored. */
   resumeHandle?: string;
+  /** The message quotes an earlier one: only the hard idle limit rotates. */
+  quoted?: boolean;
   now: number;
 }
 
@@ -62,12 +76,15 @@ export function decideRotation(input: DecideRotationInput): RotationVerdict | un
     ...(idleMinutes !== undefined ? { idleMinutes } : {}),
     ...(probe?.contextTokens !== undefined ? { contextTokens: probe.contextTokens } : {}),
     ...(probe?.lastUserText ? { lastUserText: probe.lastUserText } : {}),
+    ...(probe?.lastAnswerText ? { lastAnswerText: probe.lastAnswerText } : {}),
+    ...(input.quoted ? { quoted: true } : {}),
   };
-  if (pending) {
+  if (pending && !input.quoted && (idleMinutes === undefined || idleMinutes >= settings.doneGraceMinutes)) {
     return { reason: 'agent-done', ...base, ...(pending.summary ? { summary: pending.summary } : {}) };
   }
   if (idleMinutes === undefined) return undefined;
   if (idleMinutes >= settings.hardIdleMinutes) return { reason: 'idle-long', ...base };
+  if (input.quoted) return undefined;
   if (
     idleMinutes >= settings.idleMinutes &&
     probe?.contextTokens !== undefined &&
@@ -116,17 +133,29 @@ export const SMART_SESSION_INSTRUCTION =
   '`[[NEW_SESSION: 一句话概括这段会话做了什么]]`，bridge 会在回复发出后归档当前会话（/resume 可找回），下一条消息从新会话开始。' +
   '任务还没做完、用户可能追问、或你不确定时不要写。这个标记对用户不可见，不要在正文里提到它。';
 
+/** How much of the archived conversation's last answer the hand-off carries. */
+const HANDOFF_ANSWER_CHARS = 600;
+
 /** Hand-off note prepended to the first prompt of the fresh session. */
 export function handoffSection(verdict: RotationVerdict): string {
   return promptSection('session_handoff', {
     note:
       '上一段会话已由 bridge 自动归档（会话智能压缩），这是一个新会话，看不到之前的上下文。' +
-      '用户如果提到之前的内容，请提示对方用 /resume 找回旧会话。',
+      '下面是旧会话的最后一次请求和回答摘录；新消息是接着旧任务的，有任务台账就先读台账。' +
+      (verdict.quoted ? '用户引用的消息在 quoted_messages 里。' : '') +
+      '这些仍不够时，请提示对方用 /resume 找回旧会话。',
     reason: verdict.reason,
     ...(verdict.idleMinutes !== undefined ? { idleMinutes: verdict.idleMinutes } : {}),
     ...(verdict.summary ? { previousSummary: verdict.summary } : {}),
     ...(verdict.lastUserText ? { previousLastRequest: verdict.lastUserText.slice(0, 200) } : {}),
+    ...(verdict.lastAnswerText ? { previousLastAnswer: excerpt(verdict.lastAnswerText, HANDOFF_ANSWER_CHARS) } : {}),
+    ...(verdict.ledger ? { ledger: verdict.ledger } : {}),
   });
+}
+
+function excerpt(text: string, max: number): string {
+  const trimmed = stripNewSessionMarker(text.trim());
+  return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
 }
 
 /** One grey line under the answer telling the user the conversation was renewed. */

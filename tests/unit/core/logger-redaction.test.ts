@@ -47,6 +47,17 @@ describe('logger redaction', () => {
     expect(text).toContain('[REDACTED_PATH]');
   });
 
+  it('keeps numeric token counts but still redacts token values', async () => {
+    log.info('session', 'rotate', { contextTokens: 123456, inputTokens: 789, accessToken: 'tok-123', tokens: 'abc' });
+    await flushLogger();
+
+    const text = await readTodayLog();
+    expect(text).toContain('"contextTokens":123456');
+    expect(text).toContain('"inputTokens":789');
+    expect(text).not.toContain('tok-123');
+    expect(text).not.toContain('"abc"');
+  });
+
   it('redacts nested sdk args after stringify-style recursion', async () => {
     log.warn('sdk', 'error', {
       args: [

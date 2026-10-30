@@ -6,8 +6,17 @@ import { transcriptPath } from './session-cost';
 const ASSISTANT = Buffer.from('"type":"assistant"');
 const USER = Buffer.from('"type":"user"');
 const USER_INPUT = Buffer.from('<user_input>');
+/** Cheap pre-filter for {@link LEDGER_LINE} ("Task ledger" / "task ledger" alike). */
+const LEDGER_WORDS = [Buffer.from('任务台账'), Buffer.from('ask ledger')];
+/** An answer announcing its ledger (`📒 任务台账：~/…`; the path itself is read by findLedger). */
+const LEDGER_LINE = /(?:任务台账|[Tt]ask ledger)\s*[:：]/;
+const COMPACT_BOUNDARY = Buffer.from('"compact_boundary"');
 /** Enough tail to reach the last request even after a long tool-heavy turn. */
 const MAX_SCAN_BYTES = 16 * 1024 * 1024;
+/** How far back past the last request a task ledger is still looked for. */
+const LEDGER_SCAN_BYTES = 4 * 1024 * 1024;
+/** An answer that is nothing but a bridge control marker (`[[NO_REPLY]]`). */
+const MARKER_ONLY = /^\s*\[\[[A-Z_]+(?:[:：][^\]\n]*)?\]\]\s*$/;
 
 interface TranscriptRecord {
   type?: unknown;
@@ -24,9 +33,9 @@ interface TranscriptRecord {
 }
 
 /**
- * Last model call (time and prompt size) and last user request of a Claude
- * Code session, read backwards from its transcript
- * (`~/.claude/projects/<cwd>/<sessionId>.jsonl`).
+ * Last model call (time and prompt size), last answer and last user request of
+ * a Claude Code session — plus the latest answer naming a task ledger — read
+ * backwards from its transcript (`~/.claude/projects/<cwd>/<sessionId>.jsonl`).
  */
 export async function probeClaudeSession(
   sessionId: string,
@@ -37,11 +46,16 @@ export async function probeClaudeSession(
   if (!file) return undefined;
   const probe: AgentSessionProbe = {};
   let haveCall = false;
+  let scanned = 0;
   for (const line of linesBackward(file, { maxBytes: MAX_SCAN_BYTES })) {
-    if (!haveCall && line.includes(ASSISTANT)) {
+    scanned += line.length + 1;
+    if (line.includes(ASSISTANT)) {
+      const settled = haveCall && probe.lastAnswerText !== undefined;
+      if (settled && (probe.ledgerText !== undefined || !LEDGER_WORDS.some((w) => line.includes(w)))) continue;
       const rec = parse(line);
-      const usage = rec?.message?.usage;
-      if (rec && rec.type === 'assistant' && rec.isSidechain !== true && usage) {
+      if (!rec || rec.type !== 'assistant' || rec.isSidechain === true) continue;
+      const usage = rec.message?.usage;
+      if (!haveCall && usage) {
         const tokens =
           (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
         const at = typeof rec.timestamp === 'string' ? Date.parse(rec.timestamp) : Number.NaN;
@@ -51,19 +65,55 @@ export async function probeClaudeSession(
           haveCall = true;
         }
       }
-    } else if (line.includes(USER) && line.includes(USER_INPUT)) {
+      const answer = answerText(rec.message?.content);
+      if (answer) {
+        probe.lastAnswerText ??= answer;
+        if (probe.ledgerText === undefined && LEDGER_LINE.test(answer)) {
+          probe.ledgerText = answer;
+        }
+      }
+    } else if (probe.lastUserText === undefined && line.includes(USER) && line.includes(USER_INPUT)) {
       const rec = parse(line);
       if (rec && rec.type === 'user' && rec.isSidechain !== true) {
         const text = userText(rec.message?.content);
         const asked = text ? extractUserInputText(text) : undefined;
-        if (asked) {
-          probe.lastUserText = asked;
-          break;
-        }
+        if (asked) probe.lastUserText = asked;
       }
     }
+    if (probe.lastUserText !== undefined && (probe.ledgerText !== undefined || scanned > LEDGER_SCAN_BYTES)) break;
   }
   return haveCall || probe.lastUserText ? probe : undefined;
+}
+
+/**
+ * Whether the session's live context still holds the full knowledge block of
+ * `version`: a user message carrying it after the last compaction, within the
+ * transcript's last {@link MAX_SCAN_BYTES}. False when unsure (no transcript,
+ * compacted since, too far back), so the caller sends the block again.
+ */
+export function claudeSessionHasKnowledge(
+  sessionId: string,
+  cwd: string | undefined,
+  version: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!/^[0-9a-f]+$/.test(version)) return false;
+  const file = transcriptPath(sessionId, cwd, env);
+  if (!file) return false;
+  // As written inside the transcript's JSON string: `\"version\":\"<v>\"`.
+  const marker = Buffer.from(`\\"version\\":\\"${version}\\"`);
+  try {
+    for (const line of linesBackward(file, { maxBytes: MAX_SCAN_BYTES })) {
+      if (line.includes(COMPACT_BOUNDARY)) return false;
+      if (line.includes(USER) && line.includes(marker)) {
+        const rec = parse(line);
+        if (rec && rec.type === 'user' && rec.isSidechain !== true) return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 function parse(line: Buffer): TranscriptRecord | undefined {
@@ -82,4 +132,15 @@ function userText(content: unknown): string | undefined {
     if (b?.type === 'text' && typeof b.text === 'string' && b.text.includes('<user_input>')) return b.text;
   }
   return undefined;
+}
+
+/** The text an assistant record shows the user, unless it is only a control marker. */
+function answerText(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const text = content
+    .filter((b): b is { type: 'text'; text: string } => b?.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join('\n')
+    .trim();
+  return text && !MARKER_ONLY.test(text) ? text : undefined;
 }

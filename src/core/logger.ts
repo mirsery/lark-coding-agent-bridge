@@ -201,7 +201,9 @@ function sanitizeLogValue(
   const normalizedKey = key.startsWith('_') ? key.slice(1) : key;
   if (value === undefined) return undefined;
   if (RAW_PAYLOAD_KEYS.has(normalizedKey)) return '[REDACTED]';
-  if (/token|secret|authorization/i.test(normalizedKey)) return '[REDACTED]';
+  // `contextTokens: 120000` is a count, not a credential: keep numeric *Tokens.
+  const tokenCount = typeof value === 'number' && /Tokens$/.test(normalizedKey);
+  if (!tokenCount && /token|secret|authorization/i.test(normalizedKey)) return '[REDACTED]';
   if (/attachment.*path|media.*path|^(cwd|cwdRealpath|path|absPath)$/i.test(normalizedKey)) {
     return '[REDACTED_PATH]';
   }

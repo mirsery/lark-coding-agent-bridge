@@ -82,6 +82,10 @@ describe('/status and /doctor diagnostics', () => {
     h.controls.pendingRotations = {
       get: (scope) => (scope === 'chat-1' ? { handle: 'sess-live', requestedAt: Date.now() } : undefined),
     };
+    // Within doneGraceMinutes the next message is a follow-up on the same task.
+    await expect(h.run('/status')).resolves.toBe(true);
+    expect(JSON.stringify(lastContent(h.channel))).not.toContain('自动开新会话');
+    await writeTranscript(h, cwd, 'sess-live', { minutesAgo: 15, contextTokens: 20_000 });
     await expect(h.run('/status')).resolves.toBe(true);
     expect(JSON.stringify(lastContent(h.channel))).toContain('下一条消息会自动开新会话（上一件事已完成）');
 

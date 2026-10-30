@@ -1,5 +1,5 @@
 import type { ProfileConfig } from '../config/profile-schema';
-import { probeClaudeSession } from './claude/session-probe';
+import { claudeSessionHasKnowledge, probeClaudeSession } from './claude/session-probe';
 import { effectiveCodexHome } from './codex/account';
 import { probeCodexSession } from './codex/session-probe';
 import type { AgentKind } from './registry';
@@ -19,6 +19,10 @@ export interface AgentSessionProbe {
   contextTokens?: number;
   /** The last request the user made in it, for the hand-off note. */
   lastUserText?: string;
+  /** The answer it ended with, for the hand-off note. */
+  lastAnswerText?: string;
+  /** The latest answer that names a task ledger (raw text; see `findLedger`). */
+  ledgerText?: string;
 }
 
 type ProbeProfile = Pick<ProfileConfig, 'agentKind' | 'codex'>;
@@ -47,5 +51,24 @@ export async function probeAgentSession(
     return await SESSION_PROBES[profileConfig.agentKind]?.(profileConfig, handle, cwd);
   } catch {
     return undefined;
+  }
+}
+
+const KNOWLEDGE_CHECKS: Record<AgentKind, ((handle: string, cwd: string, version: string) => boolean) | undefined> = {
+  claude: (handle, cwd, version) => claudeSessionHasKnowledge(handle, cwd, version),
+  // Codex keeps its thread elsewhere; it always gets the full block.
+  codex: undefined,
+};
+
+/**
+ * Whether the conversation `handle` still holds the full `<bridge_knowledge>`
+ * block of `version` (not compacted away since). False when the agent cannot
+ * tell. Never throws.
+ */
+export function sessionHasKnowledge(profileConfig: ProbeProfile, handle: string, cwd: string, version: string): boolean {
+  try {
+    return KNOWLEDGE_CHECKS[profileConfig.agentKind]?.(handle, cwd, version) ?? false;
+  } catch {
+    return false;
   }
 }
