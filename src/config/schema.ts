@@ -149,6 +149,13 @@ export interface AppPreferences {
    */
   chatEffort?: Record<string, EffortLevel>;
   /**
+   * Messages that run at `low` effort whatever else applies: a message whose
+   * first word is one of these (panel skills whose whole job is to send one
+   * card). Hand-edited only. Default {@link DEFAULT_LIGHT_EFFORT_COMMANDS};
+   * `[]` turns the rule off.
+   */
+  lightEffortCommands?: string[];
+  /**
    * Whether to send a separate Lark COT process message before the final
    * answer. `brief` mirrors the lightweight tool/progress visibility from
    * the legacy tool display; `detailed` also includes tool args/output.
@@ -526,6 +533,42 @@ export function effortPrefForChat(
   const override = chatId ? prefs?.chatEffort?.[chatId] : undefined;
   // A mistyped override falls back to the profile value, not to the CLI default.
   return ALL_EFFORT_LEVELS.includes(override as EffortLevel) ? override : prefs?.effort;
+}
+
+export const DEFAULT_LIGHT_EFFORT_COMMANDS: readonly string[] = ['/show-status', '/show-tasks', '/show-cron'];
+
+/** Where a turn's effort came from, when it is not the chat / profile preference. */
+export type EffortSource = 'light' | 'session' | 'job';
+
+/** True when every message is one of the {@link AppPreferences.lightEffortCommands}. */
+export function isLightEffortTurn(
+  prefs: Pick<AppPreferences, 'lightEffortCommands'> | undefined,
+  texts: readonly string[],
+): boolean {
+  const commands = Array.isArray(prefs?.lightEffortCommands)
+    ? prefs.lightEffortCommands
+    : DEFAULT_LIGHT_EFFORT_COMMANDS;
+  if (commands.length === 0 || texts.length === 0) return false;
+  return texts.every((text) => commands.includes(text.trim().split(/\s+/)[0] ?? ''));
+}
+
+/**
+ * The effort one turn asks for, before the per-agent gating of
+ * `resolveEffortArg`: a light turn runs at `low`; otherwise the override
+ * (`/effort` for a conversation, a job's own level) wins over the chat /
+ * profile preference.
+ */
+export function pickTurnEffort(input: {
+  prefs: Pick<AppPreferences, 'effort' | 'chatEffort'> | undefined;
+  chatId: string | undefined;
+  light?: boolean;
+  override?: { level: EffortLevel; source: 'session' | 'job' };
+}): { level: EffortLevel | undefined; source?: EffortSource } {
+  if (input.light) return { level: 'low', source: 'light' };
+  if (input.override && ALL_EFFORT_LEVELS.includes(input.override.level)) {
+    return { level: input.override.level, source: input.override.source };
+  }
+  return { level: effortPrefForChat(input.prefs, input.chatId) };
 }
 
 export function getCotMessages(cfg: AppConfig): CotMessagesMode {

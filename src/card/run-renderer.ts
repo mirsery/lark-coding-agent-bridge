@@ -1,3 +1,4 @@
+import type { EffortSource } from '../config/schema';
 import { runningToolLabel } from './run-activity';
 import { extractCodeBlocks } from './code-snippets';
 import { deepMaskEmails } from './mask-email';
@@ -29,6 +30,8 @@ export interface RunCardMeta {
   model?: string;
   /** Reasoning effort, omitted when the profile leaves it at the CLI default. */
   effort?: string;
+  /** Why `effort` differs from the preference: a light command, `/effort`, a job's own level. */
+  effortSource?: EffortSource;
   provider?: string;
   /** Account paying for the run, e.g. the logged-in Claude account name. */
   sponsor?: string;
@@ -142,13 +145,19 @@ function cardHeader(title: string, terminal: Terminal): object {
   };
 }
 
+const EFFORT_SOURCE_LABELS: Record<EffortSource, string> = {
+  light: '面板',
+  session: '会话',
+  job: '任务',
+};
+
 /** `hr` + grey agent/model line, mirroring what other bridge bots sign with. */
 function byline(meta: RunCardMeta | undefined): object[] {
   if (!meta) return [];
   const parts = [
     meta.agent ? `Agent: ${meta.agent}` : undefined,
     meta.model ? `Model: ${meta.model}` : undefined,
-    meta.effort ? `Effort: ${meta.effort}` : undefined,
+    meta.effort ? `Effort: ${meta.effort}${meta.effortSource ? `（${EFFORT_SOURCE_LABELS[meta.effortSource]}）` : ''}` : undefined,
     meta.provider ? `Provider: ${meta.provider}` : undefined,
     meta.sponsor ? `Sponsor: ${meta.sponsor}` : undefined,
     meta.usage ? `Usage: ${meta.usage}` : undefined,

@@ -21,7 +21,7 @@ import { RunRejected, type RunRejectedCode } from '../runtime/errors';
 import { sessionHasKnowledge, type AgentSessionProbe } from '../agent/session-probe';
 import { log } from '../core/logger';
 import { findLedger } from './task-ledger';
-import { effortPrefForChat, type SmartSessionSettings } from '../config/schema';
+import { type EffortLevel, type EffortSource, pickTurnEffort, type SmartSessionSettings } from '../config/schema';
 import type { SessionCatalog } from '../session/catalog';
 import {
   decideRotation,
@@ -59,6 +59,10 @@ export interface StartRunFlowInput {
   readHook?: string;
   /** Working directory pinned by the chat (`access.restrictedChats`); wins over `/cd`. */
   cwd?: string;
+  /** Every message is a light command (see isLightEffortTurn): run at `low`. */
+  lightTurn?: boolean;
+  /** A scheduled job's own effort; wins over `/effort` and the preference. */
+  jobEffort?: EffortLevel;
   /** 会话智能压缩: see AgentRunOptions.compactWindowTokens. */
   compactWindowTokens?: number;
   /**
@@ -101,6 +105,9 @@ export type StartRunFlowResult =
       resumeFrom?: string;
       /** Set when 会话智能压缩 archived the conversation this message would have resumed. */
       rotated?: RotationVerdict;
+      /** The effort handed to the agent, and why when it is not the preference. */
+      effort?: EffortLevel;
+      effortSource?: EffortSource;
     }
   | {
       ok: false;
@@ -198,6 +205,8 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         now: input.now,
       });
       if (descriptor.scopeSessionStore) input.sessions.clear(input.scopeId);
+      // `/effort` belongs to the conversation just archived, whatever the agent keeps resume state in.
+      else input.sessions.clearEffort(input.scopeId);
       resumeFrom = undefined;
       runPolicy = { ...policy, prompt: `${handoffSection(rotated)}\n\n${policy.prompt}` };
     }
@@ -218,6 +227,20 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       savedChars: full.length - stub.length,
     });
   }
+  // Read after 会话智能压缩: a rotated conversation has dropped its override.
+  const sessionEffort = input.sessions.getEffort(input.scopeId);
+  const picked = pickTurnEffort({
+    prefs: input.profileConfig.preferences,
+    chatId: input.scope.chatId,
+    light: input.lightTurn,
+    ...(input.jobEffort
+      ? { override: { level: input.jobEffort, source: 'job' as const } }
+      : sessionEffort
+        ? { override: { level: sessionEffort, source: 'session' as const } }
+        : {}),
+  });
+  const effort = resolveEffortArg(input.profileConfig.agentKind, picked.level);
+  const effortSource = effort ? picked.source : undefined;
   const sessionId = descriptor.sessionHandle === 'sessionId' ? resumeFrom : undefined;
   const threadId = descriptor.sessionHandle === 'threadId' ? resumeFrom : undefined;
 
@@ -232,10 +255,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         input.profileConfig.agentKind,
         input.profileConfig.preferences.model,
       ),
-      effort: resolveEffortArg(
-        input.profileConfig.agentKind,
-        effortPrefForChat(input.profileConfig.preferences, input.scope.chatId),
-      ),
+      effort,
       images:
         descriptor.imageArgs
           ? policy.attachments
@@ -279,6 +299,8 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     cwdRealpath: workspace.cwdRealpath,
     ...(resumeFrom ? { resumeFrom } : {}),
     ...(rotated ? { rotated } : {}),
+    ...(effort ? { effort } : {}),
+    ...(effortSource ? { effortSource } : {}),
   };
 }
 

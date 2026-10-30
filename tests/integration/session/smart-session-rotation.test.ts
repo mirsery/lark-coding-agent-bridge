@@ -48,6 +48,40 @@ describe('会话智能压缩 — run-flow rotation', () => {
     expect(h.catalog.activeFor(identity(h, run))).toBeUndefined();
   });
 
+  it('runs a resumed conversation at its /effort level and drops it when the conversation rotates', async () => {
+    for (const agentKind of ['claude', 'codex'] as const) {
+      const warm = await harnessWithActiveSession(agentKind);
+      warm.sessions.setEffort('chat-1', 'xhigh');
+      const kept = await start(warm, { probe: async () => ({ lastActivityAt: NOW - 60_000, contextTokens: 20_000 }) });
+      expect(kept.ok && kept.effortSource).toBe('session');
+      expect(warm.agent.runOptions[1]?.effort).toBe('xhigh');
+
+      const cold = await harnessWithActiveSession(agentKind);
+      cold.sessions.setEffort('chat-1', 'xhigh');
+      const rotated = await start(cold, {
+        probe: async () => ({ lastActivityAt: NOW - 2 * HOUR, contextTokens: 400_000 }),
+      });
+      expect(rotated.ok && rotated.rotated).toBeTruthy();
+      expect(rotated.ok && rotated.effortSource).toBeUndefined();
+      expect(cold.agent.runOptions[1]?.effort).not.toBe('xhigh');
+      expect(cold.sessions.getEffort('chat-1')).toBeUndefined();
+    }
+  });
+
+  it('runs a light turn at low and a job at its own level, over /effort', async () => {
+    const h = await harnessWithActiveSession('claude');
+    h.sessions.setEffort('chat-1', 'max');
+    const light = await start(h, undefined, { lightTurn: true });
+    expect(light.ok && light.effort).toBe('low');
+    expect(light.ok && light.effortSource).toBe('light');
+    expect(h.agent.runOptions[1]?.effort).toBe('low');
+    if (light.ok) await collect(light.execution.subscribe());
+
+    const job = await start(h, undefined, { jobEffort: 'medium' });
+    expect(job.ok && job.effortSource).toBe('job');
+    expect(h.agent.runOptions[2]?.effort).toBe('medium');
+  });
+
   it('keeps resuming a recent conversation', async () => {
     const h = await harnessWithActiveSession('claude');
     const run = await start(h, {
@@ -211,7 +245,7 @@ async function start(
         quoted?: boolean;
       }
     | undefined,
-  extra: { compactWindowTokens?: number; knowledge?: StartRunFlowInput['knowledge']; prompt?: string } = {},
+  extra: Partial<Pick<StartRunFlowInput, 'compactWindowTokens' | 'knowledge' | 'prompt' | 'lightTurn' | 'jobEffort'>> = {},
 ) {
   const input = {
     scopeId: 'chat-1',

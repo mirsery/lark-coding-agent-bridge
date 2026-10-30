@@ -28,3 +28,23 @@ describe('run card byline usage', () => {
     expect(card.indexOf('已自动开启新会话')).toBeLessThan(card.indexOf('Agent: claude'));
   });
 });
+
+describe('run card byline effort source', () => {
+  const finished = reduce(reduce(initialState, { type: 'text', delta: 'answer' }), {
+    type: 'done',
+    terminationReason: 'normal',
+  });
+
+  it('says why the effort differs from the preference', () => {
+    const card = JSON.stringify(
+      renderCard(finished, { meta: { title: 'CC', effort: 'low', effortSource: 'light' } }),
+    );
+    expect(card).toContain('Effort: low（面板）');
+  });
+
+  it('shows the bare level when it is the preference', () => {
+    const card = JSON.stringify(renderCard(finished, { meta: { title: 'CC', effort: 'high' } }));
+    expect(card).toContain('Effort: high');
+    expect(card).not.toContain('Effort: high（');
+  });
+});

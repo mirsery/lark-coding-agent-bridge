@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
+import { ALL_EFFORT_LEVELS, type EffortLevel } from '../config/schema';
 
 export interface SessionEntry {
   /** May be absent if the entry was created by /timeout before any run
@@ -14,6 +15,9 @@ export interface SessionEntry {
    * scope, undefined = follow global default. Session resets preserve this
    * scope preference while removing the resumable session id/cwd. */
   idleTimeoutMinutes?: number;
+  /** `/effort` override for this conversation. Unlike the idle-timeout
+   * override it belongs to the conversation: `/new` and 会话智能压缩 drop it. */
+  effort?: EffortLevel;
 }
 
 type SessionMap = Record<string, SessionEntry>;
@@ -43,13 +47,15 @@ export class SessionStore {
         const cwd = typeof entry.cwd === 'string' ? entry.cwd : undefined;
         const idleTimeoutMinutes =
           typeof entry.idleTimeoutMinutes === 'number' ? entry.idleTimeoutMinutes : undefined;
+        const effort = ALL_EFFORT_LEVELS.includes(entry.effort as EffortLevel) ? entry.effort : undefined;
         const hasSession = sessionId !== undefined && cwd !== undefined;
-        if (!hasSession && idleTimeoutMinutes === undefined) continue;
+        if (!hasSession && idleTimeoutMinutes === undefined && effort === undefined) continue;
         this.data[chatId] = {
           ...(sessionId !== undefined ? { sessionId } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
           updatedAt: entry.updatedAt,
           ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
+          ...(effort !== undefined ? { effort } : {}),
         };
       }
     } catch (err) {
@@ -85,6 +91,8 @@ export class SessionStore {
       ...(prev?.idleTimeoutMinutes !== undefined
         ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }
         : {}),
+      // Set before the first run recorded a session id: still this conversation.
+      ...(prev?.effort !== undefined ? { effort: prev.effort } : {}),
     };
     this.schedulePersist();
   }
@@ -133,6 +141,27 @@ export class SessionStore {
       updatedAt: Date.now(),
     };
     this.schedulePersist();
+  }
+
+  /** Per-conversation `/effort` override. `undefined` means none set. */
+  getEffort(chatId: string): EffortLevel | undefined {
+    return this.data[chatId]?.effort;
+  }
+
+  setEffort(chatId: string, effort: EffortLevel): void {
+    this.data[chatId] = { ...(this.data[chatId] ?? {}), effort, updatedAt: Date.now() };
+    this.schedulePersist();
+  }
+
+  /** Returns true if an override was actually removed. */
+  clearEffort(chatId: string): boolean {
+    const prev = this.data[chatId];
+    if (!prev || prev.effort === undefined) return false;
+    const { effort: _, ...rest } = prev;
+    if (rest.sessionId === undefined && rest.idleTimeoutMinutes === undefined) delete this.data[chatId];
+    else this.data[chatId] = { ...rest, updatedAt: Date.now() };
+    this.schedulePersist();
+    return true;
   }
 
   /** Remove the override so this scope falls back to the global default.

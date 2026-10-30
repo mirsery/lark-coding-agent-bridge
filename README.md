@@ -315,6 +315,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/remove user @name`, `/remove admin @name`, `/remove group [chat id]`, `/remove member @name` | Remove access entries; `/remove group <chat id>` drops the named group by full id or trailing characters, also from a DM |
 | `/stop` | Stop the current run, including the card stop button; with nothing running, cancel a pending auto-resume |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
+| `/effort [level\|default]` | Run the current conversation at another reasoning effort (admins); cleared when `/new` or smart sessions start a fresh one |
 | `/memory [add\|forget\|clear]` | Cross-session memory; `--global` writes profile-wide |
 | `/skills [show <name>]` | The skill index the agent reads on demand |
 | `/knowledge [bind\|sync\|unbind]` | Git sync for memory and skills |
@@ -323,8 +324,8 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/diff [staged\|<ref>]` | Show the working tree's changes, with the full patch attached when long |
 | `/worktree [add\|use\|remove]` | Manage task worktrees; the session follows the new one |
 | `/pr [number\|url]` | Pull request, CI and review status for the current branch |
-| `/cron add [--name <name>] <when> \| <task>` | Create a scheduled job |
-| `/cron list\|show\|run\|pause\|resume\|rename\|remove` | Manage scheduled jobs |
+| `/cron add [--name <name>] [--effort <level>] <when> \| <task>` | Create a scheduled job |
+| `/cron list\|show\|run\|pause\|resume\|rename\|effort\|remove` | Manage scheduled jobs |
 | `/ps` | List local bridge processes |
 | `/exit <id\|#>` | Stop a bridge process |
 | `/reconnect` | Force a WebSocket reconnect |

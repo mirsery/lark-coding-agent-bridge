@@ -122,6 +122,7 @@ import type { ScheduledJob } from '../scheduler/types';
 import type { AppConfig, AppPreferences, EffortLevel, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  effortPrefForChat,
   getCotMessages,
   getEffort,
   getMaxConcurrentRuns,
@@ -325,6 +326,7 @@ const handlers: Record<string, Handler> = {
   '/config': handleConfig,
   '/stop': handleStop,
   '/timeout': handleTimeout,
+  '/effort': handleEffort,
   '/ps': handlePs,
   '/exit': handleExit,
   '/doctor': handleDoctor,
@@ -361,6 +363,8 @@ const ADMIN_COMMANDS = new Set([
   // Shows the owner's subscription quotas and changes which account pays.
   '/accounts',
   '/config',
+  // Raises what every later turn of the conversation costs the owner's quota.
+  '/effort',
   '/ps',
   '/exit',
   '/reconnect',
@@ -1287,6 +1291,48 @@ async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
   ctx.sessions.setIdleTimeoutMinutes(scope, n);
   log.info('command', 'timeout-set', { scope, minutes: n, targeted: parsed.targeted });
   await reply(ctx, `✅ 当前 session 探活已设为 ${n} 分钟。`);
+}
+
+async function handleEffort(args: string, ctx: CommandContext): Promise<void> {
+  const value = args.trim().toLowerCase();
+  const { agentKind, preferences } = ctx.controls.profileConfig;
+  const levels = supportedEfforts(agentKind);
+  const base = effortPrefForChat(preferences, ctx.msg.chatId);
+  const baseLabel = base && levels.includes(base) ? base : '跟随 CLI 默认';
+  const usage = [
+    '用法：',
+    `- \`/effort <${levels.join('|')}>\` 当前会话改用这一档`,
+    '- `/effort default` 清除会话覆盖，回到默认',
+    '',
+    '_`/new` 或会话智能压缩开新会话时，覆盖自动清除。_',
+  ].join('\n');
+
+  if (!value) {
+    const current = ctx.sessions.getEffort(ctx.scope);
+    await reply(
+      ctx,
+      current && levels.includes(current)
+        ? `🧠 当前会话 effort：${current}（会话覆盖）\n默认：${baseLabel}\n\n${usage}`
+        : `🧠 当前会话 effort：跟随默认（${baseLabel}）\n\n${usage}`,
+    );
+    return;
+  }
+  if (value === 'default') {
+    const cleared = ctx.sessions.clearEffort(ctx.scope);
+    log.info('command', 'effort-clear', { scope: ctx.scope, cleared });
+    await reply(
+      ctx,
+      cleared ? `✅ 已清除会话覆盖，回到默认（${baseLabel}）。` : `当前会话没有覆盖，本来就跟随默认（${baseLabel}）。`,
+    );
+    return;
+  }
+  if (!levels.includes(value as EffortLevel)) {
+    await reply(ctx, `❌ 不认识的档位：\`${value}\`\n\n${usage}`);
+    return;
+  }
+  ctx.sessions.setEffort(ctx.scope, value as EffortLevel);
+  log.info('command', 'effort-set', { scope: ctx.scope, effort: value });
+  await reply(ctx, `✅ 当前会话从下一条消息起用 ${value}。`);
 }
 
 function parseTimeoutTarget(input: string, currentScope: string): {
@@ -3194,6 +3240,8 @@ async function handleCron(args: string, ctx: CommandContext): Promise<void> {
       return cronToggle(rest[0] ?? '', false, ctx, scheduler);
     case 'resume':
       return cronToggle(rest[0] ?? '', true, ctx, scheduler);
+    case 'effort':
+      return cronEffort(rest[0] ?? '', rest[1] ?? '', ctx, scheduler);
     case 'rename':
       return cronRename(rest[0] ?? '', restText.slice((rest[0] ?? '').length).trim(), ctx, scheduler);
     case 'remove':
@@ -3250,9 +3298,15 @@ async function cronAdd(args: string, ctx: CommandContext, scheduler: Scheduler):
     return;
   }
 
+  const levels = supportedEfforts(ctx.controls.profileConfig.agentKind);
+  if (parsed.value.effort && !levels.includes(parsed.value.effort)) {
+    await reply(ctx, `❌ 当前 agent 不支持 effort \`${parsed.value.effort}\`，可选：${levels.join(' / ')}`);
+    return;
+  }
   const cwd = effectiveWorkspaceCwd(ctx);
   const job = scheduler.jobs.add({
     ...(parsed.value.name ? { name: parsed.value.name } : {}),
+    ...(parsed.value.effort ? { effort: parsed.value.effort } : {}),
     prompt: parsed.value.prompt,
     schedule: parsed.value.schedule,
     session: parsed.value.session,
@@ -3280,6 +3334,7 @@ async function cronAdd(args: string, ctx: CommandContext, scheduler: Scheduler):
       `- 下次运行：${armed.nextRunAt ? formatTime(armed.nextRunAt) : '未排期'}`,
       `- 工作目录：\`${armed.cwd ?? '(profile 默认)'}\``,
       `- 会话：${armed.session === 'continue' ? '跨次复用' : '每次新建'}`,
+      `- Effort：${armed.effort ?? '跟随会话默认'}`,
       '',
       `\`/cron run ${armed.id}\` 可以立刻试跑一次。`,
     ].join('\n'),
@@ -3299,6 +3354,7 @@ async function cronShow(id: string, ctx: CommandContext, scheduler: Scheduler): 
     `- 状态：${jobStatusLine(job)}`,
     `- 工作目录：\`${job.cwd ?? '(profile 默认)'}\``,
     `- 会话：${job.session === 'continue' ? '跨次复用' : '每次新建'}`,
+    `- Effort：${job.effort ?? '跟随会话默认'}`,
     `- 创建于：${formatTime(job.createdAt)}`,
   ];
   const last = lastRunLine(job);
@@ -3382,6 +3438,31 @@ async function cronRename(
     ctx,
     parsed.value ? `✏️ 已把 \`${job.id}\` 命名为「${parsed.value}」。` : `✏️ 已清除 \`${job.id}\` 的名称。`,
   );
+}
+
+async function cronEffort(id: string, rawLevel: string, ctx: CommandContext, scheduler: Scheduler): Promise<void> {
+  const levels = supportedEfforts(ctx.controls.profileConfig.agentKind);
+  const usage = `用法：\`/cron effort <id> <${levels.join('|')}|default>\``;
+  const job = cronJobInScope(id, ctx, scheduler);
+  if (!job) {
+    await reply(ctx, id ? '未找到该任务（只能管理当前会话创建的任务）。' : usage);
+    return;
+  }
+  const level = rawLevel.trim().toLowerCase();
+  if (level === 'default') {
+    // An undefined effort is dropped when the store serialises, which clears it.
+    scheduler.jobs.update(job.id, { effort: undefined });
+    log.info('scheduler', 'job-effort', { jobId: job.id, scope: ctx.scope, effort: null });
+    await reply(ctx, `✅ ${jobTitleMd(job)} 的 effort 已恢复跟随会话默认。`);
+    return;
+  }
+  if (!levels.includes(level as EffortLevel)) {
+    await reply(ctx, level ? `❌ 不认识的档位：\`${level}\`\n${usage}` : usage);
+    return;
+  }
+  scheduler.jobs.update(job.id, { effort: level as EffortLevel });
+  log.info('scheduler', 'job-effort', { jobId: job.id, scope: ctx.scope, effort: level });
+  await reply(ctx, `✅ ${jobTitleMd(job)} 以后按 ${level} 运行。`);
 }
 
 // ─── /account ─────────────────────────────────────────────────────────────

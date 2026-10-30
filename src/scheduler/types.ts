@@ -1,3 +1,5 @@
+import type { EffortLevel } from '../config/schema';
+
 /** Persistent shape of one scheduled job. Everything here survives a restart. */
 export interface ScheduledJob {
   /** Short, user-facing id — what `/cron remove <id>` takes. */
@@ -34,6 +36,8 @@ export interface ScheduledJob {
    * long-running conversation across fires.
    */
   session: 'fresh' | 'continue';
+  /** This job's own reasoning effort (`/cron add --effort`); unset follows the chat / profile. */
+  effort?: EffortLevel;
   enabled: boolean;
   createdAt: number;
   /** Epoch ms of the next planned fire; absent when disabled or exhausted. */

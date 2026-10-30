@@ -12,7 +12,6 @@ import { agentCapability } from '../agent/capability';
 import {
   modelLabel,
   normalizeModelSelection,
-  resolveEffortArg,
   resolveModelArg,
   resolvedModelLabel,
 } from '../agent/models';
@@ -48,7 +47,7 @@ import { tryHandleCommand, type Controls } from '../commands';
 import { coffeeLeadInKey, coffeeLeadIns, parseCoffeeRequest } from '../commands/coffee-intent';
 import type { AppConfig } from '../config/schema';
 import {
-  effortPrefForChat,
+  isLightEffortTurn,
   getAgentStopGraceMs,
   getCotMessages,
   getMaxConcurrentRuns,
@@ -1809,6 +1808,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         ...(guestWorkspace ? { workspace: guestWorkspace } : {}),
       });
   const runGuard = restrictedChat ? restrictedChatGuard(guestGuard, restrictedChat) : guestGuard;
+  // A process still serving this scope (background work) would be retired by
+  // a different effort; the light rule is not worth killing that work for.
+  const lightTurn =
+    !rotationBlocked && isLightEffortTurn(controls.profileConfig.preferences, batch.map((m) => m.content));
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -1825,6 +1828,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     ...(runGuard ? { guard: runGuard } : {}),
     ...(restrictedCwd ? { cwd: restrictedCwd } : {}),
+    ...(lightTurn ? { lightTurn } : {}),
     ...(readHook ? { readHook } : {}),
     ...(knowledgeSwap ? { knowledge: knowledgeSwap } : {}),
     ...(smartSession
@@ -2023,7 +2027,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       title: channel.botIdentity?.name ?? controls.profile,
       agent: capability.agentId,
       model: modelLabel(agentKind, modelPref),
-      effort: resolveEffortArg(agentKind, effortPrefForChat(controls.profileConfig.preferences, chatId)),
+      ...(flow.effort ? { effort: flow.effort } : {}),
+      ...(flow.effortSource ? { effortSource: flow.effortSource } : {}),
       provider: capability.descriptor.provider,
       ...(flow.rotated ? { notice: rotationNotice(flow.rotated) } : {}),
     },

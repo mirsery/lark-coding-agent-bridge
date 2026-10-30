@@ -315,6 +315,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/remove user @某人`, `/remove admin @某人`, `/remove group [群 ID]`, `/remove member @某人` | 移除访问控制条目；`/remove group <群 ID>` 按 ID（或末几位）移除指定的群，私聊里也能用 |
 | `/stop` | 停止当前 run，也可点卡片停止按钮；没有在跑的任务时，取消待执行的自动续跑 |
 | `/timeout [N\|off\|default]` | 设置或清除当前会话的 idle watchdog |
+| `/effort [档位\|default]` | 当前会话改用另一档推理强度（仅管理员）；`/new` 或会话智能压缩开新会话时自动清除。`/show-status`、`/show-tasks`、`/show-cron` 这类只发一张面板卡的消息固定用 `low`（`preferences.lightEffortCommands` 可改，`[]` 关闭；有后台任务在跑时不降档） |
 | `/memory [add\|forget\|clear]` | 跨会话记忆，`--global` 写到全局 |
 | `/skills [show <名字>]` | agent 按需读取的 skill 索引 |
 | `/knowledge [bind\|sync\|unbind]` | 记忆与 skill 的 git 同步 |
@@ -323,8 +324,8 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/diff [staged\|<ref>]` | 查看工作目录的改动，patch 过长时附带完整文件 |
 | `/worktree [add\|use\|remove]` | 管理任务级 worktree，会话自动跟着切 |
 | `/pr [编号\|链接]` | 当前分支的 PR、CI 与评审状态 |
-| `/cron add [--name <名称>] <时间> \| <任务>` | 新建定时任务 |
-| `/cron list\|show\|run\|pause\|resume\|rename\|remove` | 管理定时任务 |
+| `/cron add [--name <名称>] [--effort <档位>] <时间> \| <任务>` | 新建定时任务 |
+| `/cron list\|show\|run\|pause\|resume\|rename\|effort\|remove` | 管理定时任务 |
 | `/ps` | 列出本机 bridge 进程 |
 | `/exit <id\|#>` | 停止指定 bridge 进程 |
 | `/reconnect` | 强制 WebSocket 重连 |
@@ -549,7 +550,7 @@ Web 控制台「配置」页有「梦境整理」卡片：显示目标仓库、�
 ```
 
 - **时间写法**：标准 5 字段 cron（分 时 日 月 周，支持列表、区间和 `*/步长`）、`@hourly` / `@daily` / `@weekly` / `@monthly` 别名，以及一次性的 `in <时长>` 和 `at <时刻>`。全部按宿主机本地时区计算。`|` 用来分隔时间和任务内容。
-- **每个任务独立 scope**：任务跑在自己的会话 scope（`cron:<id>`）里，工作目录取创建时的当前目录，不会和聊天本身的会话互相干扰。加 `--continue` 可以让多次运行复用同一个会话，默认每次都是新会话。
+- **每个任务独立 scope**：任务跑在自己的会话 scope（`cron:<id>`）里，工作目录取创建时的当前目录，不会和聊天本身的会话互相干扰。加 `--continue` 可以让多次运行复用同一个会话，默认每次都是新会话。加 `--effort <档位>`（或之后用 `/cron effort <id> <档位>`）给任务单独定推理强度，不设就跟随会话默认。
 - **结果投递**：结果以一条完成后的消息发出（卡片或 markdown，跟随 `/config`），不是实时流——任务触发时不一定有人在看。在话题里创建的任务会回到那个话题里。
 - **权限**：`/cron` 仅管理员可用，并且每次触发都会重新校验创建者的权限——把某人移出名单，他留下的任务也会随之停摆。任务只能在创建它的会话里管理。
 - **触发时机**：只有持有该 profile 的进程会 tick 调度器，所以任务不会重复触发；bridge 没在跑的时候不会执行。错过超过 6 小时的 cron 触发会跳过而不是补跑（笔记本睡过 09:00、10:00 醒来仍会执行）；一次性任务即使迟到也一定会执行。

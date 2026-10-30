@@ -14,7 +14,7 @@ import { promptSection } from '../agent/prompt';
 import { buildKnowledgeContext, withoutSkillWrite } from '../knowledge/inject';
 import { armSkillReadHook } from '../knowledge/knowledge-libraries';
 import type { Controls } from '../commands';
-import { effortPrefForChat, getMessageReplyMode, getRunIdleTimeoutMs, getShowToolCalls } from '../config/schema';
+import { getMessageReplyMode, getRunIdleTimeoutMs, getShowToolCalls, pickTurnEffort } from '../config/schema';
 import { log } from '../core/logger';
 import { canUseDm, canUseGroup, isCreator } from '../policy/access';
 import type { RunExecutor } from '../runtime/run-executor';
@@ -123,6 +123,7 @@ export async function runScheduledJob(
     executor: deps.executor,
     now: Date.now(),
     ...(readHook ? { readHook } : {}),
+    ...(job.effort ? { jobEffort: job.effort } : {}),
     observability: {
       profile: deps.controls.profile,
       agent: capability.agentId,
@@ -250,7 +251,7 @@ async function deliver(deps: JobRunnerDeps, job: ScheduledJob, finished: RunStat
   const header = `⏰ 定时任务 ${jobTitleMd(job)} · ${scheduleLabel(job)}`;
   const payload =
     replyMode === 'card'
-      ? { card: renderCard(headedState(state, header), await cardOptions(deps, job.chatId)) }
+      ? { card: renderCard(headedState(state, header), await cardOptions(deps, job)) }
       : { markdown: `${header}\n\n${body}` };
   await sendToJobChat(deps, job, payload);
 }
@@ -288,14 +289,21 @@ async function sendToJobChat(
   await deps.channel.send(job.chatId, payload);
 }
 
-async function cardOptions(deps: JobRunnerDeps, chatId: string): Promise<RunCardRenderOptions> {
+async function cardOptions(deps: JobRunnerDeps, job: ScheduledJob): Promise<RunCardRenderOptions> {
   const { profileConfig } = deps.controls;
+  const picked = pickTurnEffort({
+    prefs: profileConfig.preferences,
+    chatId: job.chatId,
+    ...(job.effort ? { override: { level: job.effort, source: 'job' as const } } : {}),
+  });
+  const effort = resolveEffortArg(profileConfig.agentKind, picked.level);
   return {
     meta: {
       title: deps.channel.botIdentity?.name ?? deps.controls.profile,
       agent: profileConfig.agentKind,
       model: modelLabel(profileConfig.agentKind, profileConfig.preferences.model),
-      effort: resolveEffortArg(profileConfig.agentKind, effortPrefForChat(profileConfig.preferences, chatId)),
+      ...(effort ? { effort } : {}),
+      ...(effort && picked.source ? { effortSource: picked.source } : {}),
       provider: agentDescriptor(profileConfig.agentKind).provider,
       sponsor: await agentAccountName(profileConfig),
     },

@@ -1,5 +1,6 @@
 import { CronParseError, describeCron, nextCronTime, parseCron } from './cron';
 import { formatTime } from './runner';
+import { ALL_EFFORT_LEVELS, type EffortLevel } from '../config/schema';
 import type { JobSchedule, ScheduledJob } from './types';
 
 export { jobTitle, jobTitleMd } from './types';
@@ -13,6 +14,7 @@ export const CRON_USAGE = [
   '`/cron run <id>` — 立刻跑一次（不影响排期）',
   '`/cron pause <id>` / `/cron resume <id>` — 暂停 / 恢复',
   '`/cron rename <id> <名称>` — 改名（名称留空则清除）',
+  '`/cron effort <id> <档位|default>` — 这个任务的推理强度（default 跟随会话默认）',
   '`/cron remove <id>` — 删除',
   '',
   '**时间写法**',
@@ -21,6 +23,7 @@ export const CRON_USAGE = [
   '`at 09:30` / `at 2026-10-01 09:30` — 一次性，指定时刻',
   '',
   '加 `--continue` 让每次运行复用同一个会话（默认每次都是新会话）。',
+  '加 `--effort low` 之类给任务单独定推理强度（巡检、汇总类任务用 low 更快）。',
   '',
   '例：`/cron add --name CI日报 0 9 * * 1-5 | 看一下昨天 CI 的失败并总结`',
 ].join('\n');
@@ -30,6 +33,7 @@ export interface ParsedAdd {
   prompt: string;
   session: 'fresh' | 'continue';
   name?: string;
+  effort?: EffortLevel;
 }
 
 /** Longest name we keep; the list card has one line for it. */
@@ -49,7 +53,16 @@ export function parseAdd(raw: string, now: number = Date.now()): ParseResult<Par
   let rest = raw.trim();
   let session: 'fresh' | 'continue' = 'fresh';
   let name: string | undefined;
+  let effort: EffortLevel | undefined;
   for (;;) {
+    const effortFlag = /^--effort(?:=|\s+)(\S+)\s*/.exec(rest);
+    if (effortFlag) {
+      const level = effortFlag[1]!.toLowerCase();
+      if (!ALL_EFFORT_LEVELS.includes(level as EffortLevel)) return { ok: false, error: `不认识的 effort 档位：${level}` };
+      effort = level as EffortLevel;
+      rest = rest.slice(effortFlag[0].length);
+      continue;
+    }
     const named = /^--name(?:=|\s+)(?:"([^"]*)"|“([^”]*)”|(\S+))\s*/.exec(rest);
     if (named) {
       const parsed = normalizeJobName(named[1] ?? named[2] ?? named[3] ?? '');
@@ -78,7 +91,13 @@ export function parseAdd(raw: string, now: number = Date.now()): ParseResult<Par
   if (!schedule.ok) return schedule;
   return {
     ok: true,
-    value: { schedule: schedule.value, prompt: split.prompt, session, ...(name ? { name } : {}) },
+    value: {
+      schedule: schedule.value,
+      prompt: split.prompt,
+      session,
+      ...(name ? { name } : {}),
+      ...(effort ? { effort } : {}),
+    },
   };
 }
 

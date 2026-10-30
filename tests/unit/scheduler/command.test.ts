@@ -12,6 +12,23 @@ describe('/cron add parsing', () => {
     });
   });
 
+  it('takes --effort alongside the other flags', () => {
+    expect(parseAdd('--effort low --name 巡检 @daily | 巡检一遍日志', NOW)).toMatchObject({
+      ok: true,
+      value: { effort: 'low', name: '巡检', prompt: '巡检一遍日志' },
+    });
+    expect(parseAdd('--continue --effort=XHIGH @daily | 巡检', NOW)).toMatchObject({
+      ok: true,
+      value: { effort: 'xhigh', session: 'continue' },
+    });
+  });
+
+  it('rejects an unknown --effort level and leaves effort unset without the flag', () => {
+    expect(parseAdd('--effort turbo @daily | 巡检', NOW)).toMatchObject({ ok: false });
+    const plain = parseAdd('@daily | 巡检', NOW);
+    expect(plain.ok && 'effort' in plain.value).toBe(false);
+  });
+
   it('peels a five-field cron off the front without a pipe', () => {
     const parsed = parseAdd('0 9 * * 1-5 看一下昨天 CI 的失败', NOW);
     expect(parsed).toMatchObject({
