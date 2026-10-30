@@ -1,6 +1,7 @@
 import type { AgentSessionProbe } from '../agent/session-probe';
 import { promptSection } from '../agent/prompt';
 import type { SmartSessionSettings } from '../config/schema';
+import { stripEffortMarker } from './effort-marker';
 
 /**
  * 会话智能压缩 — when the conversation a new message would resume is better
@@ -154,7 +155,7 @@ export function handoffSection(verdict: RotationVerdict): string {
 }
 
 function excerpt(text: string, max: number): string {
-  const trimmed = stripNewSessionMarker(text.trim());
+  const trimmed = stripNewSessionMarker(stripEffortMarker(text.trim()));
   return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
 }
 

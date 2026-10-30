@@ -315,7 +315,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/remove user @name`, `/remove admin @name`, `/remove group [chat id]`, `/remove member @name` | Remove access entries; `/remove group <chat id>` drops the named group by full id or trailing characters, also from a DM |
 | `/stop` | Stop the current run, including the card stop button; with nothing running, cancel a pending auto-resume |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
-| `/effort [level\|default]` | Run the current conversation at another reasoning effort (admins); cleared when `/new` or smart sessions start a fresh one |
+| `/effort [level\|default]` | Run the current conversation at another reasoning effort (admins); cleared when `/new` or smart sessions start a fresh one. **Auto effort**: the agent may end an answer with a hidden `[[EFFORT: xhigh]]` line to run the conversation's next turn at that level (one turn only; no marker means back to the default). Not applied while `/effort` pins the conversation; `preferences.autoEffort: false` turns it off |
 | `/memory [add\|forget\|clear]` | Cross-session memory; `--global` writes profile-wide |
 | `/skills [show <name>]` | The skill index the agent reads on demand |
 | `/knowledge [bind\|sync\|unbind]` | Git sync for memory and skills |

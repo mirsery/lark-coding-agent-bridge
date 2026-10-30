@@ -401,6 +401,12 @@ export class RunExecutor {
     return Boolean(live && !live.finishing && !live.session.hasExited);
   }
 
+  /** Whether `scopeId`'s live process is still running background tasks (not just kept idle). */
+  hasBackgroundWork(scopeId: string): boolean {
+    const live = this.live.get(scopeId);
+    return Boolean(live && !live.finishing && !live.session.hasExited && live.session.background > 0);
+  }
+
   /**
    * Close `scopeId`'s process now if it is only being kept idle for a next
    * turn — for one-shot internal runs (梦境整理) that will never have one.

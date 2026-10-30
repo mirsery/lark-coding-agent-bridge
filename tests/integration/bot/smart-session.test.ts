@@ -135,6 +135,108 @@ describe('会话智能压缩 in the IM flow', () => {
   });
 });
 
+describe('自动切档 in the IM flow', () => {
+  it('runs the next turn at the level the answer asked for, then falls back to the default', async () => {
+    shown.length = 0;
+    const h = await createHarness();
+    h.profileConfig.preferences.effort = 'high';
+    h.agent.setEvents([
+      [
+        { type: 'system', sessionId: 'sess-1' },
+        { type: 'text', delta: '先看了一圈，下一步要跨模块排查。\n\n[[EFFORT: xhigh]]' },
+        { type: 'done', sessionId: 'sess-1', terminationReason: 'normal' },
+      ],
+      [
+        { type: 'system', sessionId: 'sess-1' },
+        { type: 'text', delta: '查清楚了' },
+        { type: 'done', sessionId: 'sess-1', terminationReason: 'normal' },
+      ],
+      [{ type: 'done', sessionId: 'sess-1', terminationReason: 'normal' }],
+    ]);
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message({ messageId: 'om_1', content: '@Bridge 看下这个问题' }));
+    await waitFor(() => shown.some((s) => s.includes('跨模块排查')));
+    expect(shown.join('\n')).not.toContain('EFFORT');
+    expect(h.agent.runOptions[0]?.effort).toBe('high');
+    expect(readSection(h.agent.runOptions[0]?.prompt ?? '', 'bridge_instructions')).toEqual(
+      expect.arrayContaining([expect.stringContaining('[[EFFORT:')]),
+    );
+    await waitFor(() => h.sessions.getRaw('oc_chat')?.sessionId === 'sess-1');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    await h.channel.handlers.message?.(message({ messageId: 'om_2', content: '@Bridge 继续' }));
+    await waitFor(() => h.agent.runOptions.length === 2);
+    expect(h.agent.runOptions[1]?.sessionId).toBe('sess-1');
+    expect(h.agent.runOptions[1]?.effort).toBe('xhigh');
+    await waitFor(() => shown.some((s) => s.includes('查清楚了')));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    await h.channel.handlers.message?.(message({ messageId: 'om_3', content: '@Bridge 好的' }));
+    await waitFor(() => h.agent.runOptions.length === 3);
+    expect(h.agent.runOptions[2]?.effort).toBe('high');
+  });
+
+  it('drops the asked-for level when the same answer closes the conversation', async () => {
+    shown.length = 0;
+    const h = await createHarness();
+    h.profileConfig.preferences.effort = 'high';
+    h.agent.setEvents([
+      [
+        { type: 'system', sessionId: 'sess-1' },
+        { type: 'text', delta: '做完了。\n\n[[EFFORT: max]]\n[[NEW_SESSION: 做完了]]' },
+        { type: 'done', sessionId: 'sess-1', terminationReason: 'normal' },
+      ],
+      [{ type: 'done', sessionId: 'sess-2', terminationReason: 'normal' }],
+    ]);
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message({ messageId: 'om_1', content: '@Bridge 改一下' }));
+    await waitFor(() => shown.some((s) => s.includes('做完了')));
+    expect(shown.join('\n')).not.toMatch(/EFFORT|NEW_SESSION/);
+    await waitFor(() => h.sessions.getRaw('oc_chat')?.sessionId === 'sess-1');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    await h.channel.handlers.message?.(message({ messageId: 'om_2', content: '@Bridge 新问题' }));
+    await waitFor(() => h.agent.runOptions.length === 2);
+    expect(h.agent.runOptions[1]?.sessionId).toBeUndefined();
+    expect(h.agent.runOptions[1]?.effort).toBe('high');
+  });
+
+  it('leaves a conversation pinned by /effort alone, and can be turned off', async () => {
+    shown.length = 0;
+    const h = await createHarness();
+    h.sessions.setEffort('oc_chat', 'medium');
+    h.agent.setEvents([
+      [
+        { type: 'system', sessionId: 'sess-1' },
+        { type: 'text', delta: '好\n[[EFFORT: max]]' },
+        { type: 'done', sessionId: 'sess-1', terminationReason: 'normal' },
+      ],
+      [{ type: 'done', sessionId: 'sess-1', terminationReason: 'normal' }],
+    ]);
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message({ messageId: 'om_1', content: '@Bridge 第一步' }));
+    await waitFor(() => h.sessions.getRaw('oc_chat')?.sessionId === 'sess-1');
+    const instructions = readSection(h.agent.runOptions[0]?.prompt ?? '', 'bridge_instructions') as string[];
+    expect(instructions.join('\n')).not.toContain('[[EFFORT:');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await h.channel.handlers.message?.(message({ messageId: 'om_2', content: '@Bridge 第二步' }));
+    await waitFor(() => h.agent.runOptions.length === 2);
+    expect(h.agent.runOptions[1]?.effort).toBe('medium');
+
+    shown.length = 0;
+    const off = await createHarness();
+    off.profileConfig.preferences.autoEffort = false;
+    off.agent.setEvents([[{ type: 'done', sessionId: 'sess-9', terminationReason: 'normal' }]]);
+    await startTestBridge(off);
+    await off.channel.handlers.message?.(message({ messageId: 'om_9', content: '@Bridge 你好' }));
+    await waitFor(() => off.agent.runOptions.length === 1);
+    expect(off.agent.runOptions[0]?.prompt).not.toContain('[[EFFORT:');
+  });
+});
+
 describe('会话智能压缩 close requests across a restart', () => {
   it('writes the request to disk with the conversation it closes', async () => {
     shown.length = 0;

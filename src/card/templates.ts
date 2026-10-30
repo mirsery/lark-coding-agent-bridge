@@ -310,7 +310,7 @@ export function helpCard(agentName = 'Agent'): object {
           '`/resume [N]` — 列出并恢复本会话用过的历史会话（管理员 `/resume all` 看全部）',
           '`/stop` — 结束正在跑的任务（也可点卡片上的 ⏹ 终止）；任务等待自动续跑时，取消续跑',
           '`/timeout [N|off|default]` — 本会话的探活分钟数',
-          '`/effort [档位|default]` — 本会话的推理强度（管理员），`/new` 后恢复默认',
+          '`/effort [档位|default]` — 本会话的推理强度（管理员），`/new` 后恢复默认；不设时 agent 会按需自动切档',
         ]),
         helpSection('turquoise-50', '📂 工作目录与 Git', [
           '`/cd <路径>` — 切换工作目录（会重置会话）',

@@ -30,7 +30,7 @@ export interface RunCardMeta {
   model?: string;
   /** Reasoning effort, omitted when the profile leaves it at the CLI default. */
   effort?: string;
-  /** Why `effort` differs from the preference: a light command, `/effort`, a job's own level. */
+  /** Why `effort` differs from the preference: a light command, `/effort`, a job's own level, the agent's pick. */
   effortSource?: EffortSource;
   provider?: string;
   /** Account paying for the run, e.g. the logged-in Claude account name. */
@@ -149,6 +149,7 @@ const EFFORT_SOURCE_LABELS: Record<EffortSource, string> = {
   light: '面板',
   session: '会话',
   job: '任务',
+  auto: '自动',
 };
 
 /** `hr` + grey agent/model line, mirroring what other bridge bots sign with. */

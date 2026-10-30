@@ -40,6 +40,8 @@ describe('run card byline effort source', () => {
       renderCard(finished, { meta: { title: 'CC', effort: 'low', effortSource: 'light' } }),
     );
     expect(card).toContain('Effort: low（面板）');
+    const auto = JSON.stringify(renderCard(finished, { meta: { title: 'CC', effort: 'xhigh', effortSource: 'auto' } }));
+    expect(auto).toContain('Effort: xhigh（自动）');
   });
 
   it('shows the bare level when it is the preference', () => {

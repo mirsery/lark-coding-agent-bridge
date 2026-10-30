@@ -58,3 +58,22 @@ describe('pickTurnEffort', () => {
     ).toEqual({ level: 'high' });
   });
 });
+
+describe('pickTurnEffort — 自动切档', () => {
+  const prefs = { effort: 'high' as EffortLevel };
+
+  it('takes the level the agent asked for over the preference', () => {
+    expect(pickTurnEffort({ prefs, chatId: 'oc_1', auto: 'xhigh' })).toEqual({ level: 'xhigh', source: 'auto' });
+  });
+
+  it('labels nothing when the asked-for level is the default anyway', () => {
+    expect(pickTurnEffort({ prefs, chatId: 'oc_1', auto: 'high' })).toEqual({ level: 'high' });
+  });
+
+  it('yields to a light turn, /effort and a job', () => {
+    expect(pickTurnEffort({ prefs, chatId: 'oc_1', auto: 'max', light: true }).source).toBe('light');
+    expect(
+      pickTurnEffort({ prefs, chatId: 'oc_1', auto: 'max', override: { level: 'medium', source: 'session' } }),
+    ).toEqual({ level: 'medium', source: 'session' });
+  });
+});

@@ -12,8 +12,10 @@ import { agentCapability } from '../agent/capability';
 import {
   modelLabel,
   normalizeModelSelection,
+  resolveEffortArg,
   resolveModelArg,
   resolvedModelLabel,
+  supportedEfforts,
 } from '../agent/models';
 import {
   buildAgentPrompt,
@@ -47,6 +49,8 @@ import { tryHandleCommand, type Controls } from '../commands';
 import { coffeeLeadInKey, coffeeLeadIns, parseCoffeeRequest } from '../commands/coffee-intent';
 import type { AppConfig } from '../config/schema';
 import {
+  effortPrefForChat,
+  isAutoEffortEnabled,
   isLightEffortTurn,
   getAgentStopGraceMs,
   getCotMessages,
@@ -95,6 +99,12 @@ import {
   rotationNotice,
   SMART_SESSION_INSTRUCTION,
 } from '../session/smart-session';
+import {
+  autoEffortInstruction,
+  type AutoEffortState,
+  effortRequest,
+  stripEffortMarker,
+} from '../session/effort-marker';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
@@ -487,6 +497,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // switch can inject a one-time "model changed" note into the next (resumed)
   // prompt. In-memory only: on restart the first run re-seeds silently.
   const lastRunModelByScope = new Map<string, string>();
+  // 自动切档: per scope, the level the last answer asked for and the level the
+  // last turn ran at. In-memory only: losing it falls back to the default.
+  const autoEfforts = new Map<string, AutoEffortState>();
   const cotClient = new CotClient({
     tenant: cfg.accounts.app.tenant,
     appId: cfg.accounts.app.id,
@@ -609,6 +622,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           callbackAuth,
           activePolicyFingerprints,
           lastRunModelByScope,
+          autoEfforts,
           pendingRotations,
           contextCursors,
           scope,
@@ -903,6 +917,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     onExpire: (scope) => {
       activePolicyFingerprints.delete(scope);
       lastRunModelByScope.delete(scope);
+      autoEfforts.delete(scope);
     },
   });
   await topicSessionRetention.sweep();
@@ -1484,6 +1499,7 @@ interface RunBatchDeps {
   callbackAuth?: CallbackAuth;
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
+  autoEfforts: Map<string, AutoEffortState>;
   pendingRotations: PendingRotationStore;
   contextCursors: ChatContextCursorStore;
   scope: string;
@@ -1512,6 +1528,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     callbackAuth,
     activePolicyFingerprints,
     lastRunModelByScope,
+    autoEfforts,
     pendingRotations,
     contextCursors,
     scope,
@@ -1657,6 +1674,25 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
   lastRunModelByScope.set(scope, modelSelection);
   const smartSession = getSmartSession(controls.cfg);
+  // 自动切档 — off for a message of light commands (runs at `low` anyway,
+  // and must not use up the level the last answer asked for) and while
+  // `/effort` pins the conversation.
+  const effortPrefs = controls.profileConfig.preferences;
+  const effortLevels = supportedEfforts(agentKind);
+  const lightBatch = isLightEffortTurn(effortPrefs, batch.map((m) => m.content));
+  const autoEffortOn =
+    isAutoEffortEnabled(effortPrefs) && effortLevels.length > 0 && !lightBatch && !sessions.getEffort(scope);
+  if (!autoEffortOn && !lightBatch) autoEfforts.delete(scope);
+  // The level the last answer asked for — or, while a process still runs this
+  // conversation's background work, the level it was started with: another one
+  // would retire it, background tasks included.
+  const autoState = autoEfforts.get(scope);
+  const autoEffort = !autoEffortOn
+    ? undefined
+    : executor.hasBackgroundWork(scope)
+      ? autoState?.ran
+      : autoState?.next;
+  const baseEffort = resolveEffortArg(agentKind, effortPrefForChat(effortPrefs, chatId));
   // A restricted chat fences every run there, the owner's included.
   const restrictedChat = controls.profileConfig.access.restrictedChats?.[chatId];
   const instructions = [
@@ -1668,6 +1704,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         ]
       : []),
     ...(smartSession ? [SMART_SESSION_INSTRUCTION] : []),
+    ...(autoEffortOn
+      ? [autoEffortInstruction({ levels: effortLevels, current: autoEffort ?? baseEffort, base: baseEffort })]
+      : []),
   ];
   const extraInstructions = instructions.length > 0 ? instructions : undefined;
 
@@ -1810,8 +1849,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const runGuard = restrictedChat ? restrictedChatGuard(guestGuard, restrictedChat) : guestGuard;
   // A process still serving this scope (background work) would be retired by
   // a different effort; the light rule is not worth killing that work for.
-  const lightTurn =
-    !rotationBlocked && isLightEffortTurn(controls.profileConfig.preferences, batch.map((m) => m.content));
+  const lightTurn = !rotationBlocked && lightBatch;
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -1829,6 +1867,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     ...(runGuard ? { guard: runGuard } : {}),
     ...(restrictedCwd ? { cwd: restrictedCwd } : {}),
     ...(lightTurn ? { lightTurn } : {}),
+    ...(autoEffort ? { autoEffort } : {}),
     ...(readHook ? { readHook } : {}),
     ...(knowledgeSwap ? { knowledge: knowledgeSwap } : {}),
     ...(smartSession
@@ -1868,6 +1907,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 
   const { execution, cwdRealpath: cwd } = flow;
+  // The asked-for level is spent; what this turn ran at is kept for a turn
+  // that arrives while its background work is still running.
+  if (autoEffortOn) autoEfforts.set(scope, flow.effortSource === 'auto' && flow.effort ? { ran: flow.effort } : {});
   // A reused app-server/Claude process need not emit another system event, so
   // touch the existing resume pointers on every accepted turn.
   const acceptedAt = Date.now();
@@ -2515,8 +2557,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         ownerRun,
       });
     }
+    if (autoEffortOn && runTerminal === 'done') {
+      const next = effortRequest(answerTextOf(lastRawState), effortLevels);
+      if (next) {
+        autoEfforts.set(scope, { ...autoEfforts.get(scope), next });
+        log.info('session', 'auto-effort', { scope, effort: next });
+      }
+    }
     if (smartSession && runTerminal === 'done') {
-      const request = newSessionRequest(answerTextOf(lastRawState));
+      const request = newSessionRequest(stripEffortMarker(answerTextOf(lastRawState) ?? ''));
       if (request) {
         pendingRotations.set(scope, { ...request, ...(conversationHandle ? { handle: conversationHandle } : {}) });
         log.info('session', 'rotation-requested', { scope, hasSummary: Boolean(request.summary) });

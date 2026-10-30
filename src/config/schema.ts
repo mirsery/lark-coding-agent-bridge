@@ -156,6 +156,12 @@ export interface AppPreferences {
    */
   lightEffortCommands?: string[];
   /**
+   * 自动切档: the agent may end an answer with `[[EFFORT: <level>]]` to run
+   * the conversation's next turn at that level (one turn only; no marker
+   * means back to the default). Default on; `false` turns it off.
+   */
+  autoEffort?: boolean;
+  /**
    * Whether to send a separate Lark COT process message before the final
    * answer. `brief` mirrors the lightweight tool/progress visibility from
    * the legacy tool display; `detailed` also includes tool args/output.
@@ -538,7 +544,7 @@ export function effortPrefForChat(
 export const DEFAULT_LIGHT_EFFORT_COMMANDS: readonly string[] = ['/show-status', '/show-tasks', '/show-cron'];
 
 /** Where a turn's effort came from, when it is not the chat / profile preference. */
-export type EffortSource = 'light' | 'session' | 'job';
+export type EffortSource = 'light' | 'session' | 'job' | 'auto';
 
 /** True when every message is one of the {@link AppPreferences.lightEffortCommands}. */
 export function isLightEffortTurn(
@@ -552,23 +558,32 @@ export function isLightEffortTurn(
   return texts.every((text) => commands.includes(text.trim().split(/\s+/)[0] ?? ''));
 }
 
+export function isAutoEffortEnabled(prefs: Pick<AppPreferences, 'autoEffort'> | undefined): boolean {
+  return prefs?.autoEffort !== false;
+}
+
 /**
  * The effort one turn asks for, before the per-agent gating of
  * `resolveEffortArg`: a light turn runs at `low`; otherwise the override
- * (`/effort` for a conversation, a job's own level) wins over the chat /
- * profile preference.
+ * (`/effort` for a conversation, a job's own level) wins, then the level the
+ * agent asked for (自动切档), then the chat / profile preference.
  */
 export function pickTurnEffort(input: {
   prefs: Pick<AppPreferences, 'effort' | 'chatEffort'> | undefined;
   chatId: string | undefined;
   light?: boolean;
   override?: { level: EffortLevel; source: 'session' | 'job' };
+  auto?: EffortLevel;
 }): { level: EffortLevel | undefined; source?: EffortSource } {
   if (input.light) return { level: 'low', source: 'light' };
   if (input.override && ALL_EFFORT_LEVELS.includes(input.override.level)) {
     return { level: input.override.level, source: input.override.source };
   }
-  return { level: effortPrefForChat(input.prefs, input.chatId) };
+  const pref = effortPrefForChat(input.prefs, input.chatId);
+  if (input.auto && input.auto !== pref && ALL_EFFORT_LEVELS.includes(input.auto)) {
+    return { level: input.auto, source: 'auto' };
+  }
+  return { level: pref };
 }
 
 export function getCotMessages(cfg: AppConfig): CotMessagesMode {

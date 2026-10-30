@@ -315,7 +315,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/remove user @某人`, `/remove admin @某人`, `/remove group [群 ID]`, `/remove member @某人` | 移除访问控制条目；`/remove group <群 ID>` 按 ID（或末几位）移除指定的群，私聊里也能用 |
 | `/stop` | 停止当前 run，也可点卡片停止按钮；没有在跑的任务时，取消待执行的自动续跑 |
 | `/timeout [N\|off\|default]` | 设置或清除当前会话的 idle watchdog |
-| `/effort [档位\|default]` | 当前会话改用另一档推理强度（仅管理员）；`/new` 或会话智能压缩开新会话时自动清除。`/show-status`、`/show-tasks`、`/show-cron` 这类只发一张面板卡的消息固定用 `low`（`preferences.lightEffortCommands` 可改，`[]` 关闭；有后台任务在跑时不降档） |
+| `/effort [档位\|default]` | 当前会话改用另一档推理强度（仅管理员）；`/new` 或会话智能压缩开新会话时自动清除。`/show-status`、`/show-tasks`、`/show-cron` 这类只发一张面板卡的消息固定用 `low`（`preferences.lightEffortCommands` 可改，`[]` 关闭；有后台任务在跑时不降档）。**自动切档**：agent 判断下一条消息需要别的档位时，在回复末尾写一行 `[[EFFORT: xhigh]]`（对用户隐藏），同一会话的下一轮就用这一档，只管一轮，不写就回到默认；`/effort` 定了档的会话不自动切，`preferences.autoEffort: false` 关闭 |
 | `/memory [add\|forget\|clear]` | 跨会话记忆，`--global` 写到全局 |
 | `/skills [show <名字>]` | agent 按需读取的 skill 索引 |
 | `/knowledge [bind\|sync\|unbind]` | 记忆与 skill 的 git 同步 |

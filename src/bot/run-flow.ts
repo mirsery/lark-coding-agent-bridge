@@ -63,6 +63,12 @@ export interface StartRunFlowInput {
   lightTurn?: boolean;
   /** A scheduled job's own effort; wins over `/effort` and the preference. */
   jobEffort?: EffortLevel;
+  /**
+   * 自动切档: the level the agent asked for at the end of its last answer.
+   * Only for the conversation that answer belongs to — dropped when this turn
+   * starts a fresh one (`/new`, `/cd`, 会话智能压缩).
+   */
+  autoEffort?: EffortLevel;
   /** 会话智能压缩: see AgentRunOptions.compactWindowTokens. */
   compactWindowTokens?: number;
   /**
@@ -233,6 +239,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     prefs: input.profileConfig.preferences,
     chatId: input.scope.chatId,
     light: input.lightTurn,
+    ...(input.autoEffort && resumeFrom ? { auto: input.autoEffort } : {}),
     ...(input.jobEffort
       ? { override: { level: input.jobEffort, source: 'job' as const } }
       : sessionEffort
