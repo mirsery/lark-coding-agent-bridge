@@ -63,7 +63,16 @@ export type AgentEvent =
       threadId?: string;
       terminationReason: 'normal' | 'interrupted' | 'timeout';
     }
-  | { type: 'error'; message: string; terminationReason: 'failed' | 'interrupted' | 'timeout' }
+  | {
+      type: 'error';
+      message: string;
+      terminationReason: 'failed' | 'interrupted' | 'timeout';
+      /**
+       * `auth`: the agent's login was rejected (token revoked or expired). The
+       * account is unusable, not the task: another account may still run it.
+       */
+      cause?: 'auth';
+    }
   /**
    * How many background tasks (backgrounded shell commands, background
    * sub-agents, monitors) the agent process currently has running. While it

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,12 @@ import {
   translateEvent,
 } from '../../../src/agent/claude/stream-json.js';
 import type { AgentEvent } from '../../../src/agent/types.js';
+
+/** `claude -p` on a rejected login (captured with a bad token; wording from the revoked-token incident). */
+const AUTH_FAILED_LINES = readFileSync(join(__dirname, '..', '..', 'fixtures', 'claude-auth-failed-stream.jsonl'), 'utf8')
+  .trim()
+  .split('\n');
+const AUTH_FAILED_TEXT = 'Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.';
 
 describe('Claude stream-json translator', () => {
   it('translates system init metadata', () => {
@@ -134,6 +141,15 @@ describe('Claude stream-json translator', () => {
       { type: 'done', sessionId: 'sess-2', terminationReason: 'normal' },
     ]);
     expect([...translateEvent({ type: 'result', session_id: 'sess-2' })][0]).not.toHaveProperty('threadId');
+  });
+
+  it('turns a rejected login into a failed turn rather than an answer', () => {
+    const assistant = JSON.parse(AUTH_FAILED_LINES.find((line) => line.includes('"assistant"'))!);
+    expect([...translateEvent(assistant)]).toEqual([
+      { type: 'error', message: AUTH_FAILED_TEXT, terminationReason: 'failed', cause: 'auth' },
+    ]);
+    // The retries before it are the CLI's own business.
+    expect([...translateEvent(JSON.parse(AUTH_FAILED_LINES[1]!))]).toEqual([]);
   });
 
   it('ignores unknown, empty, and incomplete raw events', () => {
@@ -265,6 +281,16 @@ describe('Claude stream-json reader behavior', () => {
       else process.env.CLAUDE_CONFIG_DIR = previous;
       await rm(config, { recursive: true, force: true });
     }
+  });
+
+  it('ends a rejected login with its error: no done after it, no bare exit code', async () => {
+    const binary = await createFakeBinary(AUTH_FAILED_LINES, 1, '');
+    cleanup = binary.cleanup;
+
+    const run = new ClaudeAdapter({ binary: binary.path }).run({ runId: 'run-auth', prompt: 'hi', cwd: tmpdir() });
+    const events = (await collect(run.events)).filter((e) => e.type !== 'system' && e.type !== 'usage');
+
+    expect(events).toEqual([{ type: 'error', message: AUTH_FAILED_TEXT, terminationReason: 'failed', cause: 'auth' }]);
   });
 
   it('still reports done when a no-turn result is the only result before exit', async () => {

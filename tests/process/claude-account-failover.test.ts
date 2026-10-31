@@ -160,4 +160,72 @@ rl.once('line', (line) => {
     );
     expect(events.at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
   });
+
+  it('moves off an account whose login was rejected, as Claude Code reports it', { skip: process.platform === 'win32', timeout: 30_000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'lcb-auth-'));
+    cleanup.push(dir);
+    const record = join(dir, 'record.jsonl');
+    const script = join(dir, 'claude-fake.js');
+    // On the CLI login: the revoked-token turn from tests/fixtures/claude-auth-failed-stream.jsonl, then exit 1.
+    await writeFile(
+      script,
+      `
+const fs = require('node:fs');
+const readline = require('node:readline');
+const [record] = process.argv.slice(-1);
+const argv = process.argv.slice(2, -1);
+const token = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+const rl = readline.createInterface({ input: process.stdin });
+rl.once('line', (line) => {
+  const msg = JSON.parse(line);
+  const content = msg.message.content;
+  const prompt = typeof content === 'string' ? content : content.map((part) => part.text ?? '').join('');
+  fs.appendFileSync(record, JSON.stringify({ argv, token: token ?? null, prompt }) + '\\n');
+  out({ type: 'system', subtype: 'init', session_id: 'sess-1' });
+  out({ type: 'user', isReplay: true, uuid: msg.uuid });
+  if (!token) {
+    out({ type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10, error_status: 401, error: 'authentication_failed' });
+    out({ type: 'assistant', error: 'authentication_failed', is_api_error_message: true, api_error_status: 401,
+      message: { model: '<synthetic>', content: [{ type: 'text', text: 'Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.' }] } });
+    out({ type: 'result', subtype: 'success', is_error: true, terminal_reason: 'api_error', api_error_status: 401, session_id: 'sess-1', num_turns: 1 });
+    process.exit(1);
+  }
+  out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.02 } } } });
+  out({ type: 'assistant', message: { content: [{ type: 'text', text: 'answered on ' + token }] } });
+  out({ type: 'result', subtype: 'success', is_error: false, session_id: 'sess-1', num_turns: 1 });
+  process.exit(0);
+});
+`,
+    );
+    const binary = join(dir, 'claude');
+    await writeFile(binary, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@" "${record}"\n`, { mode: 0o755 });
+    await chmod(binary, 0o755);
+
+    const paths = claudeAccountsPaths(dir);
+    await writeFile(paths.configFile, JSON.stringify({ accounts: [{ id: 'default' }, { id: 'b', label: 'backup' }] }));
+    const pool = new ClaudeAccountPool({ paths, readSecret: async () => 'sk-ant-oat01-b' });
+    const adapter = new ClaudeAdapter({ binary, accounts: pool });
+    await adapter.prepareRun();
+
+    const run = adapter.run({ runId: 'run-3', prompt: 'hello', cwd: dir, sessionId: 'sess-0' });
+    const events: AgentEvent[] = [];
+    for await (const evt of run.events) events.push(evt);
+    await pool.flush();
+
+    const calls = (await readFile(record, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { argv: string[]; token: string | null; prompt: string });
+    expect(calls.map((c) => c.token)).toEqual([null, 'sk-ant-oat01-b']);
+    expect(calls[1]!.argv.join(' ')).toContain('--resume sess-1');
+    expect(calls[1]!.prompt).toContain('登录失效');
+    expect(calls[1]!.prompt).toContain('hello');
+    expect(events.filter((e) => e.type === 'error')).toEqual([]);
+    expect(events).not.toContainEqual(expect.objectContaining({ type: 'text', delta: expect.stringContaining('Failed to authenticate') }));
+    expect(events).toContainEqual(expect.objectContaining({ type: 'account', label: 'backup', reason: '登录失效' }));
+    expect(events).toContainEqual({ type: 'text', delta: 'answered on sk-ant-oat01-b' });
+    expect(events.at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
+    expect(pool.pick()?.id).toBe('b');
+  });
 });

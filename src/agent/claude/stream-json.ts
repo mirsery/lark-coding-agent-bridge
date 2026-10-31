@@ -116,11 +116,18 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
   // `error: "rate_limit"` ("You've hit your limit · resets …"). It is the
   // reason the run stopped, not part of the answer.
   if (evt.type === 'assistant' && evt.error === 'rate_limit') {
-    const message = (evt.message?.content ?? [])
-      .map((b) => (b.type === 'text' && typeof b.text === 'string' ? b.text : ''))
-      .join('')
-      .trim();
+    const message = assistantText(evt);
     yield { type: 'rate_limit', blocked: true, ...(message ? { message } : {}), at: Date.now() };
+    return;
+  }
+
+  // A rejected login ("Failed to authenticate: OAuth token revoked …") comes
+  // the same way, flagged `error: "authentication_failed"`, followed by an
+  // `is_error` result and exit code 1. The turn failed: rendered as the answer
+  // it read as a normal reply and the run counted as done.
+  if (evt.type === 'assistant' && evt.error === 'authentication_failed') {
+    const message = assistantText(evt) || 'Failed to authenticate';
+    yield { type: 'error', message, terminationReason: 'failed', cause: 'auth' };
     return;
   }
 
@@ -174,6 +181,14 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
     }
     yield { type: 'done', sessionId: evt.session_id, terminationReason: 'normal' };
   }
+}
+
+/** The text of a synthetic assistant message (the CLI's own error wording), trimmed. */
+function assistantText(evt: ClaudeRawEvent): string {
+  return (evt.message?.content ?? [])
+    .map((b) => (b.type === 'text' && typeof b.text === 'string' ? b.text : ''))
+    .join('')
+    .trim();
 }
 
 /** `unifiedWindows` as 0–100 percentages with epoch-ms resets; malformed entries are skipped. */

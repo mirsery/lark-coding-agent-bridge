@@ -25,6 +25,12 @@ import type { QuotaReading, QuotaWindow } from '../quota';
  *   3. once every account has been refused: the run waits for the soonest
  *      reset (it pauses and resumes on its own).
  *
+ * An account whose login was rejected (token revoked or expired) sits out of
+ * rounds 1 and 2 for {@link AUTH_FAILED_BENCH_MS}, until a run on it reports
+ * its quota again, or until the list file changes — re-adding the token or
+ * reordering the accounts is how it comes back sooner. Only this process
+ * remembers it: after a restart the account gets one more try.
+ *
  * Files in the profile directory:
  *   - `claude-accounts.json`: the list, in order of preference, and the
  *     switch lines. Re-read whenever it changes, no restart needed.
@@ -37,6 +43,8 @@ import type { QuotaReading, QuotaWindow } from '../quota';
 export const DEFAULT_ACCOUNT_ID = 'default';
 /** How long a refusal benches an account when the CLI did not say when it resets. */
 const UNKNOWN_RESET_MS = 60 * 60_000;
+/** How long a rejected login benches an account, unless the account list changes first. */
+export const AUTH_FAILED_BENCH_MS = 6 * 60 * 60_000;
 const ACCOUNT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 
 /** The windows that limit every model; model-specific weekly windows only count when they refuse. */
@@ -286,6 +294,8 @@ export class ClaudeAccountPool {
   private configStamp: number | undefined;
   private tokens = new Map<string, string>();
   private state: Record<string, AccountQuotaState> | undefined;
+  /** Accounts whose login was rejected, with when. */
+  private authFailed = new Map<string, number>();
   private writing: Promise<void> = Promise.resolve();
   private readonly now: () => number;
   private readonly readSecret: (id: string) => Promise<string | undefined>;
@@ -319,6 +329,8 @@ export class ClaudeAccountPool {
     this.config = config;
     this.tokens = tokens;
     this.configStamp = stamp;
+    // A new token or a new order is the owner acting on the account list.
+    this.authFailed.clear();
   }
 
   /** The profile's lines (accounts without their own follow these). */
@@ -350,18 +362,24 @@ export class ClaudeAccountPool {
    */
   pick(exclude?: ReadonlySet<string>): PickedAccount | undefined {
     const now = this.now();
+    const out = (id: string): number => Math.max(this.refusedUntil(id, now) ?? now, this.authFailedUntil(id, now) ?? now);
     return (
       this.pickRunnable(exclude) ??
       this.accounts()
         .filter((a) => !exclude?.has(a.id))
-        .sort((a, b) => (this.refusedUntil(a.id, now) ?? now) - (this.refusedUntil(b.id, now) ?? now))[0]
+        .sort((a, b) => out(a.id) - out(b.id))[0]
     );
   }
 
-  /** Round 1, else round 2: never an account that is still refused. */
+  /** Round 1, else round 2: never an account that is still refused or whose login was rejected. */
   pickRunnable(exclude?: ReadonlySet<string>): PickedAccount | undefined {
     const now = this.now();
-    return this.pickReady(exclude) ?? this.accounts().find((a) => !exclude?.has(a.id) && !this.isRefused(a.id, now));
+    return (
+      this.pickReady(exclude) ??
+      this.accounts().find(
+        (a) => !exclude?.has(a.id) && !this.isRefused(a.id, now) && this.authFailedUntil(a.id, now) === undefined,
+      )
+    );
   }
 
   /** Round 1 only: an account below all its lines. */
@@ -387,11 +405,33 @@ export class ClaudeAccountPool {
     return until !== undefined && until > now ? until : undefined;
   }
 
-  /** When the first account stops being refused; undefined when one is not refused now. */
+  /**
+   * The account's login was rejected: it sits out until the list changes, a
+   * run on it reports its quota, or {@link AUTH_FAILED_BENCH_MS} passes.
+   */
+  markAuthFailed(id: string): void {
+    this.authFailed.set(id, this.now());
+    log.warn('claude-accounts', 'auth-failed', { id });
+  }
+
+  /** Until when a rejected login keeps the account out; undefined when it is not out for that. */
+  authFailedUntil(id: string, now = this.now()): number | undefined {
+    const at = this.authFailed.get(id);
+    if (at === undefined) return undefined;
+    const until = at + AUTH_FAILED_BENCH_MS;
+    return until > now ? until : undefined;
+  }
+
+  /**
+   * When the first account stops being refused; undefined when one is not
+   * refused now. An account whose login was rejected is not waited for: a
+   * revoked token does not come back on its own.
+   */
   nextRunnableAt(): number | undefined {
     const now = this.now();
     let soonest: number | undefined;
     for (const account of this.accounts()) {
+      if (this.authFailedUntil(account.id, now) !== undefined) continue;
       const until = this.refusedUntil(account.id, now);
       if (until === undefined) return undefined;
       soonest = soonest === undefined ? until : Math.min(soonest, until);
@@ -413,11 +453,12 @@ export class ClaudeAccountPool {
     return undefined;
   }
 
-  /** When the account is below all its lines and not refused: now, or the reset that gets it there. */
+  /** When the account is below all its lines, not refused and its login not rejected: now, or when it gets there. */
   underLinesAt(id: string, now = this.now()): number {
+    const benched = Math.max(this.refusedUntil(id, now) ?? now, this.authFailedUntil(id, now) ?? now);
     const state = this.loadState()[id];
-    if (!state) return now;
-    let at = this.refusedUntil(id, now) ?? now;
+    if (!state) return benched;
+    let at = benched;
     for (const kind of WINDOW_KINDS) {
       const window = state.windows[kind];
       if (!window || window.usedPercent < this.lineOf(id, kind)) continue;
@@ -430,6 +471,8 @@ export class ClaudeAccountPool {
   /** Record what a run on `id` reported about its quota. */
   observe(id: string, evt: RateLimitEvent): void {
     const now = this.now();
+    // Any quota report means the API took the account's login.
+    this.authFailed.delete(id);
     const all = this.loadState();
     const state: AccountQuotaState = all[id] ?? { windows: {}, updatedAt: now };
     for (const window of evt.windows ?? []) {
@@ -546,13 +589,16 @@ export function accountsReport(pool: ClaudeAccountPool, defaultLabel: string | u
         .filter((part): part is string => part !== undefined)
         .join(' · ') || '还没有运行记录';
     const refused = pool.refusedUntil(account.id, now);
+    const authFailed = pool.authFailedUntil(account.id, now);
     const past = pool.pastLine(account.id, now);
     const flag =
-      refused !== undefined
-        ? ` · ⛔ 额度用尽，${formatClock(refused)} 恢复`
-        : past
-          ? ` · ⚠️ 已过${WINDOW_LABELS[past.kind]}切换线，其他账户也到线后才轮到它`
-          : '';
+      authFailed !== undefined
+        ? ` · 🔑 登录失效，${formatClock(authFailed)} 前不再用它（换令牌或调整账户顺序后立即重试）`
+        : refused !== undefined
+          ? ` · ⛔ 额度用尽，${formatClock(refused)} 恢复`
+          : past
+            ? ` · ⚠️ 已过${WINDOW_LABELS[past.kind]}切换线，其他账户也到线后才轮到它`
+            : '';
     return `- ${marker}**${name}**（${role}，${account.id}；${lines}）：${usage}${flag}`;
   });
 }
@@ -595,8 +641,10 @@ export interface AccountRow {
   known: boolean;
   windows: Record<WindowKind, AccountWindowView>;
   refusedUntil?: number;
+  /** Its login was rejected: left out until then (see {@link AUTH_FAILED_BENCH_MS}). */
+  authFailedUntil?: number;
   pastLine?: WindowKind;
-  /** Below all its lines and not refused: a run would use it right now. */
+  /** Below all its lines, not refused and its login not rejected: a run would use it right now. */
   ready: boolean;
   /** 0–1, see {@link switchScore}. */
   score: number;
@@ -654,6 +702,7 @@ export function accountRows(pool: ClaudeAccountPool, defaultLabel: string | unde
     }
     const known = WINDOW_KINDS.some((kind) => windows[kind].usedPercent !== undefined);
     const refusedUntil = pool.refusedUntil(account.id, now);
+    const authFailedUntil = pool.authFailedUntil(account.id, now);
     const pastLine = pool.pastLine(account.id, now)?.kind;
     return {
       id: account.id,
@@ -663,6 +712,7 @@ export function accountRows(pool: ClaudeAccountPool, defaultLabel: string | unde
       known,
       windows,
       ...(refusedUntil !== undefined ? { refusedUntil } : {}),
+      ...(authFailedUntil !== undefined ? { authFailedUntil } : {}),
       ...(pastLine ? { pastLine } : {}),
       ready: pool.underLinesAt(account.id, now) <= now,
       score: switchScore(windows, known),
@@ -690,6 +740,7 @@ function windowCell(view: AccountWindowView, format: (ms: number) => string): st
 }
 
 function stateCell(row: AccountRow): string {
+  if (row.authFailedUntil !== undefined) return `🔑 登录失效，${formatClock(row.authFailedUntil)} 前不用`;
   if (row.refusedUntil !== undefined) return `⛔ 额度用尽，${formatClock(row.refusedUntil)} 恢复`;
   if (row.pastLine) return `⚠️ 已过${WINDOW_LABELS[row.pastLine]}切换线`;
   if (!row.known) return '还没运行过';

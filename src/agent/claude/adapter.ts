@@ -398,6 +398,9 @@ async function* createEventStream(
   let turnTerminal = false;
   // The last turn was refused by the plan quota (cleared once a turn does work).
   let refused = false;
+  // The last turn's login was rejected: its `error` ended it, so the `result`
+  // that follows is not a second end (cleared when a new turn starts).
+  let authFailed = false;
   let silentExitTimer: ReturnType<typeof setTimeout> | undefined;
   const closeSilentStdout = (): void => {
     silentExitTimer = setTimeout(() => {
@@ -468,6 +471,7 @@ async function* createEventStream(
       const replayed = replayedUuid(parsed);
       if (replayed !== undefined) {
         turnTerminal = false;
+        authFailed = false;
         const preview = input.ack(replayed);
         if (preview !== undefined) {
           const evt: AgentEvent = { type: 'supplement', preview };
@@ -484,6 +488,7 @@ async function* createEventStream(
       for (const raw of translateEvent(parsed)) {
         const evt = raw.type === 'usage' ? perTurnCost(raw)
           : raw.type === 'done' && wasStopped() ? { ...raw, terminationReason: 'interrupted' as const } : raw;
+        if (evt.type === 'done' && authFailed) continue;
         if (evt.type === 'done') {
           heldResult = undefined;
           if (moreInput && !wasStopped()) {
@@ -491,6 +496,11 @@ async function* createEventStream(
             deferredDone = evt;
             continue;
           }
+          deferredDone = undefined;
+        }
+        if (evt.type === 'error' && evt.cause === 'auth') {
+          authFailed = true;
+          heldResult = undefined;
           deferredDone = undefined;
         }
         if (evt.type === 'done' || evt.type === 'error') turnTerminal = true;
@@ -547,6 +557,12 @@ async function* createEventStream(
   // only post a misleading "agent 失败" after the pause notice.
   if (turnTerminal && refused && exitCode === 1 && child.signalCode === null) {
     log.info('agent', 'exit-after-refusal', { pid: child.pid ?? null, exitCode });
+    return;
+  }
+  // Same after a rejected login: the turn already failed with the CLI's own
+  // reason, a bare "exited with code 1" after it says nothing more.
+  if (turnTerminal && authFailed && exitCode === 1 && child.signalCode === null) {
+    log.info('agent', 'exit-after-auth-failure', { pid: child.pid ?? null, exitCode });
     return;
   }
   if ((exitCode !== 0 && exitCode !== null) || child.signalCode !== null) {

@@ -3,6 +3,7 @@ import type { AgentEvent, AgentRun, AgentRunOptions } from '../types';
 import { WINDOW_LABELS, type ClaudeAccountPool, type PickedAccount } from './accounts';
 
 type RateLimitEvent = Extract<AgentEvent, { type: 'rate_limit' }>;
+type ErrorEvent = Extract<AgentEvent, { type: 'error' }>;
 
 export interface AccountFailoverDeps {
   pool: ClaudeAccountPool;
@@ -18,7 +19,7 @@ export interface AccountFailoverDeps {
  * Run on the account the pool picks, and move the same conversation to
  * another account when this one cannot go on.
  *
- * Every quota report goes to the pool. Two ways off an account:
+ * Every quota report goes to the pool. Three ways off an account:
  *
  * - **Refused** (`rate_limit` blocked): the refusal is held back together with
  *   the turn's terminal event. If the attempt ends there and another account
@@ -31,6 +32,12 @@ export interface AccountFailoverDeps {
  *   next point where no tool call, subagent or background task is in flight —
  *   stopping there loses nothing. With every account past a line it stays
  *   put: accounts are then used up in order, and only a refusal moves it.
+ *
+ * - **Login rejected** (`error` with `cause: 'auth'`: token revoked or
+ *   expired): the pool benches the account and, if another one can run, the
+ *   same conversation moves there as after a refusal. Otherwise the error
+ *   goes out, saying which account to fix — the run fails, it does not pause:
+ *   no reset is coming.
  *
  * A refusal the agent works past (extra usage, a fallback model) is passed
  * through as soon as work resumes. Nothing moves once the user's turn has
@@ -65,6 +72,7 @@ export function runWithAccountFailover(opts: AgentRunOptions, deps: AccountFailo
       }
 
       let refusal: RateLimitEvent | undefined;
+      let authFailure: ErrorEvent | undefined;
       const held: AgentEvent[] = [];
       // Once the user's turn has ended, later turns are the process's own
       // (background tasks reporting back): a refusal there is not retried —
@@ -85,6 +93,14 @@ export function runWithAccountFailover(opts: AgentRunOptions, deps: AccountFailo
           }
           if (!evt.blocked && !turnEnded && !stopped && !deps.pool.hasRoom(on.id)) pastLine = true;
         }
+        if (evt.type === 'error' && evt.cause === 'auth') {
+          deps.pool.markAuthFailed(on.id);
+          if (!turnEnded && !stopped) {
+            authFailure = evt;
+            continue;
+          }
+        }
+        if (authFailure && (evt.type === 'done' || evt.type === 'error')) continue;
         if (evt.type === 'system' && evt.sessionId) sessionId = evt.sessionId;
         if (evt.type === 'background') background = evt.count;
         if (evt.type === 'tool_use') inFlight.add(evt.id);
@@ -124,6 +140,28 @@ export function runWithAccountFailover(opts: AgentRunOptions, deps: AccountFailo
         reason = line ? `${WINDOW_LABELS[line.kind]}用量到了 ${line.line}% 的切换线` : '到了切换线';
         account = leave;
         current = deps.spawn({ ...opts, ...(sessionId ? { sessionId } : {}), prompt: SWITCH_LINE_PROMPT }, leave);
+        continue;
+      }
+
+      if (authFailure) {
+        const next = stopped ? undefined : deps.pool.pickRunnable(tried);
+        if (!next) {
+          yield { ...authFailure, message: authFailureMessage(deps.pool.multi ? label : undefined, authFailure.message) };
+          return;
+        }
+        log.info('agent', 'account-failover', { runId: opts.runId, from: on.id, to: next.id, hasSession: Boolean(sessionId), cause: 'auth' });
+        if (!(await attempt.waitForExit(deps.exitWaitMs ?? 10_000))) await attempt.stop();
+        if (stopped) {
+          yield authFailure;
+          return;
+        }
+        switchedFrom = label;
+        reason = '登录失效';
+        account = next;
+        current = deps.spawn(
+          { ...opts, ...(sessionId ? { sessionId } : {}), prompt: failoverPrompt(opts.prompt, 'auth') },
+          next,
+        );
         continue;
       }
 
@@ -175,13 +213,28 @@ export function runWithAccountFailover(opts: AgentRunOptions, deps: AccountFailo
  * original message rides along in case the refusal came before it reached the
  * transcript.
  */
-export function failoverPrompt(original: string): string {
+export function failoverPrompt(original: string, cause: 'quota' | 'auth' = 'quota'): string {
   return [
-    '[bridge] 上一次处理这条消息时 Claude 账户额度用尽，回答在中途停止了（已经完成的部分在上面的对话里）。',
+    cause === 'auth'
+      ? '[bridge] 上一次处理这条消息时 Claude 账户登录失效，请求被拒绝了（如果已经完成了一部分，在上面的对话里）。'
+      : '[bridge] 上一次处理这条消息时 Claude 账户额度用尽，回答在中途停止了（已经完成的部分在上面的对话里）。',
     'bridge 已切换到另一个账户。请从中断的地方接着完成，不要重复已经做完的步骤，也不要提起这次切换。用户的原消息如下：',
     '',
     original,
   ].join('\n');
+}
+
+/**
+ * What the card says when a rejected login ends the run: which account to fix
+ * and how, with the CLI's own reason. `label` is left out with one account.
+ */
+export function authFailureMessage(label: string | undefined, reason: string): string {
+  if (!label) return `Claude 登录失效，请在本机重新登录 Claude Code 后再试。（${reason}）`;
+  return [
+    `Claude 账户 ${label} 登录失效，也没有其他可用的账户。`,
+    'CLI 自己的登录请在本机重新登录 Claude Code；备用账户用 `claude setup-token` 换新令牌后执行 `lark-channel-bridge claude-account add <id>`，',
+    `不再用的用 \`claude-account remove <id>\` 移出列表。（${reason}）`,
+  ].join('');
 }
 
 /** The move happened between steps: everything so far, the message included, is in the transcript. */

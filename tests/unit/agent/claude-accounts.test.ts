@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { failoverPrompt, runWithAccountFailover, SWITCH_LINE_PROMPT } from '../../../src/agent/claude/account-failover.js';
 import {
+  AUTH_FAILED_BENCH_MS,
   accountRows,
   accountsReport,
   accountsTable,
@@ -182,6 +183,41 @@ describe('ClaudeAccountPool', () => {
     expect(pool.multi).toBe(true);
   });
 
+  it('benches an account whose login was rejected until a run gets through, the bench runs out or the list changes', async () => {
+    let now = NOW;
+    const { pool, paths } = await poolWith(['b', 'c'], { now: () => now });
+    pool.markAuthFailed('default');
+    expect(pool.authFailedUntil('default')).toBe(NOW + AUTH_FAILED_BENCH_MS);
+    expect(pool.pick()?.id).toBe('b');
+    expect(pool.pickReady()?.id).toBe('b');
+
+    // Any quota report means the login worked after all.
+    pool.observe('default', limit({ windows: [{ kind: 'five_hour', usedPercent: 5 }] }));
+    expect(pool.pick()?.id).toBe('default');
+
+    pool.markAuthFailed('default');
+    now = NOW + AUTH_FAILED_BENCH_MS;
+    expect(pool.pick()?.id).toBe('default');
+
+    // Re-adding a token or reordering rewrites the list: the owner acted on it.
+    pool.markAuthFailed('default');
+    await reorderAccounts(paths, ['c']);
+    const later = new Date(Date.now() + 5_000);
+    await utimes(paths.configFile, later, later);
+    await pool.refresh();
+    expect(pool.authFailedUntil('default')).toBeUndefined();
+  });
+
+  it('runs on a rejected login only when nothing else can, and never waits for one', async () => {
+    const { pool } = await poolWith(['b']);
+    pool.markAuthFailed('default');
+    pool.observe('b', limit({ blocked: true, resetsAt: NOW + HOUR }));
+    expect(pool.pickRunnable()).toBeUndefined();
+    // A revoked token does not come back on its own: the wait is for b.
+    expect(pool.nextRunnableAt()).toBe(NOW + HOUR);
+    expect(pool.pick()?.id).toBe('b');
+  });
+
   it('reports each account for /usage', async () => {
     const { pool } = await poolWith(['b']);
     pool.observe('default', limit({ blocked: true, resetsAt: NOW + HOUR, windows: [{ kind: 'five_hour', usedPercent: 100, resetsAt: NOW + HOUR }] }));
@@ -248,6 +284,16 @@ describe('account table and switching (/accounts)', () => {
     expect(readAccountsConfig(paths).accounts.map((a) => a.id)).toEqual(['d', 'default', 'b', 'c']);
   });
 
+  it('shows a rejected login and never switches to it', async () => {
+    const { pool } = await poolWith(['b']);
+    pool.markAuthFailed('b');
+    const rows = accountRows(pool, 'me', NOW);
+    expect(rows[1]).toMatchObject({ id: 'b', ready: false, authFailedUntil: NOW + AUTH_FAILED_BENCH_MS });
+    expect(accountsTable(rows)).toContain('登录失效');
+    expect(accountsReport(pool, 'me', NOW)[1]).toContain('登录失效');
+    expect(bestSwitchTarget(rows)).toBeUndefined();
+  });
+
   it('finds an account by id, name or the CLI login, ignoring case', async () => {
     const { pool } = await poolWith(['b']);
     const rows = accountRows(pool, 'Shilong.Wang', NOW);
@@ -286,6 +332,13 @@ const refused: AgentEvent[] = [
   limit({ blocked: true, message: "You've hit your limit" }),
   { type: 'usage', costUsd: 0 },
   { type: 'done', sessionId: 's1', terminationReason: 'normal' },
+];
+
+const AUTH_TEXT = 'Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.';
+const authFailed: AgentEvent[] = [
+  { type: 'system', sessionId: 's1' },
+  { type: 'error', message: AUTH_TEXT, terminationReason: 'failed', cause: 'auth' },
+  { type: 'usage', inputTokens: 0, outputTokens: 0, costUsd: 0 },
 ];
 
 describe('account failover', () => {
@@ -359,6 +412,72 @@ describe('account failover', () => {
     const card = JSON.stringify(renderCard(state, { meta: { title: 'Occam', sponsor: 'scwsl.wang' } }));
     expect(card).toContain('Sponsor: b-name');
     expect(card).toContain('已切换到 b-name');
+  });
+
+  it('moves a run whose login was rejected to the next account and benches the bad one', async () => {
+    const { pool } = await poolWith(['b']);
+    const calls: Array<{ account: PickedAccount; opts: AgentRunOptions }> = [];
+    const run = runWithAccountFailover(OPTS, {
+      pool,
+      spawn: (opts, account) => {
+        calls.push({ account, opts });
+        return calls.length === 1
+          ? fakeRun(authFailed)
+          : fakeRun([
+              { type: 'system', sessionId: 's1' },
+              { type: 'text', delta: 'done on b' },
+              { type: 'done', sessionId: 's1', terminationReason: 'normal' },
+            ]);
+      },
+      labelOf: async (account) => (account.id === 'default' ? 'xiaoming' : account.label),
+    });
+    const events = await collect(run);
+
+    expect(calls.map((c) => c.account.id)).toEqual(['default', 'b']);
+    expect(calls[1]!.opts).toMatchObject({ sessionId: 's1', prompt: failoverPrompt('hello', 'auth') });
+    expect(calls[1]!.opts.prompt).toContain('登录失效');
+    expect(calls[1]!.opts.prompt).toContain('hello');
+    expect(events.filter((e) => e.type === 'error')).toEqual([]);
+    expect(events).toContainEqual({ type: 'account', label: 'b-name', switchedFrom: 'xiaoming', reason: '登录失效' });
+    expect(pool.authFailedUntil('default')).toBe(NOW + AUTH_FAILED_BENCH_MS);
+    expect(pool.pick()?.id).toBe('b');
+
+    const state = events.reduce(reduce, initialState);
+    expect(state.terminal).toBe('done');
+    expect(JSON.stringify(renderCard(state, { meta: { title: 'CC' } }))).toContain('xiaoming 登录失效，已切换到 b-name');
+  });
+
+  it('fails the run, naming the account to fix, when no other account can take over', async () => {
+    const { pool } = await poolWith(['b']);
+    pool.markAuthFailed('b');
+    const spawned: string[] = [];
+    const run = runWithAccountFailover(OPTS, {
+      pool,
+      spawn: (_opts, account) => {
+        spawned.push(account.id);
+        return fakeRun(authFailed);
+      },
+      labelOf: async () => 'xiaoming',
+    });
+    const events = await collect(run);
+
+    expect(spawned).toEqual(['default']);
+    const error = events.find((e) => e.type === 'error');
+    expect(error).toMatchObject({ type: 'error', cause: 'auth', terminationReason: 'failed' });
+    expect(error && 'message' in error ? error.message : '').toContain('xiaoming 登录失效');
+    expect(error && 'message' in error ? error.message : '').toContain('OAuth token revoked');
+    // A failed run, not a finished one: a scheduled job counts it as failed.
+    expect(events.reduce(reduce, initialState).terminal).toBe('error');
+  });
+
+  it('with a single account, fails the run with the CLI reason', async () => {
+    const { pool } = await poolWith([]);
+    const run = runWithAccountFailover(OPTS, { pool, spawn: () => fakeRun(authFailed), labelOf: async () => 'me' });
+    const events = await collect(run);
+    expect(events.map((e) => e.type)).toEqual(['system', 'usage', 'error']);
+    expect(events.at(-1)).toMatchObject({ type: 'error', cause: 'auth' });
+    expect((events.at(-1) as { message: string }).message).toContain('重新登录 Claude Code');
+    expect(pool.authFailedUntil('default')).toBe(NOW + AUTH_FAILED_BENCH_MS);
   });
 
   it('pauses as before when no other account has room, at the soonest reset', async () => {
