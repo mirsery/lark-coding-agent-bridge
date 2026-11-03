@@ -1292,7 +1292,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
       threadId,
     });
   }
-  const scope = chatMode === 'topic' && threadId
+  const scope = threadId && (chatMode === 'topic' || msg.chatType === 'p2p')
     ? `${msg.chatId}:${threadId}`
     : msg.chatId;
   log.info('intake', 'enter', {

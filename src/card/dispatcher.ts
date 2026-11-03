@@ -151,9 +151,6 @@ async function resolveScope(
 ): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }> {
   const chatId = deps.evt.chatId;
   const mode = await deps.chatModeCache.resolve(deps.channel, chatId);
-  if (mode === 'p2p') {
-    return { scope: chatId, threadId: undefined, mode };
-  }
   // Match message intake: a carrier thread_id is stronger than cached chat
   // mode (groups converted to topics can still resolve as ordinary groups).
   // One API call per click; could cache by messageId if it ever becomes hot.
@@ -163,7 +160,7 @@ async function resolveScope(
     // scope than fail the click silently.
     return { scope: chatId, threadId: undefined, mode };
   }
-  return { scope: `${chatId}:${threadId}`, threadId, mode: 'topic' };
+  return { scope: `${chatId}:${threadId}`, threadId, mode: mode === 'p2p' ? 'p2p' : 'topic' };
 }
 
 function forwardToAgent(

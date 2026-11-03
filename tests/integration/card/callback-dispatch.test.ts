@@ -123,6 +123,21 @@ describe('signed card callback dispatch', () => {
     expect(queued[0]?.content).toBe('[card-click] {"choice":"a"}');
   });
 
+  it('routes private thread callbacks to the corresponding private scope', async () => {
+    const h = await createHarness({ chatMode: 'p2p', operatorId: 'ou_owner' });
+    h.channel.rawThreadIds.set('om_card', 'th_private');
+    h.activeRuns.register('oc_group:th_private', h.agent.run({ runId: 'run-active', prompt: 'running' }));
+    await h.dispatch({
+      __bridge_cb: true,
+      bridge_token: h.token('agent_callback', { scope: 'oc_group:th_private', operatorOpenId: 'ou_owner' }),
+      choice: 'a',
+    });
+    const queued = h.pending.cancel('oc_group:th_private');
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.chatType).toBe('p2p');
+    expect(queued[0]?.threadId).toBe('th_private');
+  });
+
   it('stops only the carrier topic when cached chat mode still says group', async () => {
     const h = await createHarness({ chatMode: 'group' });
     h.channel.rawThreadIds.set('om_card', 'th_topic');

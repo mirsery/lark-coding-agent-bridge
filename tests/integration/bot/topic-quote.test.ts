@@ -82,6 +82,28 @@ afterEach(async () => {
 });
 
 describe('topic message quote handling', () => {
+  it('runs separate private threads concurrently while retaining private chat mode', async () => {
+    const h = await createHarness({ chatMode: 'group', pause: true, agentEvents: [
+      { type: 'text', delta: '进行中' },
+      { type: 'done', terminationReason: 'normal' },
+    ] });
+    await startTestBridge(h);
+    const privateMessage = (messageId: string, threadId: string) => ({
+      ...message({ messageId, rootId: messageId, parentId: messageId, threadId, content: messageId }),
+      chatType: 'p2p' as const,
+    });
+    try {
+      await h.channel.handlers.message?.(privateMessage('om_first', 'omt_first'));
+      await waitFor(() => h.agent.runs.length === 1);
+      await h.channel.handlers.message?.(privateMessage('om_second', 'omt_second'));
+      await waitFor(() => h.agent.runs.length === 2);
+      expect(h.agent.runOptions[0]?.prompt).toContain('"chatType":"p2p"');
+      expect(h.agent.runOptions[1]?.prompt).toContain('"threadId":"omt_second"');
+    } finally {
+      h.agent.runs[0]?.release();
+    }
+  });
+
   it('keeps a private message with a thread id in private chat mode', async () => {
     const h = await createHarness({ chatMode: 'group', agentEvents: [
       { type: 'text', delta: '好的' },
@@ -718,6 +740,7 @@ describe('merge_forward fetch failure', () => {
 
 async function createHarness(options: {
   chatMode?: 'group' | 'topic';
+  pause?: boolean;
   quotedMessages?: Record<string, string>;
   rawThreadIds?: Record<string, string>;
   threadMessages?: Array<Record<string, unknown>>;
@@ -759,6 +782,7 @@ async function createHarness(options: {
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const agent = new FakeAgentAdapter({
     events: options.agentEvents ?? [{ type: 'done', terminationReason: 'normal' }],
+    ...(options.pause ? { pause: { afterEvents: 1 } } : {}),
   });
   const channel = createFakeLarkChannel(options);
   sdkMock.channel = channel;
