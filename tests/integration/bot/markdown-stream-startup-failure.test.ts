@@ -366,6 +366,18 @@ describe('markdown stream startup failures', () => {
     expect(h.agent.runOptions[0]?.approvals).toBeUndefined();
   });
 
+  it('marks an administrator without removing the owner guard', async () => {
+    const h = await createHarness({ events: [[{ type: 'done', terminationReason: 'normal' }]] });
+    h.profileConfig.access.admins = ['ou_user'];
+    Object.assign(h.controls, { botOwnerId: 'ou_owner', ownerRefreshState: 'ok' });
+    await startTestBridge(h, testAppPaths(h.tmp));
+    await h.channel.handlers.message?.(message('om_admin_identity', '使用管理员技能'));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    expect(h.agent.runOptions[0]!.prompt).toContain('"senderIsAdmin":true');
+    expect(h.agent.runOptions[0]!.prompt).toContain('"senderIsOwner":false');
+    expect(h.agent.runOptions[0]!.guard).toBeDefined();
+  });
+
   it("fences runs the owner didn't start and leaves the owner's own runs alone", async () => {
     const h = await createHarness({
       agentKind: 'claude',
@@ -381,6 +393,7 @@ describe('markdown stream startup failures', () => {
     const guest = h.agent.runOptions[0]!;
     expect(guest.guard?.allowedRoots).toContain('/srv/shared-project');
     expect(guest.prompt).toContain('"senderIsOwner":false');
+    expect(guest.prompt).toContain('"senderIsAdmin":false');
 
     Object.assign(h.controls, { botOwnerId: 'ou_user' });
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -388,6 +401,7 @@ describe('markdown stream startup failures', () => {
     await waitFor(() => h.agent.runOptions.length === 2);
     expect(h.agent.runOptions[1]!.guard).toBeUndefined();
     expect(h.agent.runOptions[1]!.prompt).toContain('"senderIsOwner":true');
+    expect(h.agent.runOptions[1]!.prompt).toContain('"senderIsAdmin":true');
   });
 
   it('opens no progress stream for a final-only round', async () => {

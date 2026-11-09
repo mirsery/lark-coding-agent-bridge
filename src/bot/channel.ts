@@ -1468,6 +1468,7 @@ async function tryInjectSupplement(deps: {
     [SUPPLEMENT_INSTRUCTION],
     undefined,
     isOwnerBatch(controls, [msg], (m) => senderTypeOf(m) === 'bot'),
+    senderTypeOf(msg) !== 'bot' && canRunAdminCommand(controls.profileConfig, controls, msg.senderId).ok,
   );
   // The run may have wrapped up (or the message been recalled) while
   // attachments were downloading.
@@ -1752,6 +1753,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     extraInstructions,
     knowledgeContext,
     ownerRun,
+    batch.length > 0 && batch.every((m) => senderTypeOf(m) !== 'bot' && canRunAdminCommand(controls.profileConfig, controls, m.senderId).ok),
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
@@ -3293,6 +3295,7 @@ function buildPrompt(
   extraInstructions?: string[],
   knowledge?: BridgePromptKnowledge,
   senderIsOwner = false,
+  senderIsAdmin = false,
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -3328,6 +3331,7 @@ function buildPrompt(
       ...(senderType ? { senderType } : {}),
       ...(botIdentity?.openId ? { botOpenId: botIdentity.openId } : {}),
       senderIsOwner,
+      senderIsAdmin,
       ...(mentions.length > 0 ? { mentions } : {}),
       ...(first.threadId ? { threadId: first.threadId } : {}),
       messageIds: batch.map((m) => m.messageId),
