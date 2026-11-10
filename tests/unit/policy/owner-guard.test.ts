@@ -330,6 +330,46 @@ describe('guest runs: Claude flags', () => {
   });
 });
 
+describe('admin runs: long-term memory', () => {
+  const admin = ownerOnlyGuard({ larkChannelHome: LC, workspace: WORKSPACE, home: HOME, root: ROOT, memoryWritable: true });
+  const run = (g: typeof admin, toolName: string, toolInput: Record<string, unknown>) =>
+    spawnSync(process.execPath, [g.hookScript], {
+      input: JSON.stringify({ tool_name: toolName, tool_input: toolInput, cwd: WORKSPACE }),
+      env: { ...process.env, ...claudeGuardArgs(g).env },
+      encoding: 'utf8',
+    }).status;
+  const MEM = `${HOME}/.claude/projects/-Users-someone-x/memory`;
+
+  it('lets an admin run read and write the memory dir', () => {
+    expect(run(admin, 'Read', { file_path: `${MEM}/MEMORY.md` })).toBe(0);
+    expect(run(admin, 'Write', { file_path: `${MEM}/feedback_x.md`, content: 'x' })).toBe(0);
+    expect(run(admin, 'Edit', { file_path: `${MEM}/MEMORY.md` })).toBe(0);
+    expect(run(admin, 'Bash', { command: `cat > ${MEM}/a.md <<'EOF'\nx\nEOF` })).toBe(0);
+    expect(run(admin, 'Bash', { command: `cd ${MEM} && grep -l x *.md` })).toBe(0);
+    expect(run(admin, 'Bash', { command: `rm ${MEM}/a.md` })).toBe(0);
+  });
+
+  it('keeps the rest of projects and other owner areas fenced', () => {
+    expect(run(admin, 'Read', { file_path: `${HOME}/.claude/projects/-Users-someone-x/s.jsonl` })).toBe(2);
+    expect(run(admin, 'Write', { file_path: `${HOME}/.claude/projects/-Users-someone-x/s.jsonl` })).toBe(2);
+    expect(run(admin, 'Bash', { command: `rm ${MEM}/../s.jsonl` })).toBe(2);
+    expect(run(admin, 'Bash', { command: `echo x > ${HOME}/.claude/projects/../CLAUDE.md` })).toBe(2);
+    expect(run(admin, 'Write', { file_path: `${HOME}/.claude/CLAUDE.md` })).toBe(2);
+    expect(run(admin, 'Write', { file_path: `${HOME}/.claude/skills/x/SKILL.md` })).toBe(2);
+    expect(run(admin, 'Write', { file_path: `${HOME}/.claude/projects/-Users-someone-x/memoryx/a.md` })).toBe(2);
+  });
+
+  it('leaves memory closed to other guests', () => {
+    const plain = ownerOnlyGuard({ larkChannelHome: LC, workspace: WORKSPACE, home: HOME, root: ROOT });
+    expect(run(plain, 'Read', { file_path: `${MEM}/MEMORY.md` })).toBe(2);
+    expect(run(plain, 'Write', { file_path: `${MEM}/a.md` })).toBe(2);
+    expect(claudeGuardArgs(plain).args).toContain(`Edit(/${HOME}/.claude/projects/**)`);
+    // Claude's deny rules can't spare a sub-path: the hook fences projects alone.
+    expect(claudeGuardArgs(admin).args).not.toContain(`Edit(/${HOME}/.claude/projects/**)`);
+    expect(claudeGuardArgs(admin).args).toContain(`Edit(/${HOME}/.claude/skills/**)`);
+  });
+});
+
 describe('guardRefusal', () => {
   /** The tool result Claude reports when the hook blocks a call. */
   const reported = (tool: string, stderr: string) =>

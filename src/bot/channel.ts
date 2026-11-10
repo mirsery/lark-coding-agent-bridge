@@ -1724,6 +1724,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Changes to the bridge and the agent itself are the owner's alone: other
   // people's runs are told so and fenced off at the tool level.
   const ownerRun = isOwnerBatch(controls, batch, (m) => senderTypeOf(m) === 'bot');
+  // Every sender is an admin (the owner counts): `senderIsAdmin`, and the
+  // agent's long-term memory opens to the run.
+  const adminRun =
+    batch.length > 0 &&
+    batch.every((m) => senderTypeOf(m) !== 'bot' && canRunAdminCommand(controls.profileConfig, controls, m.senderId).ok);
   // Reading a bound skill (the bot meeting) opens a library's write window —
   // in the owner's runs only, so that is the only place it is announced.
   const readHook =
@@ -1753,7 +1758,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     extraInstructions,
     knowledgeContext,
     ownerRun,
-    batch.length > 0 && batch.every((m) => senderTypeOf(m) !== 'bot' && canRunAdminCommand(controls.profileConfig, controls, m.senderId).ok),
+    adminRun,
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
@@ -1846,6 +1851,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         deniedTools: access.guestDeniedTools ?? [],
         grantedTools: grantedToolsFor(access.guestToolGrants, batch, (m) => senderTypeOf(m) === 'bot'),
         deniedCommands: access.guestDeniedCommands ?? [],
+        memoryWritable: adminRun,
         ...(guestWorkspace ? { workspace: guestWorkspace } : {}),
       });
   const runGuard = restrictedChat ? restrictedChatGuard(guestGuard, restrictedChat) : guestGuard;

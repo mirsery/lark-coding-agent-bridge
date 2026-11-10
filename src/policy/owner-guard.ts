@@ -18,6 +18,11 @@ export interface GuardRule {
   allow?: string[];
   /** File tools may not open it either (a restricted chat's `deniedPaths`). */
   hidden?: true;
+  /**
+   * File tools are fenced by the hook alone, which honours `allow`: Claude's
+   * `Edit(...)` deny rules can't carve a sub-path out of a fenced tree.
+   */
+  fileToolsViaHook?: true;
 }
 
 /**
@@ -106,6 +111,12 @@ export function ownerOnlyGuard(opts: {
    */
   grantedTools?: readonly string[];
   deniedCommands?: readonly string[];
+  /**
+   * Every sender of the batch is an admin: the agent's own long-term memory
+   * (`~/.claude/projects/<project>/memory`) may be read and written. The rest
+   * of `projects` (session transcripts) stays fenced.
+   */
+  memoryWritable?: boolean;
   /** The run's working directory. */
   workspace?: string;
   home?: string;
@@ -122,6 +133,10 @@ export function ownerOnlyGuard(opts: {
   // Knowledge library mirrors are read like skill libraries. The writable
   // clones next to them (`<name>.work/`) and the window files are not.
   const knowledgeLibraries = `${escapeRe(lc)}/profiles/[^/]+/knowledge-libraries/(?![^/\\s'"]*\\.(?:work|window\\.json)(?:[/\\s'"]|$))[^/\\s'"]+(?:/|(?=[\\s'"])|$)`;
+  const projects = join(claude, 'projects');
+  // The agent's memory dir of any project (Claude keys projects by cwd).
+  const memory = `${escapeRe(projects)}/(?!\\.\\.?/)[^/\\s'"]+/memory(?:/|(?=[\\s'"])|$)`;
+  const memoryWritable = opts.memoryWritable === true;
   return {
     home,
     allowedRoots: [
@@ -137,7 +152,7 @@ export function ownerOnlyGuard(opts: {
       ...skillTargets(join(claude, 'skills')),
       join(home, '.local', 'bin'),
     ],
-    allowPatterns: [media, libraries, knowledgeLibraries],
+    allowPatterns: [media, libraries, knowledgeLibraries, ...(memoryWritable ? [memory] : [])],
     rules: [
       { path: root, bash: 'any' },
       // Attachments the user sent land under media/ and must stay readable;
@@ -146,9 +161,12 @@ export function ownerOnlyGuard(opts: {
       { path: lc, bash: 'any', allow: [media, libraries, knowledgeLibraries] },
       // …but nothing may write into a library mirror.
       { path: lc, bash: 'write', allow: [media] },
-      ...['CLAUDE.md', 'settings.json', 'settings.local.json', 'skills', 'agents', 'scripts', 'projects'].map(
+      ...['CLAUDE.md', 'settings.json', 'settings.local.json', 'skills', 'agents', 'scripts'].map(
         (name): GuardRule => ({ path: join(claude, name), bash: 'write' }),
       ),
+      memoryWritable
+        ? { path: projects, bash: 'write', allow: [memory], fileToolsViaHook: true }
+        : { path: projects, bash: 'write' },
       // Codex's user skills (its `~/.claude/skills`) and the system skills it
       // ships, readable above.
       { path: join(home, '.agents', 'skills'), bash: 'write' },
@@ -270,7 +288,9 @@ export function claudeGuardArgs(
   // `//abs/path` is Claude's absolute-path syntax; one Edit rule covers every
   // file-editing tool.
   const deny = [
-    ...guard.rules.flatMap((r) => [`Edit(/${r.path})`, `Edit(/${r.path}/**)`]),
+    ...guard.rules
+      .filter((r) => !r.fileToolsViaHook)
+      .flatMap((r) => [`Edit(/${r.path})`, `Edit(/${r.path}/**)`]),
     ...guard.readDeny.map((p) => `Read(/${p})`),
     ...guard.deniedTools,
   ];

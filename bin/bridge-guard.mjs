@@ -594,7 +594,7 @@ function decideFile(toolName, input, cfg, cwd) {
     }
     if (WRITING_TOOLS.has(toolName)) {
       for (const rule of cfg.rules ?? []) {
-        if (within(path, rule.path)) {
+        if (fenced(path, rule)) {
           return inScope(rule.path, cfg) ? `只读目录不能改动：${rule.path}` : `这个位置不能改动：${rule.path}`;
         }
       }
