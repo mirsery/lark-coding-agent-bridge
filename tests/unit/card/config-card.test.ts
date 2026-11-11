@@ -32,6 +32,13 @@ describe('configFormCard approvals switch', () => {
   });
 });
 
+describe('configFormCard forced thread switch', () => {
+  it('shows the configured state', () => {
+    expect(findNamedSelect(configFormCard(base), 'force_reply_in_thread')?.initial_option).toBe('off');
+    expect(findNamedSelect(configFormCard({ ...base, forceReplyInThread: true }), 'force_reply_in_thread')?.initial_option).toBe('on');
+  });
+});
+
 describe('configFormCard topic-session retention', () => {
   it('shows the current month count and reports never for zero', () => {
     expect(JSON.stringify(configFormCard(base))).toContain('topic_session_retention_months');

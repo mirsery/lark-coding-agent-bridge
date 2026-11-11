@@ -61,6 +61,7 @@ describe('profile-aware account and config commands', () => {
     await h.command('/config submit', {
       message_reply: 'text',
       show_tool_calls: 'hide',
+      force_reply_in_thread: 'on',
       auto_worktree_cleanup: 'on',
       dream: 'on',
       dream_auto: 'on',
@@ -81,6 +82,7 @@ describe('profile-aware account and config commands', () => {
       messageReply: 'text',
       messageReplyMigrated: true,
       showToolCalls: false,
+      forceReplyInThread: true,
       autoWorktreeCleanup: true,
       dream: true,
       dreamAuto: true,

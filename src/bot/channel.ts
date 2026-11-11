@@ -1168,13 +1168,15 @@ async function sendNonAllowedGroupHint(
   channel: LarkChannel,
   chatId: string,
   replyToMessageId: string,
+  forceThread = false,
 ): Promise<void> {
   const text =
     '当前群尚未加入响应列表，所以 bot 不会处理消息。\n' +
     'Bot owner/管理员可在本群发 /invite group 加入白名单。';
   try {
-    await channel.send(chatId, { text }, { replyTo: replyToMessageId });
-  } catch {
+    await channel.send(chatId, { text }, { replyTo: replyToMessageId, ...(forceThread ? { replyInThread: true } : {}) });
+  } catch (err) {
+    if (forceThread) throw err;
     await channel.send(chatId, { text });
   }
 }
@@ -1202,13 +1204,15 @@ async function sendForwardFetchFailedHint(
   channel: LarkChannel,
   chatId: string,
   replyToMessageId: string,
+  forceThread = false,
 ): Promise<void> {
   const text =
     '这条合并转发的内容没能从飞书拉取到（上游超时/网络抖动，已自动重试仍失败），' +
     '所以我没收到里面的消息。麻烦稍后重新转发一次。';
   try {
-    await channel.send(chatId, { text }, { replyTo: replyToMessageId });
-  } catch {
+    await channel.send(chatId, { text }, { replyTo: replyToMessageId, ...(forceThread ? { replyInThread: true } : {}) });
+  } catch (err) {
+    if (forceThread) throw err;
     await channel.send(chatId, { text });
   }
 }
@@ -1266,7 +1270,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // the event dropped `thread_id`, backfill it from the raw message — the same
   // recovery the card-click path uses.
   let threadId = msg.threadId;
-  if (msg.chatType !== 'p2p' && !threadId && resolvedMode === 'topic') {
+  if (!threadId && ((msg.chatType !== 'p2p' && resolvedMode === 'topic') || controls.profileConfig.preferences.forceReplyInThread)) {
     threadId = await lookupMessageThreadId(channel, msg.messageId);
     if (threadId) {
       log.info('intake', 'thread-id-backfilled', {
@@ -1279,11 +1283,11 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // Carry the (possibly backfilled) threadId on the message so the batched
   // flush — which reads `firstMsg.threadId` for reply routing and topic scope —
   // sees it.
-  const emsg: NormalizedMessage = threadId === msg.threadId ? msg : { ...msg, threadId };
+  let emsg: NormalizedMessage = threadId === msg.threadId ? msg : { ...msg, threadId };
   // Some groups are converted into topic groups after creation. In that state
   // getChatMode can lag behind the message event shape, so threadId is the
   // stronger signal for topic-scoped sessions and reply routing.
-  const chatMode = msg.chatType === 'p2p' ? 'p2p' : threadId ? 'topic' : resolvedMode;
+  let chatMode = msg.chatType === 'p2p' ? 'p2p' : threadId ? 'topic' : resolvedMode;
   if (msg.chatType !== 'p2p' && threadId && resolvedMode !== 'topic') {
     chatModeCache.invalidate(msg.chatId);
     logThreadModeOverride({
@@ -1292,7 +1296,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
       threadId,
     });
   }
-  const scope = threadId && (chatMode === 'topic' || msg.chatType === 'p2p')
+  let scope = threadId && (chatMode === 'topic' || msg.chatType === 'p2p')
     ? `${msg.chatId}:${threadId}`
     : msg.chatId;
   log.info('intake', 'enter', {
@@ -1322,7 +1326,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
       reason: accessDecision.reason,
     });
     if (msg.chatType !== 'p2p' && accessDecision.reason === 'denied-chat' && msg.mentionedBot) {
-      void sendNonAllowedGroupHint(channel, msg.chatId, msg.messageId).catch((err) =>
+      void sendNonAllowedGroupHint(channel, msg.chatId, msg.messageId, controls.profileConfig.preferences.forceReplyInThread === true).catch((err) =>
         log.warn('intake', 'non-allowed-hint-failed', { err: String(err) }),
       );
     }
@@ -1362,10 +1366,31 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
       msgId: emsg.messageId,
       chatType: emsg.chatType,
     });
-    await sendForwardFetchFailedHint(channel, emsg.chatId, emsg.messageId).catch((err) =>
+    await sendForwardFetchFailedHint(channel, emsg.chatId, emsg.messageId, controls.profileConfig.preferences.forceReplyInThread === true).catch((err) =>
       log.warn('intake', 'forward-fetch-failed-hint-failed', { err: String(err) }),
     );
     return;
+  }
+
+  // Create the thread before choosing the run scope. This ensures the first
+  // turn, its callbacks and later replies all use the same persistent scope.
+  if (controls.profileConfig.preferences.forceReplyInThread && !threadId) {
+    const anchor = await channel.send(msg.chatId, { text: '已收到，请在此话题中继续。' }, {
+      replyTo: msg.messageId,
+      replyInThread: true,
+    });
+    for (let attempt = 0; attempt < 3 && !threadId; attempt++) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 200));
+      threadId = await lookupMessageThreadId(channel, anchor.messageId);
+    }
+    if (!threadId) {
+      log.warn('intake', 'thread-id-unavailable', { chatId: msg.chatId, msgId: msg.messageId });
+      await channel.editMessage(anchor.messageId, '无法确认话题，暂未执行。请重试。').catch(() => {});
+      return;
+    }
+    emsg = { ...emsg, threadId };
+    chatMode = msg.chatType === 'p2p' ? 'p2p' : 'topic';
+    scope = `${msg.chatId}:${threadId}`;
   }
 
   const handled = await tryHandleCommand({
@@ -1575,7 +1600,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           cooldownMinutes: overload.cooldownMinutes,
         });
         await channel
-          .send(chatId, { card }, { replyTo: lastMsg.messageId, ...(mode === 'topic' && threadId ? { replyInThread: true } : {}) })
+          .send(chatId, { card }, { replyTo: lastMsg.messageId, ...(controls.profileConfig.preferences.forceReplyInThread || (mode === 'topic' && threadId) ? { replyInThread: true } : {}) })
           .catch((err: unknown) => log.fail('overload', err, { step: 'send-card' }));
       }
       return;
@@ -1772,7 +1797,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // topic discussion breaks visually.
   const sendOpts = {
     replyTo: lastMsg.messageId,
-    ...(mode === 'topic' && threadId ? { replyInThread: true } : {}),
+    ...(controls.profileConfig.preferences.forceReplyInThread || (mode === 'topic' && threadId) ? { replyInThread: true } : {}),
   };
   log.info('flush', 'reply-target', {
     scope,

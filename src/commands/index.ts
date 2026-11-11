@@ -523,7 +523,7 @@ async function reply(ctx: CommandContext, markdown: string): Promise<void> {
 function commandReplyOptions(ctx: CommandContext): { replyTo: string; replyInThread?: true } {
   return {
     replyTo: ctx.msg.messageId,
-    ...(ctx.chatMode === 'topic' && ctx.msg.threadId ? { replyInThread: true as const } : {}),
+    ...(ctx.controls.profileConfig.preferences.forceReplyInThread || (ctx.chatMode === 'topic' && ctx.msg.threadId) ? { replyInThread: true as const } : {}),
   };
 }
 
@@ -4082,6 +4082,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     effort: getEffort(ctx.controls.cfg),
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
+    forceReplyInThread: ctx.controls.profileConfig.preferences.forceReplyInThread === true,
     cotMessages: getCotMessages(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
@@ -4140,6 +4141,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     rawReply === 'markdown' || rawReply === 'text' || rawReply === 'card'
       ? (rawReply as MessageReplyMode)
       : getMessageReplyMode(ctx.controls.cfg);
+  const forceReplyInThread = fv.force_reply_in_thread === 'on' ? true : fv.force_reply_in_thread === 'off' ? false : ctx.controls.profileConfig.preferences.forceReplyInThread === true;
   const rawTools = String(fv.show_tool_calls ?? '').trim();
   const showToolCalls = rawTools !== 'hide';
   // Parse the model picker. Unexpected / empty values keep the current
@@ -4274,6 +4276,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       // markdown card. Set unconditionally on every submit so a user who
       // explicitly picks any option gets out of the legacy-coerce path.
       messageReplyMigrated: true,
+      forceReplyInThread,
       showToolCalls,
       cotMessages,
       maxConcurrentRuns,
@@ -4362,6 +4365,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         effort,
         messageReply,
         showToolCalls,
+        forceReplyInThread,
         cotMessages,
         maxConcurrentRuns,
         runIdleTimeoutMinutes,

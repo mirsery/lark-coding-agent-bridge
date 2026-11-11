@@ -86,6 +86,7 @@ export function ConfigView({ profile }: { profile: string }) {
         effort: cfg.effort,
         messageReply: cfg.messageReply,
         showToolCalls: cfg.showToolCalls,
+        forceReplyInThread: cfg.forceReplyInThread,
         smartSession: cfg.smartSession,
         topicSessionRetentionMonths: cfg.topicSessionRetentionMonths,
         autoWorktreeCleanup: cfg.autoWorktreeCleanup,
@@ -167,6 +168,8 @@ export function ConfigView({ profile }: { profile: string }) {
             <SelectRow value={cfg.messageReply} onChange={(v) => set("messageReply", v as ConfigData["messageReply"])}
               options={[["markdown", "消息卡片（默认）"], ["text", "纯文本"], ["card", "交互卡片"]]} />
           </Field>
+          <ToggleRow label="强制话题回复" hint="群聊和私聊的新请求在独立话题中处理。" checked={cfg.forceReplyInThread}
+            onChange={(v) => set("forceReplyInThread", v)} />
           <ToggleRow label="工具调用显示" hint="显示 bot 执行的命令与文件读写过程" checked={cfg.showToolCalls}
             onChange={(v) => set("showToolCalls", v)} />
           <ToggleRow label="会话智能压缩" hint="空闲超 1 小时且上下文超 15 万 token，或空闲超 8 小时，下次消息自动开新会话；任务完成时可自动收尾，长会话提前压缩。旧会话可用 /resume 找回；后台任务运行中、进程保留期间或引用回复时不切换。阈值可在配置文件中调整。"

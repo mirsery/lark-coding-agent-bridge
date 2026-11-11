@@ -887,6 +887,12 @@ Thresholds are tunable in the config file (the profile's `preferences`; restart 
 }
 ```
 
+### Forced thread replies (off by default)
+
+Enable **强制话题回复** in `/config` or the web console to start a thread for new group and private requests. Existing threads are reused. The bridge sends a short acknowledgement to create and identify the thread before running the request; if the thread cannot be identified, it stops and asks for a retry. Messages sent directly by an agent through external tools do not pass through this routing.
+
+The profile setting `preferences.forceReplyInThread` can also be edited directly; restart that profile after editing its configuration file.
+
 ### Topic session retention (3 months by default)
 
 The bridge checks topic/thread sessions on startup and once an hour. An inactive topic expires after 3 host-local calendar months by default (for example, January 31 plus one month is February 28 or 29). Activity is refreshed on every accepted turn, including turns sent through a process kept alive between messages. Active runs, submissions waiting for capacity, queued messages, kept processes, and scheduled automatic resumes are protected.

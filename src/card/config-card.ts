@@ -15,6 +15,7 @@ export interface ConfigFormOpts {
   effort: EffortLevel | undefined;
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
+  forceReplyInThread?: boolean;
   cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
   /** 0 means "disabled". */
@@ -328,6 +329,15 @@ export function configFormCard(opts: ConfigFormOpts): object {
                   { text: { tag: 'plain_text', content: '交互卡片' }, value: 'card' },
                 ],
               },
+              { tag: 'markdown', content: '**强制话题回复**\n<font color="grey">群聊和私聊的新请求在独立话题中处理</font>' },
+              {
+                tag: 'select_static', name: 'force_reply_in_thread',
+                initial_option: opts.forceReplyInThread ? 'on' : 'off',
+                options: [
+                  { text: { tag: 'plain_text', content: '关闭（默认）' }, value: 'off' },
+                  { text: { tag: 'plain_text', content: '开启' }, value: 'on' },
+                ],
+              },
               {
                 tag: 'markdown',
                 content:
@@ -598,6 +608,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
         kvBlock('⚙️ **运行与权限**', [
           ['并发上限', String(opts.maxConcurrentRuns)],
           ['run 探活', opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'],
+          ['强制话题回复', opts.forceReplyInThread ? '开启' : '关闭'],
           ['话题会话保留', opts.topicSessionRetentionMonths === 0 ? '永不' : `${opts.topicSessionRetentionMonths} 个月`],
           ['群里需要 @ bot', opts.requireMentionInGroup ? '是' : '否'],
           ['非管理员审批', opts.approvalsEnabled ? '开' : '关'],

@@ -62,6 +62,7 @@ interface FakeLarkChannel {
   listChats: ReturnType<typeof vi.fn>;
   fetchRawMessage: ReturnType<typeof vi.fn>;
   recallMessage: ReturnType<typeof vi.fn>;
+  editMessage: ReturnType<typeof vi.fn>;
   on(handlers: MessageHandlerMap): void;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
@@ -82,6 +83,59 @@ afterEach(async () => {
 });
 
 describe('topic message quote handling', () => {
+  it.each(['group', 'p2p'] as const)('starts a thread for a flat %s message when enabled', async (chatType) => {
+    const h = await createHarness({ chatMode: 'group', rawThreadIds: { om_sent_1: 'omt_new' }, agentEvents: [
+      { type: 'text', delta: '好的' },
+      { type: 'done', terminationReason: 'normal' },
+    ] });
+    h.profileConfig.preferences.forceReplyInThread = true;
+    await startTestBridge(h);
+    await h.channel.handlers.message?.({
+      ...message({ messageId: 'om_new', rootId: 'om_new', parentId: 'om_new', content: '@Bridge 你好' }),
+      chatType,
+    });
+    await waitFor(() => h.channel.streams.length === 1);
+    expect(h.channel.sent[0]?.content).toEqual({ text: '已收到，请在此话题中继续。' });
+    expect(h.channel.streams[0]?.options).toMatchObject({ replyTo: 'om_new', replyInThread: true });
+  });
+
+  it('stops safely when the new thread cannot be identified', async () => {
+    const h = await createHarness({ chatMode: 'group' });
+    h.profileConfig.preferences.forceReplyInThread = true;
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message({ messageId: 'om_fail', rootId: 'om_fail', parentId: 'om_fail', content: '@Bridge 你好' }));
+    expect(h.agent.runOptions).toHaveLength(0);
+    expect(h.channel.editMessage).toHaveBeenCalledWith('om_sent_1', expect.stringContaining('暂未执行'));
+  });
+
+  it('reuses an existing private thread without creating another', async () => {
+    const h = await createHarness({ chatMode: 'group', agentEvents: [
+      { type: 'text', delta: '好的' }, { type: 'done', terminationReason: 'normal' },
+    ] });
+    h.profileConfig.preferences.forceReplyInThread = true;
+    await startTestBridge(h);
+    await h.channel.handlers.message?.({ ...message({ messageId: 'om_existing', rootId: 'om_root', parentId: 'om_root', threadId: 'omt_existing', content: '继续' }), chatType: 'p2p' });
+    await waitFor(() => h.channel.streams.length === 1);
+    expect(h.channel.sent).toHaveLength(0);
+    expect(h.channel.streams[0]?.options).toMatchObject({ replyInThread: true });
+  });
+
+  it.each(['group', 'p2p'] as const)('resumes the initial %s run inside the new thread', async (chatType) => {
+    const h = await createHarness({ chatMode: 'group', rawThreadIds: { om_sent_1: 'omt_new' } });
+    h.profileConfig.preferences.forceReplyInThread = true;
+    h.agent.setEvents([
+      [{ type: 'system', sessionId: 'sess_new' }, { type: 'text', delta: '好' }, { type: 'done', sessionId: 'sess_new', terminationReason: 'normal' }],
+      [{ type: 'text', delta: '继续' }, { type: 'done', sessionId: 'sess_new', terminationReason: 'normal' }],
+    ]);
+    await startTestBridge(h);
+    await h.channel.handlers.message?.({ ...message({ messageId: 'om_start', rootId: 'om_start', parentId: 'om_start', content: '@Bridge 开始' }), chatType });
+    await waitFor(() => h.sessions.getRaw('oc_topic_chat:omt_new')?.sessionId === 'sess_new');
+    await h.channel.handlers.message?.({ ...message({ messageId: 'om_next', rootId: 'om_start', parentId: 'om_start', threadId: 'omt_new', content: '@Bridge 继续' }), chatType });
+    await waitFor(() => h.agent.runOptions.length === 2);
+    expect(h.agent.runOptions[1]?.sessionId).toBe('sess_new');
+    expect(h.channel.sent).toHaveLength(1);
+  });
+
   it('runs separate private threads concurrently while retaining private chat mode', async () => {
     const h = await createHarness({ chatMode: 'group', pause: true, agentEvents: [
       { type: 'text', delta: '进行中' },
@@ -895,6 +949,7 @@ function createFakeLarkChannel(options: {
       return { messageId: `om_stream_${streams.length}` };
     },
     recallMessage: vi.fn(async () => {}),
+    editMessage: vi.fn(async () => {}),
   };
 }
 

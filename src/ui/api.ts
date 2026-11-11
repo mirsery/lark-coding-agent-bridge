@@ -72,6 +72,7 @@ export interface ConfigView {
   effortHint: string;
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
+  forceReplyInThread: boolean;
   smartSession: boolean;
   topicSessionRetentionMonths: number;
   autoWorktreeCleanup: boolean;
@@ -114,6 +115,7 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
     effortHint: agentDescriptor(agentKind).effortDefaultHint,
     messageReply: getMessageReplyMode(state.cfg),
     showToolCalls: getShowToolCalls(state.cfg),
+    forceReplyInThread: state.profileConfig.preferences.forceReplyInThread === true,
     smartSession: Boolean(getSmartSession(state.cfg)),
     topicSessionRetentionMonths: getTopicSessionRetentionMonths(state.cfg),
     autoWorktreeCleanup: getWorktreeCleanupIdleDays(state.cfg) !== undefined,
@@ -330,6 +332,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       effort,
       messageReply,
       messageReplyMigrated: true,
+      forceReplyInThread: typeof fv.forceReplyInThread === 'boolean' ? fv.forceReplyInThread : state.profileConfig.preferences.forceReplyInThread === true,
       showToolCalls,
       smartSession,
       topicSessionRetentionMonths: topicSessionRetentionMonths as number,

@@ -53,6 +53,7 @@ export interface ConfigView {
   effortHint: string;
   messageReply: MessageReply;
   showToolCalls: boolean;
+  forceReplyInThread: boolean;
   smartSession: boolean;
   topicSessionRetentionMonths: number;
   autoWorktreeCleanup: boolean;

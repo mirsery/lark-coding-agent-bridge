@@ -227,6 +227,13 @@ describe('ui server (supervisor-backed)', () => {
     expect(saved.profiles.claude.mode).toBe('team');
   });
 
+  it('persists the forced thread reply setting', async () => {
+    const url = '/api/config?profile=claude';
+    expect((await json(await get(url, handle.token))).forceReplyInThread).toBe(false);
+    expect((await json(await post(url, handle.token, { forceReplyInThread: true }))).forceReplyInThread).toBe(true);
+    expect((await loadRootConfig(configPath))!.profiles.claude!.preferences.forceReplyInThread).toBe(true);
+  });
+
   it('round-trips topic-session retention and rejects invalid values', async () => {
     const url = '/api/config?profile=claude';
     expect((await json(await get(url, handle.token))).topicSessionRetentionMonths).toBe(3);
