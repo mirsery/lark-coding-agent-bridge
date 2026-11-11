@@ -111,6 +111,8 @@ export interface AppAccess {
 }
 
 export interface AppPreferences {
+  /** Force IM replies into a thread in group and private chats. Default false. */
+  forceReplyInThread?: boolean;
   /** Reply rendering mode for IM (group/p2p) messages. Default 'card'. */
   messageReply?: MessageReplyMode;
   /**

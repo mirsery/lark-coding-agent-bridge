@@ -543,9 +543,13 @@ function normalizePreferences(
     access: _access,
     requireMentionInGroup: _mention,
     messageReply,
+    forceReplyInThread,
     topicSessionRetentionMonths,
     ...rest
   } = preferences ?? {};
+  if (forceReplyInThread !== undefined && typeof forceReplyInThread !== 'boolean') {
+    throw new Error('preferences.forceReplyInThread must be a boolean');
+  }
   if (
     topicSessionRetentionMonths !== undefined &&
     (!Number.isSafeInteger(topicSessionRetentionMonths) || topicSessionRetentionMonths < 0)
@@ -554,6 +558,7 @@ function normalizePreferences(
   }
   return {
     ...rest,
+    ...(forceReplyInThread !== undefined ? { forceReplyInThread } : {}),
     ...(topicSessionRetentionMonths !== undefined ? { topicSessionRetentionMonths } : {}),
     ...(messageReply !== undefined && isMessageReply(messageReply) ? { messageReply } : {}),
   };

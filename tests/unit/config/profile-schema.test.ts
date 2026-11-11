@@ -16,6 +16,16 @@ const app = {
 };
 
 describe('profile schema', () => {
+  it('validates the opt-in thread reply preference', () => {
+    const make = (value: unknown) => normalizeProfileConfig({
+      schemaVersion: 2, agentKind: 'claude', accounts: { app },
+      preferences: { forceReplyInThread: value },
+    });
+    expect(make(true).preferences.forceReplyInThread).toBe(true);
+    expect(make(false).preferences.forceReplyInThread).toBe(false);
+    expect(() => make('true')).toThrow('preferences.forceReplyInThread');
+  });
+
   it('defaults Claude sandbox to danger-full-access through canonical permissions', () => {
     const cfg = createDefaultProfileConfig({
       agentKind: 'claude',
