@@ -267,7 +267,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
 }
 
 /** A separate page keeps the board usable even when the host dashboard is full. */
-export function renderCodingBoard(s: MonitorSnapshot, columns = 110, rows = 36): string {
+export function renderCodingBoard(s: MonitorSnapshot, columns = 110, rows = 36, offset = 0): string {
   const w = Math.max(1, columns - 1), h = Math.max(1, rows - 1);
   const board = s.codingBoard;
   const lines = ['CODING  /  任务看板', `更新 ${board ? new Date(board.observedAt).toLocaleTimeString() : '未知'}`, ''];
@@ -282,6 +282,6 @@ export function renderCodingBoard(s: MonitorSnapshot, columns = 110, rows = 36):
     for (const git of task.git) lines.push(`  ${git.path}  ${git.status ? `${git.status.branch ?? 'detached'} ${git.status.head ?? '—'} · ${git.status.upstream ? `↑${git.status.upstream.ahead} ↓${git.status.upstream.behind}` : '无上游'}` : 'Git 未知'}`);
     lines.push('');
   }
-  const footer = 'b 返回运行概览 · r 刷新 · 空格暂停 · q 退出';
-  return [...lines.slice(0, Math.max(0, h - 1)), footer].map(x => fit(x, w)).join('\n');
+  const footer = 'j/k 滚动 · b 返回 · r 刷新 · q 退出';
+  return [...lines.slice(Math.max(0, offset), Math.max(0, offset) + Math.max(0, h - 1)), footer].map(x => fit(x, w)).join('\n');
 }
