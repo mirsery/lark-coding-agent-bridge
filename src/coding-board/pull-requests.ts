@@ -5,7 +5,7 @@ export interface BoardPr {
   repository: string; number: number; observedAt?: number;
   state: 'loading' | 'unavailable' | 'open' | 'closed' | 'merged';
   head?: string; url?: string; review?: string;
-  checks?: { passed: number; failed: number; pending: number };
+  checks?: { passed: number; failed: number; pending: number; skipped: number };
 }
 type PrRef = { repository: string; number: number };
 type Query = (ref: PrRef, now: number) => Promise<BoardPr>;
@@ -17,15 +17,21 @@ export async function queryBoardPr(ref: PrRef, now: number): Promise<BoardPr> {
   try {
     const data = JSON.parse(result.stdout) as { state?: string; headRefOid?: string; url?: string; reviewDecision?: string; statusCheckRollup?: Array<{ status?: string; conclusion?: string; state?: string }> };
     if (!['OPEN', 'CLOSED', 'MERGED'].includes(data.state ?? '') || !data.headRefOid) throw new Error('invalid response');
-    const checks = { passed: 0, failed: 0, pending: 0 };
-    for (const c of data.statusCheckRollup ?? []) {
-      const conclusion = c.conclusion ?? c.state;
-      if (conclusion === 'SUCCESS' || conclusion === 'NEUTRAL' || conclusion === 'SKIPPED') checks.passed++;
-      else if (conclusion && ['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STALE'].includes(conclusion)) checks.failed++;
-      else checks.pending++;
-    }
+    const checks = data.statusCheckRollup === undefined ? undefined : countChecks(data.statusCheckRollup);
     return { ...ref, state: data.state!.toLowerCase() as 'open' | 'closed' | 'merged', head: data.headRefOid, url: data.url, review: data.reviewDecision, checks, observedAt: now };
   } catch { return { ...ref, state: 'unavailable', observedAt: now }; }
+}
+
+export function countChecks(items: Array<{ status?: string; conclusion?: string; state?: string }>) {
+  const checks = { passed: 0, failed: 0, pending: 0, skipped: 0 };
+  for (const c of items) {
+    const conclusion = c.conclusion ?? c.state;
+    if (conclusion === 'SUCCESS') checks.passed++;
+    else if (conclusion === 'NEUTRAL' || conclusion === 'SKIPPED') checks.skipped++;
+    else if (conclusion && ['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STALE'].includes(conclusion)) checks.failed++;
+    else checks.pending++;
+  }
+  return checks;
 }
 
 /** Nonblocking, bounded refresh. Cached entries retain their observation time. */

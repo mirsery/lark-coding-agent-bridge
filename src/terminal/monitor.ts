@@ -278,7 +278,7 @@ export function renderCodingBoard(s: MonitorSnapshot, columns = 110, rows = 36, 
     lines.push(`  阶段：未知 · 构建：未知 · PR：${task.prs.length ? task.prs.map(p => `${p.repository}#${p.number}`).join(', ') : '未关联'}`);
     for (const gate of (task.gates ?? []).slice(-3)) lines.push(`  门禁记录：${gate.finishedAt ? gate.exitCode === 0 ? '命令成功' : '命令失败' : '未完成/未知'} · ${gate.head.slice(0, 8)} · ${gate.dirty || gate.endDirty !== false || gate.endHead !== gate.head ? '工作区变化或未知' : '工作区干净'}`);
     for (const item of task.queue.entries) lines.push(`  构建队列：${item.state === 'running' ? '持锁中' : `排队 #${item.position}`} · 结果未知`);
-    for (const pr of task.pullRequests) lines.push(`  PR ${pr.repository}#${pr.number} · ${pr.state} · 检查 ${pr.checks ? `${pr.checks.passed}通过/${pr.checks.failed}失败/${pr.checks.pending}等待` : '未知'} · ${pr.head && task.git.some(g => g.status?.head && pr.head!.startsWith(g.status.head)) ? 'HEAD 匹配' : 'HEAD 未确认'}`);
+    for (const pr of task.pullRequests) lines.push(`  PR ${pr.repository}#${pr.number} · ${pr.state} · 检查 ${pr.checks ? `${pr.checks.passed}通过/${pr.checks.failed}失败/${pr.checks.pending}等待/${pr.checks.skipped}跳过` : '未知'} · ${pr.head && task.git.some(g => g.status?.head && pr.head!.startsWith(g.status.head)) ? 'HEAD 匹配' : 'HEAD 未确认'}`);
     for (const run of task.runStates) lines.push(`  会话 ${run.profile}: ${run.state === 'running' ? '运行中' : run.state === 'orphan' ? '记录已过期' : '未知'}`);
     for (const git of task.git) lines.push(`  ${git.path}  ${git.status ? `${git.status.branch ?? 'detached'} ${git.status.head ?? '—'} · ${git.status.upstream ? `↑${git.status.upstream.ahead} ↓${git.status.upstream.behind}` : '无上游'}` : 'Git 未知'}`);
     lines.push('');

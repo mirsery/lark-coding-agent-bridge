@@ -13,3 +13,8 @@ it('does not block the board while fetching and retains the observation time', a
   await vi.waitFor(() => expect(read([ref], 300)[0]?.state).toBe('open'));
   expect(read([ref], 300)[0]?.observedAt).toBe(100);
 });
+
+it('does not count skipped or unfinished checks as passing', async () => {
+  const { countChecks } = await import('../../../src/coding-board/pull-requests');
+  expect(countChecks([{ conclusion: 'SUCCESS' }, { conclusion: 'SKIPPED' }, { status: 'IN_PROGRESS' }, { conclusion: 'FAILURE' }])).toEqual({ passed: 1, skipped: 1, pending: 1, failed: 1 });
+});

@@ -20,6 +20,9 @@ it('records exit status and both revisions, and rejects unlinked worktrees', asy
     const gate = (await readTasks(file))[0]?.gates?.[0];
     expect(gate).toMatchObject({ exitCode: 7, dirty: false, endDirty: false });
     expect(gate?.endHead).toBe(gate?.head);
+    expect(await runRecordedGate(file, task.id, repo, [process.execPath, '-e', "process.kill(process.pid, 'SIGTERM')"])).toBe(1);
+    const interrupted = (await readTasks(file))[0]?.gates?.[1];
+    expect(interrupted).toMatchObject({ exitCode: null, signal: 'SIGTERM' });
     await expect(runRecordedGate(file, task.id, dir, [process.execPath])).rejects.toThrow();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
