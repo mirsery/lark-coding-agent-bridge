@@ -89,7 +89,7 @@ export function createMonitorReader(intervalMs = 10_000) {
       }).sort((a, b) => Number(a.orphan) - Number(b.orphan) || a.startedAt - b.startedAt) };
   }));
   const metrics = await sampleHost(now);
-  const codingBoard = await readCodingBoard(rootDir, now);
+  const codingBoard = await readCodingBoard(rootDir, now, bots);
   return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics, codingBoard };
   };
 }

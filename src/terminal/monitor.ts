@@ -276,6 +276,7 @@ export function renderCodingBoard(s: MonitorSnapshot, columns = 110, rows = 36):
   else for (const task of board.tasks) {
     lines.push(`${task.jira ?? '无 Jira'}  ${task.title}`);
     lines.push(`  阶段：未知 · 构建：未知 · PR：${task.prs.length ? task.prs.map(p => `${p.repository}#${p.number}`).join(', ') : '未关联'}`);
+    for (const run of task.runStates) lines.push(`  会话 ${run.profile}: ${run.state === 'running' ? '运行中' : run.state === 'orphan' ? '记录已过期' : '未知'}`);
     for (const git of task.git) lines.push(`  ${git.path}  ${git.status ? `${git.status.branch ?? 'detached'} ${git.status.head ?? '—'} · ${git.status.upstream ? `↑${git.status.upstream.ahead} ↓${git.status.upstream.behind}` : '无上游'}` : 'Git 未知'}`);
     lines.push('');
   }
