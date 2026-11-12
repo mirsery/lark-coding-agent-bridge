@@ -274,7 +274,7 @@ export function renderCodingBoard(s: MonitorSnapshot, columns = 110, rows = 36, 
   if (board?.error) lines.push(board.error);
   else if (!board?.tasks.length) lines.push('暂无已登记任务；使用 coding-board add 登记。');
   else for (const task of board.tasks) {
-    lines.push(`${task.jira ?? '无 Jira'}  ${task.title}`);
+    lines.push(`${task.jira ?? '无 Jira'}  ${task.title}${task.jira ? ' · Jira 状态未知' : ''}`);
     lines.push(`  阶段：未知 · 构建：未知 · PR：${task.prs.length ? task.prs.map(p => `${p.repository}#${p.number}`).join(', ') : '未关联'}`);
     for (const gate of (task.gates ?? []).slice(-3)) lines.push(`  门禁记录：${gate.finishedAt ? gate.exitCode === 0 ? '命令成功' : '命令失败' : '未完成/未知'} · ${gate.head.slice(0, 8)} · ${gate.dirty || gate.endDirty !== false || gate.endHead !== gate.head ? '工作区变化或未知' : '工作区干净'}`);
     for (const item of task.queue.entries) lines.push(`  构建队列：${item.state === 'running' ? '持锁中' : `排队 #${item.position}`} · 结果未知`);
@@ -284,5 +284,6 @@ export function renderCodingBoard(s: MonitorSnapshot, columns = 110, rows = 36, 
     lines.push('');
   }
   const footer = 'j/k 滚动 · b 返回 · r 刷新 · q 退出';
-  return [...lines.slice(Math.max(0, offset), Math.max(0, offset) + Math.max(0, h - 1)), footer].map(x => fit(x, w)).join('\n');
+  const start = Math.min(Math.max(0, offset), Math.max(0, lines.length - Math.max(0, h - 1)));
+  return [...lines.slice(start, start + Math.max(0, h - 1)), footer].map(x => fit(x, w)).join('\n');
 }

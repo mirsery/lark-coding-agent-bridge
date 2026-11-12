@@ -15,3 +15,13 @@ it('retains tasks after a run disappears and reports unavailable worktrees', asy
     expect(board.tasks[0]).toMatchObject({ title: 'unfinished', runStates: [{ state: 'unknown' }], git: [{ error: '无法读取 Git 状态' }] });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+it('preserves an explicit store error instead of pretending the board is empty', async () => {
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'board-invalid-'));
+  try {
+    await mkdir(join(root, 'coding-board'));
+    await writeFile(join(root, 'coding-board', 'tasks.json'), '{');
+    expect(await readCodingBoard(root, 123)).toMatchObject({ tasks: [], error: '任务登记无法读取' });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
