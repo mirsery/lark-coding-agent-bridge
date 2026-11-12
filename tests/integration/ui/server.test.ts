@@ -423,6 +423,13 @@ describe('ui server (supervisor-backed)', () => {
     expect((await get('/api/monitor')).status).toBe(401);
   });
 
+  it('exposes the shared coding board only to an authenticated client', async () => {
+    snapshot.codingBoard = { observedAt: 123, tasks: [{ id: 'task1', title: 'Example', jira: 'ABC-1', createdAt: 1, updatedAt: 1, archived: false, worktrees: [], runs: [], prs: [], git: [], runStates: [], pullRequests: [], queue: { observedAt: 123, state: 'available', entries: [] }, phase: '未知' }] };
+    expect((await get('/api/monitor')).status).toBe(401);
+    const result = await json(await get('/api/monitor', handle.token));
+    expect(result.codingBoard).toMatchObject({ observedAt: 123, tasks: [{ id: 'task1', jira: 'ABC-1', phase: '未知' }] });
+  });
+
   it('stops a hosted run and rejects stop for a non-hosted profile', async () => {
     const interrupted: string[] = [];
     online.get('claude').runsMonitor = {

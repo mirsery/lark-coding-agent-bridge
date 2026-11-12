@@ -34,3 +34,13 @@ it('derives phase only from observed queue or PR facts', async () => {
   expect(derivePhase(queue, [{ ...pr, state: 'unavailable' }], 2)).toBe('未知');
   expect(derivePhase({ ...queue, entries: [{ path: '/x', state: 'waiting', position: 1 }] }, [pr], 2)).toBe('构建排队');
 });
+
+it('renders a shared task and confines output to a small terminal', async () => {
+  const { renderCodingBoard } = await import('../../../src/terminal/monitor');
+  const base = { id: 'x', title: '修复消息', jira: 'ABC-1', createdAt: 1, updatedAt: 1, archived: false, worktrees: [], runs: [], prs: [], git: [], runStates: [], pullRequests: [], queue: { observedAt: 1, state: 'available' as const, entries: [] }, phase: '未知' as const };
+  const output = renderCodingBoard({ now: 1, host: 'host', cores: 1, load: 0, bots: [], codingBoard: { observedAt: 1, tasks: [base] } }, 60, 12);
+  expect(output).toContain('ABC-1');
+  expect(output).toContain('修复消息');
+  expect(output).toContain('Jira 状态未知');
+  expect(output.split('\n').length).toBeLessThan(12);
+});
