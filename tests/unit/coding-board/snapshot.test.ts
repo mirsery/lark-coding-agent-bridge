@@ -25,3 +25,12 @@ it('preserves an explicit store error instead of pretending the board is empty',
     expect(await readCodingBoard(root, 123)).toMatchObject({ tasks: [], error: '任务登记无法读取' });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+it('derives phase only from observed queue or PR facts', async () => {
+  const { derivePhase } = await import('../../../src/coding-board/snapshot');
+  const queue = { observedAt: 1, state: 'available' as const, entries: [] };
+  const pr = { repository: 'org/repo', number: 1, observedAt: 1, state: 'open' as const, checks: { passed: 0, failed: 1, pending: 0, skipped: 0 } };
+  expect(derivePhase(queue, [pr], 2)).toBe('检查失败');
+  expect(derivePhase(queue, [{ ...pr, state: 'unavailable' }], 2)).toBe('未知');
+  expect(derivePhase({ ...queue, entries: [{ path: '/x', state: 'waiting', position: 1 }] }, [pr], 2)).toBe('构建排队');
+});
