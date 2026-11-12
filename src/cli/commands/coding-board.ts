@@ -40,7 +40,7 @@ export function worktreeCandidates(trees: WorktreeEntry[], registered: string[])
 
 export async function boardGate(id: string, command: string[], opts: { worktree: string }): Promise<void> {
   const { runRecordedGate } = await import('../../coding-board/gate');
-  process.exitCode = await runRecordedGate(file(), id, resolve(opts.worktree), command);
+  process.exitCode = await runRecordedGate(file(), id, resolve(opts.worktree), normalizeGateCommand(command));
 }
 
 export function registerCodingBoard(program: Command): void {
@@ -50,4 +50,8 @@ export function registerCodingBoard(program: Command): void {
   board.command('link <id>').option('--worktree <path>').option('--run <profile:scope>').option('--pr <owner/repo#number>').option('--archive').option('--unarchive').action(boardLink);
   board.command('gate <id> <command...>').requiredOption('--worktree <path>').passThroughOptions().description('Run and record a gate for an explicitly linked worktree').action(boardGate);
   board.command('discover <repository>').description('List unregistered worktrees as unconfirmed candidates').action(boardDiscover);
+}
+
+export function normalizeGateCommand(command: string[]): string[] {
+  return command[0] === '--' ? command.slice(1) : command;
 }
