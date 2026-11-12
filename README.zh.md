@@ -1029,9 +1029,11 @@ export default createAdapter;
 ```bash
 lark-channel-bridge coding-board add '任务描述' --jira ANTELOPE-1234 --worktree /path/to/worktree
 lark-channel-bridge coding-board list
+lark-channel-bridge coding-board discover /path/to/repository
+lark-channel-bridge coding-board gate --worktree /path/to/worktree <任务ID> -- mvnd test
 lark-channel-bridge coding-board link <任务ID> --pr 'owner/repo#123'
 lark-channel-bridge coding-board link <任务ID> --run 'profile:scope'
 lark-channel-bridge coding-board link <任务ID> --archive
 ```
 
-可重复关联多个 worktree、PR 和会话；`--unarchive` 恢复归档任务。Git 的 ahead/behind 使用本地上游引用，不表示实时远端。构建队列只观察兼容的本机队列快照，不保存构建结果；PR 检查按 GitHub 返回的 head 展示，采集时间及 head 匹配情况同时显示。未关联或读取不到的状态显示未知，不以会话结束推断任务完成。
+可重复关联多个 worktree、PR 和会话；`--unarchive` 恢复归档任务。Git 的 ahead/behind 使用本地上游引用，不表示实时远端。构建队列只观察兼容的本机队列快照；使用 `coding-board gate` 显式运行的命令会记录退出状态、开始和结束时的提交及工作区状态，中断或状态不明不会当作成功；PR 检查按 GitHub 返回的 head 展示，采集时间及 head 匹配情况同时显示。未关联或读取不到的状态显示未知，不以会话结束推断任务完成。

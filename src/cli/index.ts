@@ -1,5 +1,5 @@
 import { runMonitor } from './commands/monitor';
-import { boardAdd, boardList, boardLink, boardDiscover } from './commands/coding-board';
+import { boardAdd, boardList, boardLink, boardDiscover, boardGate } from './commands/coding-board';
 import { Command } from 'commander';
 import pkg from '../../package.json';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
@@ -87,6 +87,7 @@ program
 const codingBoard = program.command('coding-board').description('Manage local coding task associations');
 codingBoard.command('add <title>').option('--jira <key>').option('--worktree <path...>').action(boardAdd);
 codingBoard.command('list').action(boardList);
+codingBoard.command('gate <id> <command...>').requiredOption('--worktree <path>').passThroughOptions().description('Run and record a gate for an explicitly linked worktree').action(boardGate);
 codingBoard.command('discover <repository>').description('List unregistered worktrees as unconfirmed candidates').action(boardDiscover);
 codingBoard.command('link <id>').option('--worktree <path>').option('--run <profile:scope>').option('--pr <owner/repo#number>').option('--archive').option('--unarchive').action(boardLink);
 

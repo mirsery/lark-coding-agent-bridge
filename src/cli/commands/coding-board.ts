@@ -36,3 +36,8 @@ export function worktreeCandidates(trees: WorktreeEntry[], registered: string[])
     return { path: tree.path, branch: tree.branch, candidates: keys, source: 'worktree name', confidence: 'unconfirmed' };
   });
 }
+
+export async function boardGate(id: string, command: string[], opts: { worktree: string }): Promise<void> {
+  const { runRecordedGate } = await import('../../coding-board/gate');
+  process.exitCode = await runRecordedGate(file(), id, resolve(opts.worktree), command);
+}

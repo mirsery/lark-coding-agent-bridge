@@ -4,6 +4,11 @@ import { dirname } from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import { writeFileAtomic } from '../platform/atomic-write';
 
+export interface GateRecord {
+  id: string; worktree: string; head: string; dirty: boolean; startedAt: number;
+  finishedAt?: number; exitCode?: number | null; signal?: string; endHead?: string; endDirty?: boolean;
+}
+
 export interface CodingTask {
   id: string;
   title: string;
@@ -14,6 +19,7 @@ export interface CodingTask {
   createdAt: number;
   updatedAt: number;
   archived: boolean;
+  gates?: GateRecord[];
 }
 
 interface TaskFile { version: 1; tasks: CodingTask[] }
@@ -38,7 +44,8 @@ function validTask(value: unknown): value is CodingTask {
     && (t.jira === undefined || typeof t.jira === 'string')
     && Array.isArray(t.worktrees) && t.worktrees.every(p => typeof p === 'string')
     && Array.isArray(t.runs) && t.runs.every(r => r && typeof r.profile === 'string' && typeof r.scope === 'string')
-    && Array.isArray(t.prs) && t.prs.every(p => p && typeof p.repository === 'string' && Number.isInteger(p.number) && p.number > 0);
+    && Array.isArray(t.prs) && t.prs.every(p => p && typeof p.repository === 'string' && Number.isInteger(p.number) && p.number > 0)
+    && (t.gates === undefined || (Array.isArray(t.gates) && t.gates.every(g => g && typeof g.id === 'string' && typeof g.worktree === 'string' && typeof g.head === 'string' && typeof g.dirty === 'boolean' && typeof g.startedAt === 'number' && (g.finishedAt === undefined || typeof g.finishedAt === 'number') && (g.exitCode === undefined || g.exitCode === null || typeof g.exitCode === 'number') && (g.signal === undefined || typeof g.signal === 'string') && (g.endHead === undefined || typeof g.endHead === 'string') && (g.endDirty === undefined || typeof g.endDirty === 'boolean'))));
 }
 
 export async function addTask(path: string, input: { title: string; jira?: string; worktrees?: string[] }): Promise<CodingTask> {
