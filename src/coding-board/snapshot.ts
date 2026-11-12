@@ -1,16 +1,18 @@
 import { join } from 'node:path';
 import { readRepoStatus, type GitRepoStatus } from '../git/status';
 import { readTasks, type CodingTask } from './store';
+import { createPrReader, type BoardPr } from './pull-requests';
 import type { MonitorBot } from '../terminal/snapshot';
 
 export interface CodingBoardTask extends CodingTask {
   git: { path: string; observedAt: number; status?: GitRepoStatus; error?: string }[];
+  pullRequests: BoardPr[];
   runStates: { profile: string; scope: string; state: 'running' | 'orphan' | 'unknown' }[];
 }
 export interface CodingBoardSnapshot { observedAt: number; tasks: CodingBoardTask[]; error?: string }
 
 /** Git reads are bounded by git's own timeout; no external commands mutate tasks. */
-export async function readCodingBoard(rootDir: string, now = Date.now(), bots: MonitorBot[] = []): Promise<CodingBoardSnapshot> {
+export async function readCodingBoard(rootDir: string, now = Date.now(), bots: MonitorBot[] = [], readPr = createPrReader()): Promise<CodingBoardSnapshot> {
   let tasks: CodingTask[];
   try { tasks = await readTasks(join(rootDir, 'coding-board', 'tasks.json')); }
   catch { return { observedAt: now, tasks: [], error: '任务登记无法读取' }; }
@@ -28,7 +30,7 @@ export async function readCodingBoard(rootDir: string, now = Date.now(), bots: M
       const match = bots.find(bot => bot.profile === run.profile)?.runs.find(r => r.scope === run.scope);
       return { ...run, state: match ? (match.orphan ? 'orphan' as const : 'running' as const) : 'unknown' as const };
     });
-    result.push({ ...task, git, runStates });
+    result.push({ ...task, git, runStates, pullRequests: readPr(task.prs, now) });
   }
   return { observedAt: now, tasks: result };
 }

@@ -1,3 +1,4 @@
+import { createPrReader } from '../coding-board/pull-requests';
 import { readCodingBoard, type CodingBoardSnapshot } from '../coding-board/snapshot';
 import { loadRootConfig } from '../config/profile-store';
 import { createSubscriptionReader, type MonitorSubscription } from './subscription';
@@ -66,6 +67,7 @@ export function createMonitorReader(intervalMs = 10_000) {
   const cache = new Map<string, LogCache>();
   const readSubscription = createSubscriptionReader();
   const sampleHost = createHostSampler(intervalMs);
+  const readPr = createPrReader();
   return async (rootDir: string, profile?: string, now = Date.now(), waitForSubscription = false): Promise<MonitorSnapshot> => {
   const root = await loadRootConfig(join(rootDir, 'config.json')).catch(() => undefined);
   const entries = readAndPrune(join(rootDir, 'registry', 'processes.json'));
@@ -89,7 +91,7 @@ export function createMonitorReader(intervalMs = 10_000) {
       }).sort((a, b) => Number(a.orphan) - Number(b.orphan) || a.startedAt - b.startedAt) };
   }));
   const metrics = await sampleHost(now);
-  const codingBoard = await readCodingBoard(rootDir, now, bots);
+  const codingBoard = await readCodingBoard(rootDir, now, bots, readPr);
   return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics, codingBoard };
   };
 }

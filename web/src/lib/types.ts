@@ -153,7 +153,7 @@ export interface MonitorInfo {
   load: number;
   metrics?: HostMetricsInfo;
   bots: MonitorBot[];
-  codingBoard?: { observedAt: number; error?: string; tasks: { id: string; title: string; jira?: string; runStates: { profile: string; scope: string; state: "running" | "orphan" | "unknown" }[]; prs: { repository: string; number: number }[]; git: { path: string; status?: { branch?: string; head?: string; upstream?: { ahead: number; behind: number } }; error?: string }[] }[] };
+  codingBoard?: { observedAt: number; error?: string; tasks: { id: string; title: string; jira?: string; pullRequests: { repository: string; number: number; state: string; head?: string; url?: string; observedAt?: number; checks?: { passed: number; failed: number; pending: number } }[]; runStates: { profile: string; scope: string; state: "running" | "orphan" | "unknown" }[]; prs: { repository: string; number: number }[]; git: { path: string; status?: { branch?: string; head?: string; upstream?: { ahead: number; behind: number } }; error?: string }[] }[] };
 }
 
 /** Owner user-identity auth status (for the "我的群" picker). */
