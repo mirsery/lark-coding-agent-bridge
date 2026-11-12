@@ -178,6 +178,11 @@ export class RunExecutor {
       releaseScope();
       throw new RunRejected('pool-full', 'process pool is full');
     }
+    if (input.policy.expiresAt <= this.now()) {
+      release();
+      releaseScope();
+      throw new RunRejected('policy-expired', 'run policy expired while waiting for a slot');
+    }
     if (this.activeRuns.newRunsPaused()) {
       release();
       releaseScope();

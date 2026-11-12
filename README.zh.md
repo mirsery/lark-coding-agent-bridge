@@ -1015,3 +1015,9 @@ export default createAdapter;
 [MIT](./LICENSE)
 
 <img src="./assets/feedback-group-qr.png" alt="飞书反馈群二维码" width="360">
+
+### 宿主机内存压力观测（macOS）
+
+每个 bridge profile 每 30 秒记录一次系统内存压力余量、swap、磁盘可用空间和 RSS 最高的进程（仅进程名、PID、父 PID、RSS，不记录参数）。记录位于 profile 的 `logs/host-memory.jsonl`，达到 1 MiB 时轮转，保留一份上一文件；停止 bridge 即停止采样。采样反映整台宿主机，但并发控制只作用于当前 bridge 进程，无法限制其他 profile、容器或自行启动的构建。
+
+默认仅记录并在连续三次压力余量不高于 15% 时写警告，连续三次达到 25% 后记录恢复。先观察采样并校准阈值；如要试用自动排队，在启动 bridge 的环境中设置 `LARK_CHANNEL_MEMORY_GATE=1`。启用后高压只暂停当前 bridge 新任务，已有任务不终止；压力恢复后继续，连续三次采样失败则解除暂停。取消该变量并重启即可恢复仅观测模式。排队任务仍受现有策略有效期限制，重启处理遵循原有队列规则。这些阈值为初始值，并不能保证避免系统内存耗尽。

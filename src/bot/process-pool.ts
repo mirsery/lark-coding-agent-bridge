@@ -16,6 +16,7 @@ import { log, reportMetric } from '../core/logger';
  */
 export class ProcessPool {
   private active = 0;
+  private pressurePaused = false;
   private readonly waiters: Array<() => void> = [];
   /** Snapshot of the cap captured at the moment acquire() decided to wait. */
   private cap: () => number;
@@ -25,7 +26,7 @@ export class ProcessPool {
   }
 
   async acquire(): Promise<() => void> {
-    if (this.active < this.cap()) {
+    if (!this.pressurePaused && this.waiters.length === 0 && this.active < this.cap()) {
       this.active++;
       log.info('pool', 'acquired', { active: this.active, cap: this.cap() });
       reportMetric('pool_active', this.active);
@@ -34,14 +35,13 @@ export class ProcessPool {
     log.info('pool', 'wait', { active: this.active, cap: this.cap(), waiting: this.waiters.length + 1 });
     reportMetric('pool_waiting', this.waiters.length + 1);
     await new Promise<void>((resolve) => this.waiters.push(resolve));
-    this.active++;
     log.info('pool', 'acquired', { active: this.active, cap: this.cap() });
     reportMetric('pool_active', this.active);
     return () => this.release();
   }
 
   tryAcquire(): (() => void) | undefined {
-    if (this.active >= this.cap()) {
+    if (this.pressurePaused || this.waiters.length > 0 || this.active >= this.cap()) {
       log.info('pool', 'full', { active: this.active, cap: this.cap() });
       return undefined;
     }
@@ -54,11 +54,18 @@ export class ProcessPool {
     this.active = Math.max(0, this.active - 1);
     log.info('pool', 'released', { active: this.active });
     reportMetric('pool_active', this.active);
-    // Wake the next waiter if there's headroom. If cap was just lowered
-    // via /config, this naturally throttles by not waking.
-    if (this.active < this.cap() && this.waiters.length > 0) {
+    this.drain();
+  }
+
+  setPressurePaused(paused: boolean): void {
+    this.pressurePaused = paused;
+    if (!paused) this.drain();
+  }
+
+  private drain(): void {
+    while (!this.pressurePaused && this.active < this.cap() && this.waiters.length > 0) {
       const next = this.waiters.shift();
-      if (next) next();
+      if (next) { this.active++; next(); }
     }
   }
 
