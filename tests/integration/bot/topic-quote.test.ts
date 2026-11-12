@@ -99,6 +99,49 @@ describe('topic message quote handling', () => {
     expect(h.channel.streams[0]?.options).toMatchObject({ replyTo: 'om_new', replyInThread: true });
   });
 
+  it.each(['group', 'p2p'] as const)('puts a burst of flat %s messages from one sender in one topic', async (chatType) => {
+    const h = await createHarness({ chatMode: 'group', rawThreadIds: { om_sent_1: 'omt_a', om_sent_2: 'omt_b' }, agentEvents: [
+      { type: 'text', delta: '好的' },
+      { type: 'done', terminationReason: 'normal' },
+    ] });
+    h.profileConfig.preferences.forceReplyInThread = true;
+    await startTestBridge(h);
+    const flat = (messageId: string, content: string, createTime: number) => ({
+      ...message({ messageId, rootId: messageId, parentId: messageId, content, createTime }),
+      chatType,
+    });
+    // Delivered back to back, the second before the first has its topic.
+    await Promise.all([
+      h.channel.handlers.message?.(flat('om_link', '@Bridge https://example.com/doc', 1_000)),
+      h.channel.handlers.message?.(flat('om_ask', '@Bridge 看下这个文档怎么接入', 1_500)),
+    ]);
+    await waitFor(() => h.channel.streams.length === 1);
+    expect(h.channel.sent).toHaveLength(1);
+    expect(h.channel.sent[0]?.content).toEqual({ text: '已收到，请在此话题中继续。' });
+    expect(h.agent.runOptions).toHaveLength(1);
+    const prompt = h.agent.runOptions[0]?.prompt ?? '';
+    expect(prompt).toContain('https://example.com/doc');
+    expect(prompt).toContain('看下这个文档怎么接入');
+    expect(prompt.indexOf('https://example.com/doc')).toBeLessThan(prompt.indexOf('看下这个文档怎么接入'));
+    // The second message is not in the topic: replying to it in-thread would open another.
+    expect(h.channel.streams[0]?.options).toMatchObject({ replyTo: 'om_link', replyInThread: true });
+  });
+
+  it('opens separate topics for different senders sending at the same time', async () => {
+    const h = await createHarness({ chatMode: 'group', rawThreadIds: { om_sent_1: 'omt_a', om_sent_2: 'omt_b' }, agentEvents: [
+      { type: 'text', delta: '好的' },
+      { type: 'done', terminationReason: 'normal' },
+    ] });
+    h.profileConfig.preferences.forceReplyInThread = true;
+    await startTestBridge(h);
+    await Promise.all([
+      h.channel.handlers.message?.(message({ messageId: 'om_a', rootId: 'om_a', parentId: 'om_a', content: '@Bridge 甲' })),
+      h.channel.handlers.message?.(message({ messageId: 'om_b', rootId: 'om_b', parentId: 'om_b', content: '@Bridge 乙', senderId: 'ou_other' })),
+    ]);
+    await waitFor(() => h.agent.runOptions.length === 2);
+    expect(h.channel.sent).toHaveLength(2);
+  });
+
   it('stops safely when the new thread cannot be identified', async () => {
     const h = await createHarness({ chatMode: 'group' });
     h.profileConfig.preferences.forceReplyInThread = true;

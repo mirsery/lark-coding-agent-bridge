@@ -21,6 +21,7 @@ import type { AuditLog } from '../runtime/audit-log';
 import { DEFAULT_MODEL, normalizeModelSelection, supportedEfforts, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
+import { replyTargetOf } from '../bot/forced-topic';
 import type { RunsMonitor } from '../bot/runs-monitor';
 import {
   DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MINUTES,
@@ -522,7 +523,7 @@ async function reply(ctx: CommandContext, markdown: string): Promise<void> {
 
 function commandReplyOptions(ctx: CommandContext): { replyTo: string; replyInThread?: true } {
   return {
-    replyTo: ctx.msg.messageId,
+    replyTo: replyTargetOf(ctx.msg),
     ...(ctx.controls.profileConfig.preferences.forceReplyInThread || (ctx.chatMode === 'topic' && ctx.msg.threadId) ? { replyInThread: true as const } : {}),
   };
 }

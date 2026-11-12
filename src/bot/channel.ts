@@ -164,6 +164,7 @@ import { MemoryGateControl, startHostMemoryMonitor } from './host-memory';
 import { fetchQuotedContext, type QuotedContext } from './quote';
 import { ChatContextCursorStore, fetchChatContext, planChatContext } from './chat-context';
 import { lookupMessageThreadId } from './thread-id';
+import { ForcedTopicJoiner, replyTargetOf, type ForcedTopic, type ForcedTopicMember } from './forced-topic';
 import { addDoneReaction, addSupplementReaction, addWorkingReaction, removeReaction } from './reaction';
 import { maySupplement, quotesRun, SUPPLEMENT_INSTRUCTION, supplementPreview, supplementSignal } from './supplement';
 import { mediaPlaceholders } from './media-placeholders';
@@ -408,6 +409,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
   const chatModeCache = new ChatModeCache();
+  // Forced topics opened in the last few seconds, so a burst of flat messages
+  // from one sender lands in one topic instead of one topic each.
+  const forcedTopics = new ForcedTopicJoiner();
   // Concurrency cap — reads `preferences.maxConcurrentRuns` on each acquire,
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
@@ -736,6 +740,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           msg,
           controls,
           chatModeCache,
+          forcedTopics,
           logThreadModeOverride,
           executor,
           pool,
@@ -1248,6 +1253,7 @@ interface IntakeDeps {
   msg: NormalizedMessage;
   controls: Controls;
   chatModeCache: ChatModeCache;
+  forcedTopics: ForcedTopicJoiner;
   logThreadModeOverride: LogThreadModeOverride;
   executor: RunExecutor;
   pool: ProcessPool;
@@ -1259,6 +1265,25 @@ type LogThreadModeOverride = (input: {
   resolvedMode: ChatMode;
   threadId: string;
 }) => void;
+
+/** Open a topic under a flat message; undefined (anchor edited to say so) when its id cannot be confirmed. */
+async function openForcedTopic(channel: LarkChannel, msg: NormalizedMessage): Promise<ForcedTopic | undefined> {
+  const anchor = await channel.send(msg.chatId, { text: '已收到，请在此话题中继续。' }, {
+    replyTo: msg.messageId,
+    replyInThread: true,
+  });
+  let threadId: string | undefined;
+  for (let attempt = 0; attempt < 3 && !threadId; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 200));
+    threadId = await lookupMessageThreadId(channel, anchor.messageId);
+  }
+  if (!threadId) {
+    log.warn('intake', 'thread-id-unavailable', { chatId: msg.chatId, msgId: msg.messageId });
+    await channel.editMessage(anchor.messageId, '无法确认话题，暂未执行。请重试。').catch(() => {});
+    return undefined;
+  }
+  return { threadId, rootMessageId: msg.messageId };
+}
 
 async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const {
@@ -1273,6 +1298,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     msg,
     controls,
     chatModeCache,
+    forcedTopics,
     logThreadModeOverride,
     executor,
     pool,
@@ -1393,21 +1419,26 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
   // Create the thread before choosing the run scope. This ensures the first
   // turn, its callbacks and later replies all use the same persistent scope.
+  // A burst of flat messages from one sender (a link, then the question about
+  // it) joins the topic the first one opened rather than opening one each.
   if (controls.profileConfig.preferences.forceReplyInThread && !threadId) {
-    const anchor = await channel.send(msg.chatId, { text: '已收到，请在此话题中继续。' }, {
-      replyTo: msg.messageId,
-      replyInThread: true,
-    });
-    for (let attempt = 0; attempt < 3 && !threadId; attempt++) {
-      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 200));
-      threadId = await lookupMessageThreadId(channel, anchor.messageId);
+    const topicKey = `${msg.chatId}:${msg.senderId}`;
+    const joining = forcedTopics.join(topicKey);
+    const joined = joining ? await joining.catch(() => undefined) : undefined;
+    if (joined) {
+      threadId = joined.threadId;
+      const member: NormalizedMessage & ForcedTopicMember = { ...emsg, threadId, forcedTopicRootId: joined.rootMessageId };
+      emsg = member;
+      log.info('intake', 'thread-joined', { chatId: msg.chatId, msgId: msg.messageId, threadId, root: joined.rootMessageId });
+    } else {
+      // Register before awaiting anything, so a message arriving meanwhile joins.
+      const opening = openForcedTopic(channel, msg);
+      forcedTopics.open(topicKey, opening);
+      const opened = await opening;
+      if (!opened) return;
+      threadId = opened.threadId;
+      emsg = { ...emsg, threadId };
     }
-    if (!threadId) {
-      log.warn('intake', 'thread-id-unavailable', { chatId: msg.chatId, msgId: msg.messageId });
-      await channel.editMessage(anchor.messageId, '无法确认话题，暂未执行。请重试。').catch(() => {});
-      return;
-    }
-    emsg = { ...emsg, threadId };
     chatMode = msg.chatType === 'p2p' ? 'p2p' : 'topic';
     scope = `${msg.chatId}:${threadId}`;
   }
@@ -1619,7 +1650,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           cooldownMinutes: overload.cooldownMinutes,
         });
         await channel
-          .send(chatId, { card }, { replyTo: lastMsg.messageId, ...(controls.profileConfig.preferences.forceReplyInThread || (mode === 'topic' && threadId) ? { replyInThread: true } : {}) })
+          .send(chatId, { card }, { replyTo: replyTargetOf(lastMsg), ...(controls.profileConfig.preferences.forceReplyInThread || (mode === 'topic' && threadId) ? { replyInThread: true } : {}) })
           .catch((err: unknown) => log.fail('overload', err, { step: 'send-card' }));
       }
       return;
@@ -1815,7 +1846,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // user's message. Otherwise the SDK posts at top level and the user's
   // topic discussion breaks visually.
   const sendOpts = {
-    replyTo: lastMsg.messageId,
+    replyTo: replyTargetOf(lastMsg),
     ...(controls.profileConfig.preferences.forceReplyInThread || (mode === 'topic' && threadId) ? { replyInThread: true } : {}),
   };
   log.info('flush', 'reply-target', {
@@ -1863,7 +1894,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         scopeId: scope,
         chatId,
         ...(threadId ? { threadId } : {}),
-        originMessageId: lastMsg.messageId,
+        originMessageId: replyTargetOf(lastMsg),
         where:
           mode === 'p2p'
             ? '私聊'
@@ -1974,7 +2005,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     runId: execution.runId,
     scope,
     chatId,
-    originMessageId: lastMsg.messageId,
+    originMessageId: replyTargetOf(lastMsg),
     ...(threadId ? { threadId } : {}),
     promptPreview: mediaPlaceholders(lastMsg.content ?? ''),
     chatType: mode === 'p2p' ? 'p2p' : 'group',
@@ -2226,7 +2257,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         // triggering message is itself in-topic, so the bubble lands in the
         // topic; message_cot has no thread_id receive type, so origin is the
         // only lever we have (see CotClient.create).
-        originMessageId: lastMsg.messageId,
+        originMessageId: replyTargetOf(lastMsg),
         runId: execution.runId,
         scope,
         inputPreview: lastMsg.content,
@@ -3574,7 +3605,7 @@ async function sendExpiredPendingNotice(channel: LarkChannel, record: PendingRec
     '已经过去超过 10 分钟，没有自动补处理，需要的话请重新发送。';
   try {
     await channel.send(last.chatId, { text }, {
-      replyTo: last.messageId,
+      replyTo: replyTargetOf(last),
       ...(last.threadId ? { replyInThread: true } : {}),
     });
   } catch (err) {

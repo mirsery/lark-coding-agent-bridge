@@ -39,7 +39,11 @@ export class PendingQueue {
     const existing = this.map.get(scope);
     if (existing) {
       if (existing.timer) clearTimeout(existing.timer);
-      existing.messages.push(msg);
+      // Keep send order: a message can finish intake after a later one (a
+      // burst joining a forced topic resumes in whichever order it awaited).
+      let at = existing.messages.length;
+      while (at > 0 && existing.messages[at - 1]!.createTime > msg.createTime) at--;
+      existing.messages.splice(at, 0, msg);
       existing.timer = this.blocked.has(scope) ? undefined : this.armTimer(scope);
       this.onChange?.(scope, existing.messages);
       return existing.messages.length;
