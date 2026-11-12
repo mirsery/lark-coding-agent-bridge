@@ -47,6 +47,7 @@ export interface MonitorView {
   load: number;
   metrics?: HostMetrics;
   bots: MonitorBotView[];
+  codingBoard?: MonitorSnapshot['codingBoard'];
 }
 
 /**
@@ -117,5 +118,6 @@ export async function monitorView(
     load: snap.load,
     ...(snap.metrics ? { metrics: snap.metrics } : {}),
     bots,
+    ...(snap.codingBoard ? { codingBoard: snap.codingBoard } : {}),
   };
 }

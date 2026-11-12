@@ -2,7 +2,7 @@ import { TerminalTheme, type MonitorTheme } from '../../terminal/theme';
 import { catPatch, conversationLabel } from '../../terminal/dashboard';
 import type { MonitorSnapshot } from '../../terminal/monitor';
 import { resolveAppPaths } from '../../config/app-paths';
-import { createMonitorReader, renderMonitor } from '../../terminal/monitor';
+import { createMonitorReader, renderMonitor, renderCodingBoard } from '../../terminal/monitor';
 
 export function monitorFrame(text: string): string {
   // Overwrite in place: ED2 may archive the cleared screen in iTerm scrollback.
@@ -24,6 +24,7 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
     console.log(opts.json ? JSON.stringify(snap, null, 2) : renderMonitor(snap, process.stdout.columns || 110, 1000, false));
     return;
   }
+  let board = false;
   let paused = false; let stopped = false; let timer: NodeJS.Timeout | undefined;
   let animation: NodeJS.Timeout | undefined;
   let snapshot: MonitorSnapshot | undefined;
@@ -31,7 +32,7 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
   const color = opts.color !== false && !process.env.NO_COLOR;
   const draw = () => {
     if (stopped || !snapshot) return;
-    process.stdout.write(monitorFrame(renderMonitor(snapshot, process.stdout.columns, process.stdout.rows, color, frame, paused, theme())));
+    process.stdout.write(monitorFrame(board ? renderCodingBoard(snapshot, process.stdout.columns, process.stdout.rows) : renderMonitor(snapshot, process.stdout.columns, process.stdout.rows, color, frame, paused, theme())));
   };
   const raw = process.stdin.isRaw;
   const restore = () => {
@@ -59,13 +60,13 @@ export async function runMonitor(opts: { profile?: string; interval?: string; on
     try { if (!paused) await refresh(); } catch (err) { restore(); console.error((err as Error).message); }
     if (!stopped) timer = setTimeout(() => void tick(), seconds * 1000);
   };
-  const key = (data: Buffer) => { const before = terminalTheme.mode; const text = terminalTheme.input(data.toString()); if (before !== terminalTheme.mode) draw(); if (text === 'q' || text === '\x03') restore(); else if (text === ' ') { paused = !paused; draw(); } else if (text === 'r') void refresh().catch(restore); };
+  const key = (data: Buffer) => { const before = terminalTheme.mode; const text = terminalTheme.input(data.toString()); if (before !== terminalTheme.mode) draw(); if (text === 'q' || text === '\x03') restore(); else if (text === ' ') { paused = !paused; draw(); } else if (text === 'b') { board = !board; draw(); } else if (text === 'r') void refresh().catch(restore); };
   const resize = () => { draw(); };
   process.stdout.write('\x1b[?1049h\x1b[?25l');
   process.stdin.setRawMode(true); process.stdin.resume(); process.stdin.on('data', key);
   process.on('SIGINT', restore); process.on('SIGTERM', restore); process.stdout.on('resize', resize);
   if (opts.animation !== false) animation = setInterval(() => {
-    if (stopped || paused || !snapshot) return;
+    if (stopped || paused || !snapshot || board) return;
     frame++;
     process.stdout.write(catPatch(process.stdout.columns, process.stdout.rows, frame, color, theme(), conversationLabel(snapshot)));
   }, 500);

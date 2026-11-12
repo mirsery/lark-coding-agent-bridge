@@ -286,6 +286,11 @@ export function TasksView() {
       ) : (
         <>
           <HostCard info={info} metrics={info.metrics} />
+          <Card><CardHeader><h2 className="font-semibold">Coding 任务看板</h2><p className="text-xs text-muted-foreground">更新：{info.codingBoard ? new Date(info.codingBoard.observedAt).toLocaleTimeString() : "未知"}</p></CardHeader><CardContent className="space-y-3">
+            {info.codingBoard?.error && <p className="text-destructive">{info.codingBoard.error}</p>}
+            {!info.codingBoard?.error && !info.codingBoard?.tasks.length && <p className="text-sm text-muted-foreground">暂无已登记任务。</p>}
+            {info.codingBoard?.tasks.map(t => <div key={t.id} className="rounded border p-3 text-sm"><div className="font-medium">{t.jira ?? "无 Jira"} · {t.title}</div><div className="text-muted-foreground">阶段：未知 · 构建：未知 · PR：{t.prs.length ? t.prs.map(p => `${p.repository}#${p.number}`).join(", ") : "未关联"}</div>{t.git.map(g => <div key={g.path} className="break-all text-muted-foreground">{g.path} · {g.status ? `${g.status.branch ?? "detached"} ${g.status.head ?? "—"} · ${g.status.upstream ? `↑${g.status.upstream.ahead} ↓${g.status.upstream.behind}` : "无上游"}` : "Git 未知"}</div>)}</div>)}
+          </CardContent></Card>
           {info.bots.length === 0 ? (
             <Card>
               <CardContent className="px-4 py-10 text-center">

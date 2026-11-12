@@ -1,4 +1,5 @@
 import { runMonitor } from './commands/monitor';
+import { boardAdd, boardList, boardLink } from './commands/coding-board';
 import { Command } from 'commander';
 import pkg from '../../package.json';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
@@ -82,6 +83,11 @@ program
   .option('--json', 'print one JSON snapshot')
   .option('--no-color', 'disable colors')
   .action(runMonitor);
+
+const codingBoard = program.command('coding-board').description('Manage local coding task associations');
+codingBoard.command('add <title>').option('--jira <key>').option('--worktree <path...>').action(boardAdd);
+codingBoard.command('list').action(boardList);
+codingBoard.command('link <id>').option('--worktree <path>').option('--run <profile:scope>').option('--pr <owner/repo#number>').option('--archive').option('--unarchive').action(boardLink);
 
 program
   .command('migrate')

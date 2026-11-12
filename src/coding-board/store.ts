@@ -55,3 +55,18 @@ export async function addTask(path: string, input: { title: string; jira?: strin
     return task;
   } finally { await release(); }
 }
+
+export async function updateTask(path: string, id: string, change: (task: CodingTask) => void): Promise<CodingTask> {
+  await mkdir(dirname(path), { recursive: true });
+  const release = await lockfile.lock(dirname(path), { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 } });
+  try {
+    const tasks = await readTasks(path);
+    const task = tasks.find(t => t.id === id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    change(task);
+    task.updatedAt = Date.now();
+    if (!validTask(task)) throw new Error('Invalid task update');
+    await writeFileAtomic(path, `${JSON.stringify({ version: 1, tasks }, null, 2)}\n`, { mode: 0o600 });
+    return task;
+  } finally { await release(); }
+}

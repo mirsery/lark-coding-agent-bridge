@@ -23,3 +23,19 @@ describe('coding task store', () => {
     expect(await readFile(file, 'utf8')).toBe('{broken');
   });
 });
+
+it('preserves multiple associations and archives only the selected task', async () => {
+  const file = await path();
+  const first = await addTask(file, { title: 'one', jira: 'ABC-1' });
+  await addTask(file, { title: 'two', jira: 'ABC-1' });
+  const { updateTask } = await import('../../../src/coding-board/store');
+  await updateTask(file, first.id, t => {
+    t.worktrees.push('/repo/one', '/repo/two');
+    t.prs.push({ repository: 'org/repo', number: 3 }, { repository: 'org/repo', number: 4 });
+    t.archived = true;
+  });
+  const tasks = await readTasks(file);
+  expect(tasks).toHaveLength(2);
+  expect(tasks.find(t => t.id === first.id)).toMatchObject({ archived: true, worktrees: ['/repo/one', '/repo/two'], prs: [{ number: 3 }, { number: 4 }] });
+  expect(tasks.find(t => t.id !== first.id)?.archived).toBe(false);
+});

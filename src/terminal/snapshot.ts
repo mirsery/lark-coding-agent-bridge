@@ -1,3 +1,4 @@
+import { readCodingBoard, type CodingBoardSnapshot } from '../coding-board/snapshot';
 import { loadRootConfig } from '../config/profile-store';
 import { createSubscriptionReader, type MonitorSubscription } from './subscription';
 import { createHostSampler, type HostMetrics } from './host';
@@ -15,7 +16,7 @@ import { readRunRecords, RUN_STALE_AFTER_MS, type RunRecord } from '../runtime/r
  */
 export interface Activity { ts: number; event: string; phase: string; tool?: string; traceId?: string; runId?: string; scope?: string }
 export interface MonitorBot { profile: string; name: string; agent: string; pid?: number; online: boolean; subscription?: MonitorSubscription; activity?: Activity; runs: Array<RunRecord & { orphan: boolean; activity?: Activity }> }
-export interface MonitorSnapshot { now: number; host: string; cores: number; load: number; bots: MonitorBot[]; metrics?: HostMetrics }
+export interface MonitorSnapshot { now: number; host: string; cores: number; load: number; bots: MonitorBot[]; metrics?: HostMetrics; codingBoard?: CodingBoardSnapshot }
 
 /** What a run is doing right now, in words both the terminal and the console show. */
 export function activityLabel(a?: Activity): string {
@@ -88,7 +89,8 @@ export function createMonitorReader(intervalMs = 10_000) {
       }).sort((a, b) => Number(a.orphan) - Number(b.orphan) || a.startedAt - b.startedAt) };
   }));
   const metrics = await sampleHost(now);
-  return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics };
+  const codingBoard = await readCodingBoard(rootDir, now);
+  return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics, codingBoard };
   };
 }
 export async function readMonitor(rootDir: string, profile?: string, now = Date.now()): Promise<MonitorSnapshot> {
