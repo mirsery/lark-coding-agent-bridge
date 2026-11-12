@@ -15,8 +15,18 @@ export async function runRecordedGate(file: string, taskId: string, worktree: st
   });
   const result = await new Promise<{ code: number | null; signal?: string }>(resolve => {
     const child = spawn(command[0]!, command.slice(1), { cwd: worktree, stdio: 'inherit', shell: false });
-    child.once('error', () => resolve({ code: null }));
-    child.once('exit', (code, signal) => resolve({ code, ...(signal ? { signal } : {}) }));
+    const forwardInt = () => { child.kill('SIGINT'); };
+    const forwardTerm = () => { child.kill('SIGTERM'); };
+    process.on('SIGINT', forwardInt); process.on('SIGTERM', forwardTerm);
+    let finished = false;
+    const finish = (value: { code: number | null; signal?: string }) => {
+      if (finished) return;
+      finished = true;
+      process.off('SIGINT', forwardInt); process.off('SIGTERM', forwardTerm);
+      resolve(value);
+    };
+    child.once('error', () => finish({ code: null }));
+    child.once('exit', (code, signal) => finish({ code, ...(signal ? { signal } : {}) }));
   });
   const [endHead, endStatus] = await Promise.all([git(worktree, ['rev-parse', 'HEAD']), git(worktree, ['status', '--porcelain', '--untracked-files=normal'])]);
   await updateTask(file, taskId, task => {

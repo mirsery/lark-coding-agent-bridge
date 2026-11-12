@@ -1,3 +1,4 @@
+import type { Command } from 'commander';
 import { join, resolve } from 'node:path';
 import { resolveAppPaths } from '../../config/app-paths';
 import type { WorktreeEntry } from '../../git/worktree';
@@ -40,4 +41,13 @@ export function worktreeCandidates(trees: WorktreeEntry[], registered: string[])
 export async function boardGate(id: string, command: string[], opts: { worktree: string }): Promise<void> {
   const { runRecordedGate } = await import('../../coding-board/gate');
   process.exitCode = await runRecordedGate(file(), id, resolve(opts.worktree), command);
+}
+
+export function registerCodingBoard(program: Command): void {
+  const board = program.command('coding-board').description('Manage local coding task associations').enablePositionalOptions();
+  board.command('add <title>').option('--jira <key>').option('--worktree <path...>').action(boardAdd);
+  board.command('list').action(boardList);
+  board.command('link <id>').option('--worktree <path>').option('--run <profile:scope>').option('--pr <owner/repo#number>').option('--archive').option('--unarchive').action(boardLink);
+  board.command('gate <id> <command...>').requiredOption('--worktree <path>').passThroughOptions().description('Run and record a gate for an explicitly linked worktree').action(boardGate);
+  board.command('discover <repository>').description('List unregistered worktrees as unconfirmed candidates').action(boardDiscover);
 }
