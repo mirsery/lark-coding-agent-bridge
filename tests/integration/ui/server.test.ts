@@ -227,6 +227,15 @@ describe('ui server (supervisor-backed)', () => {
     expect(saved.profiles.claude.mode).toBe('team');
   });
 
+  it('round-trips the memory pressure protection switch', async () => {
+    const url = '/api/config?profile=claude';
+    expect((await json(await get(url, handle.token))).memoryPressureGate).toBe(false);
+    expect((await json(await post(url, handle.token, { memoryPressureGate: true }))).memoryPressureGate).toBe(true);
+    expect((await loadRootConfig(configPath))!.profiles.claude!.preferences.memoryPressureGate).toBe(true);
+    expect(online.get('claude').profileConfig.preferences.memoryPressureGate).toBe(true);
+    expect((await json(await post(url, handle.token, { memoryPressureGate: false }))).memoryPressureGate).toBe(false);
+  });
+
   it('persists the forced thread reply setting', async () => {
     const url = '/api/config?profile=claude';
     expect((await json(await get(url, handle.token))).forceReplyInThread).toBe(false);

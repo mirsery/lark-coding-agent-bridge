@@ -18,6 +18,7 @@ export interface ConfigFormOpts {
   forceReplyInThread?: boolean;
   cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
+  memoryPressureGate?: boolean;
   /** 0 means "disabled". */
   runIdleTimeoutMinutes: number;
   /** Whole calendar months; 0 keeps topic sessions forever. */
@@ -370,6 +371,15 @@ export function configFormCard(opts: ConfigFormOpts): object {
             ]),
             sectionBlock('violet-50', [
               { tag: 'markdown', content: '⚙️ **运行与权限**' },
+              { tag: 'markdown', content: '**内存压力保护**\n<font color="grey">仅 macOS：持续高压时暂停新任务，恢复后继续；不终止已有任务。默认关闭。</font>' },
+              {
+                tag: 'select_static', name: 'memory_pressure_gate',
+                initial_option: opts.memoryPressureGate ? 'on' : 'off',
+                options: [
+                  { text: { tag: 'plain_text', content: '关闭（默认）' }, value: 'off' },
+                  { text: { tag: 'plain_text', content: '开启' }, value: 'on' },
+                ],
+              },
               {
                 tag: 'markdown',
                 content:
@@ -607,6 +617,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
         ]),
         kvBlock('⚙️ **运行与权限**', [
           ['并发上限', String(opts.maxConcurrentRuns)],
+          ['内存压力保护', opts.memoryPressureGate ? '开' : '关'],
           ['run 探活', opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'],
           ['强制话题回复', opts.forceReplyInThread ? '开启' : '关闭'],
           ['话题会话保留', opts.topicSessionRetentionMonths === 0 ? '永不' : `${opts.topicSessionRetentionMonths} 个月`],

@@ -66,6 +66,7 @@ describe('profile-aware account and config commands', () => {
       dream: 'on',
       dream_auto: 'on',
       topic_session_retention_months: '6',
+      memory_pressure_gate: 'on',
       max_concurrent_runs: '7',
       run_idle_timeout_minutes: '15',
       require_mention_in_group: 'no',
@@ -87,6 +88,7 @@ describe('profile-aware account and config commands', () => {
       dream: true,
       dreamAuto: true,
       topicSessionRetentionMonths: 6,
+      memoryPressureGate: true,
       maxConcurrentRuns: 7,
       runIdleTimeoutMinutes: 15,
     });

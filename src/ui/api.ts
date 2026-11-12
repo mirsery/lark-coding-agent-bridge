@@ -82,6 +82,7 @@ export interface ConfigView {
   dreamAuto: boolean;
   cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
+  memoryPressureGate: boolean;
   runIdleTimeoutMinutes: number;
   requireMentionInGroup: boolean;
   larkCliIdentity: LarkCliIdentityPreset;
@@ -123,6 +124,7 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
     dreamAuto: state.cfg.preferences?.dreamAuto === true,
     cotMessages: getCotMessages(state.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(state.cfg),
+    memoryPressureGate: state.cfg.preferences?.memoryPressureGate === true,
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(state.cfg),
     larkCliIdentity: state.profileConfig.larkCli.identityPreset,
@@ -341,6 +343,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       dreamAuto,
       cotMessages,
       maxConcurrentRuns,
+      memoryPressureGate: typeof fv.memoryPressureGate === 'boolean' ? fv.memoryPressureGate : state.cfg.preferences?.memoryPressureGate === true,
       runIdleTimeoutMinutes,
     },
   };

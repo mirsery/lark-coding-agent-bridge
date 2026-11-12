@@ -544,9 +544,13 @@ function normalizePreferences(
     requireMentionInGroup: _mention,
     messageReply,
     forceReplyInThread,
+    memoryPressureGate,
     topicSessionRetentionMonths,
     ...rest
   } = preferences ?? {};
+  if (memoryPressureGate !== undefined && typeof memoryPressureGate !== 'boolean') {
+    throw new Error('preferences.memoryPressureGate must be a boolean');
+  }
   if (forceReplyInThread !== undefined && typeof forceReplyInThread !== 'boolean') {
     throw new Error('preferences.forceReplyInThread must be a boolean');
   }
@@ -559,6 +563,7 @@ function normalizePreferences(
   return {
     ...rest,
     ...(forceReplyInThread !== undefined ? { forceReplyInThread } : {}),
+    ...(memoryPressureGate !== undefined ? { memoryPressureGate } : {}),
     ...(topicSessionRetentionMonths !== undefined ? { topicSessionRetentionMonths } : {}),
     ...(messageReply !== undefined && isMessageReply(messageReply) ? { messageReply } : {}),
   };

@@ -160,7 +160,7 @@ import { ApprovalSocketServer } from '../runtime/approval-socket';
 import { AuditLog } from '../runtime/audit-log';
 import { createApprovalNotifier } from './approval-notifier';
 import { ProcessPool } from './process-pool';
-import { startHostMemoryMonitor } from './host-memory';
+import { MemoryGateControl, startHostMemoryMonitor } from './host-memory';
 import { fetchQuotedContext, type QuotedContext } from './quote';
 import { ChatContextCursorStore, fetchChatContext, planChatContext } from './chat-context';
 import { lookupMessageThreadId } from './thread-id';
@@ -411,12 +411,23 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // Concurrency cap — reads `preferences.maxConcurrentRuns` on each acquire,
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
-  // Start in observation mode; opt in to queue gating after reviewing samples.
-  const stopHostMemoryMonitor = deps.appPaths?.profileDir
+  // The sampler tracks pressure even when the gate is disabled. Reconcile the
+  // live setting independently so closing the switch releases queued runs.
+  const memoryGate = new MemoryGateControl(
+    () => controls.cfg.preferences?.memoryPressureGate === true,
+    (paused) => pool.setPressurePaused(paused),
+  );
+  const memoryGateTimer = setInterval(() => memoryGate.sync(), 1000);
+  memoryGateTimer.unref();
+  const stopHostMemorySampling = deps.appPaths?.profileDir
     ? startHostMemoryMonitor(deps.appPaths.profileDir, (paused) => {
-        if (process.env.LARK_CHANNEL_MEMORY_GATE === '1') pool.setPressurePaused(paused);
+        memoryGate.observe(paused);
       })
     : () => {};
+  const stopHostMemoryMonitor = () => {
+    clearInterval(memoryGateTimer);
+    stopHostMemorySampling();
+  };
   // Who had the bot do what (/audit), and approvals for runs non-admins drive.
   const auditLog = deps.appPaths?.auditFile ? new AuditLog(deps.appPaths.auditFile) : undefined;
   await auditLog?.load().catch((err: unknown) => log.warn('audit', 'load-failed', { err: String(err) }));

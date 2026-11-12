@@ -176,6 +176,8 @@ export interface AppPreferences {
    * topic can spawn its own run; capping protects RAM / token spend.
    */
   maxConcurrentRuns?: number;
+  /** Pause new runs during sustained host memory pressure; default off. */
+  memoryPressureGate?: boolean;
   /**
    * Global default idle-timeout for claude runs, in minutes. When set,
    * if claude emits no stream event for this long the bridge kills the

@@ -94,6 +94,7 @@ export function ConfigView({ profile }: { profile: string }) {
         dreamAuto: cfg.dreamAuto,
         cotMessages: cfg.cotMessages,
         maxConcurrentRuns: cfg.maxConcurrentRuns,
+        memoryPressureGate: cfg.memoryPressureGate,
         runIdleTimeoutMinutes: cfg.runIdleTimeoutMinutes,
         requireMentionInGroup: cfg.requireMentionInGroup,
         larkCliIdentity: cfg.larkCliIdentity,
@@ -188,6 +189,8 @@ export function ConfigView({ profile }: { profile: string }) {
             <SelectRow value={cfg.cotMessages} onChange={(v) => set("cotMessages", v as ConfigData["cotMessages"])}
               options={[["off", "关闭"], ["brief", "简略"], ["detailed", "详细"]]} />
           </Field>
+          <ToggleRow label="内存压力保护" hint="仅 macOS：持续内存高压时暂停当前 bridge 的新任务，恢复后继续；不会终止正在运行的任务。默认关闭，建议先观察采样。"
+            checked={cfg.memoryPressureGate} onChange={(v) => set("memoryPressureGate", v)} />
           <div className="grid grid-cols-2 gap-4">
             <Field label="并发上限（1-50）">
               <Input type="number" min={1} max={50} value={cfg.maxConcurrentRuns}

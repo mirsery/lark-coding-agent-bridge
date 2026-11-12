@@ -4085,6 +4085,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     forceReplyInThread: ctx.controls.profileConfig.preferences.forceReplyInThread === true,
     cotMessages: getCotMessages(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
+    memoryPressureGate: ctx.controls.cfg.preferences?.memoryPressureGate === true,
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
     larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
@@ -4176,6 +4177,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         : rawCotMessages === 'off'
           ? 'off'
           : getCotMessages(ctx.controls.cfg);
+  const memoryPressureGate = fv.memory_pressure_gate === 'on' ? true : fv.memory_pressure_gate === 'off' ? false : ctx.controls.cfg.preferences?.memoryPressureGate === true;
   // Parse max_concurrent_runs; invalid input falls back to current value.
   const rawMaxCC = String(fv.max_concurrent_runs ?? '').trim();
   const parsedMaxCC = Number(rawMaxCC);
@@ -4280,6 +4282,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       showToolCalls,
       cotMessages,
       maxConcurrentRuns,
+      memoryPressureGate,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
       smartSession,
@@ -4368,6 +4371,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         forceReplyInThread,
         cotMessages,
         maxConcurrentRuns,
+        memoryPressureGate,
         runIdleTimeoutMinutes,
         requireMentionInGroup,
         larkCliIdentity,

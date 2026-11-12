@@ -63,6 +63,7 @@ export interface ConfigView {
   dreamAuto: boolean;
   cotMessages: CotMessages;
   maxConcurrentRuns: number;
+  memoryPressureGate: boolean;
   runIdleTimeoutMinutes: number;
   requireMentionInGroup: boolean;
   larkCliIdentity: LarkCliIdentity;

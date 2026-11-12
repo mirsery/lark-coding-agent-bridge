@@ -32,6 +32,14 @@ describe('configFormCard approvals switch', () => {
   });
 });
 
+describe('configFormCard memory pressure switch', () => {
+  it('shows the stored state and reports it after saving', () => {
+    expect(findNamedSelect(configFormCard(base), 'memory_pressure_gate')?.initial_option).toBe('off');
+    expect(findNamedSelect(configFormCard({ ...base, memoryPressureGate: true }), 'memory_pressure_gate')?.initial_option).toBe('on');
+    expect(JSON.stringify(configSavedCard({ ...base, memoryPressureGate: true }))).toContain('内存压力保护');
+  });
+});
+
 describe('configFormCard forced thread switch', () => {
   it('shows the configured state', () => {
     expect(findNamedSelect(configFormCard(base), 'force_reply_in_thread')?.initial_option).toBe('off');

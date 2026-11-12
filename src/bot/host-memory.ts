@@ -36,6 +36,14 @@ export class MemoryPressureGate {
   }
 }
 
+/** Combine the latest sample with a live profile setting. */
+export class MemoryGateControl {
+  private high = false;
+  constructor(private readonly enabled: () => boolean, private readonly apply: (paused: boolean) => void) {}
+  observe(high: boolean): void { this.high = high; this.sync(); }
+  sync(): void { this.apply(this.high && this.enabled()); }
+}
+
 async function command(file: string, args: string[]): Promise<string> {
   const result = await exec(file, args, { timeout: 5000, maxBuffer: 128 * 1024 });
   return result.stdout;
