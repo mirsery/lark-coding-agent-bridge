@@ -1,5 +1,6 @@
 import { join, resolve } from 'node:path';
 import { resolveAppPaths } from '../../config/app-paths';
+import type { WorktreeEntry } from '../../git/worktree';
 import { addTask, readTasks, updateTask } from '../../coding-board/store';
 
 const file = () => join(resolveAppPaths().rootDir, 'coding-board', 'tasks.json');
@@ -18,4 +19,20 @@ export async function boardLink(id: string, opts: { worktree?: string; run?: str
     if (opts.unarchive) t.archived = false;
   });
   console.log(JSON.stringify(task, null, 2));
+}
+
+/** Discovery is advisory: never silently bind a branch to a task. */
+export async function boardDiscover(repository: string): Promise<void> {
+  const { listWorktrees } = await import('../../git/worktree');
+  const trees = await listWorktrees(resolve(repository));
+  if ('error' in trees) throw new Error(trees.error);
+  const registered = await readTasks(file());
+  console.log(JSON.stringify(worktreeCandidates(trees, registered.flatMap(t => t.worktrees)), null, 2));
+}
+
+export function worktreeCandidates(trees: WorktreeEntry[], registered: string[]) {
+  return trees.filter(tree => !registered.includes(tree.path)).map(tree => {
+    const keys = [...new Set((`${tree.branch ?? ''} ${tree.path}`.toUpperCase().match(/\b[A-Z][A-Z0-9]+-\d+\b/g) ?? []))];
+    return { path: tree.path, branch: tree.branch, candidates: keys, source: 'worktree name', confidence: 'unconfirmed' };
+  });
 }
