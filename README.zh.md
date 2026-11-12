@@ -1021,3 +1021,17 @@ export default createAdapter;
 每个 bridge profile 每 30 秒记录一次系统内存压力余量、swap、磁盘可用空间和 RSS 最高的进程（仅进程名、PID、父 PID、RSS，不记录参数）。记录位于 profile 的 `logs/host-memory.jsonl`，达到 1 MiB 时轮转，保留一份上一文件；停止 bridge 即停止采样。采样反映整台宿主机，但并发控制只作用于当前 bridge 进程，无法限制其他 profile、容器或自行启动的构建。
 
 默认仅记录并在连续三次压力余量不高于 15% 时写警告，连续三次达到 25% 后记录恢复。先观察采样并校准阈值；如要试用自动排队，可在 Web Config 或飞书 `/config` 打开「内存压力保护」。启用后高压只暂停当前 bridge 新任务，已有任务不终止；压力恢复后继续，连续三次采样失败则解除暂停。关闭开关后恢复仅观测模式；旧版环境变量 `LARK_CHANNEL_MEMORY_GATE` 不再控制此功能。排队任务仍受现有策略有效期限制，重启处理遵循原有队列规则。这些阈值为初始值，并不能保证避免系统内存耗尽。
+
+### Coding 任务看板
+
+`monitor` 中按 `b` 切换到只读 Coding 看板，按 `j` / `k` 滚动；Web 控制台运行概览也展示同一批登记任务。任务关联需要显式登记：
+
+```bash
+lark-channel-bridge coding-board add '任务描述' --jira ANTELOPE-1234 --worktree /path/to/worktree
+lark-channel-bridge coding-board list
+lark-channel-bridge coding-board link <任务ID> --pr 'owner/repo#123'
+lark-channel-bridge coding-board link <任务ID> --run 'profile:scope'
+lark-channel-bridge coding-board link <任务ID> --archive
+```
+
+可重复关联多个 worktree、PR 和会话；`--unarchive` 恢复归档任务。Git 的 ahead/behind 使用本地上游引用，不表示实时远端。构建队列只观察兼容的本机队列快照，不保存构建结果；PR 检查按 GitHub 返回的 head 展示，采集时间及 head 匹配情况同时显示。未关联或读取不到的状态显示未知，不以会话结束推断任务完成。

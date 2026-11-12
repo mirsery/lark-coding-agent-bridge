@@ -1010,3 +1010,7 @@ A missing module, a bad factory, or a throwing adapter all degrade to noop — t
 [MIT](./LICENSE)
 
 <img src="./assets/feedback-group-qr.png" alt="Feedback group QR code" width="360">
+
+### Coding task board
+
+The `monitor` command switches to a read-only coding board with `b` (`j` / `k` scroll). The web console also shows registered tasks. Register and explicitly associate local worktrees, sessions and PRs with `coding-board add`, `coding-board list` and `coding-board link`; use `--help` for options. Queue observations are snapshots, not recorded build results. Git divergence uses local tracking refs; unknown or unavailable data is not treated as success.
