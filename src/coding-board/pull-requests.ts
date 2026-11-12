@@ -38,13 +38,20 @@ export function countChecks(items: Array<{ status?: string; conclusion?: string;
 export function createPrReader(query: Query = queryBoardPr, ttl = 60_000) {
   const cache = new Map<string, BoardPr>();
   const pending = new Set<string>();
+  const jobs: Array<{ key: string; ref: PrRef; now: number }> = [];
   let active = 0;
+  const drain = () => {
+    while (active < 4 && jobs.length) {
+      const { key, ref, now } = jobs.shift()!;
+      active++;
+      void query(ref, now).then(result => cache.set(key, result)).catch(() => cache.set(key, { ...ref, state: 'unavailable', observedAt: now })).finally(() => { pending.delete(key); active--; drain(); });
+    }
+  };
   return (refs: PrRef[], now: number): BoardPr[] => refs.map(ref => {
     const key = `${ref.repository}#${ref.number}`;
     const value = cache.get(key);
-    if ((!value || now - (value.observedAt ?? 0) >= ttl) && !pending.has(key) && active < 4) {
-      pending.add(key); active++;
-      void query(ref, now).then(result => cache.set(key, result)).catch(() => cache.set(key, { ...ref, state: 'unavailable', observedAt: now })).finally(() => { pending.delete(key); active--; });
+    if ((!value || now - (value.observedAt ?? 0) >= ttl) && !pending.has(key)) {
+      pending.add(key); jobs.push({ key, ref, now }); drain();
     }
     return value ?? { ...ref, state: 'loading' };
   });

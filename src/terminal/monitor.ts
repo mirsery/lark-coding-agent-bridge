@@ -280,7 +280,7 @@ export function renderCodingBoard(s: MonitorSnapshot, columns = 110, rows = 36, 
     for (const item of task.queue.entries) lines.push(`  构建队列：${item.state === 'running' ? '持锁中' : `排队 #${item.position}`} · 结果未知`);
     for (const pr of task.pullRequests) lines.push(`  PR ${pr.repository}#${pr.number} · ${pr.state} · 检查 ${pr.checks ? `${pr.checks.passed}通过/${pr.checks.failed}失败/${pr.checks.pending}等待/${pr.checks.skipped}跳过` : '未知'} · ${pr.head && task.git.some(g => g.status?.head && pr.head!.startsWith(g.status.head)) ? 'HEAD 匹配' : 'HEAD 未确认'}`);
     for (const run of task.runStates) lines.push(`  会话 ${run.profile}: ${run.state === 'running' ? '运行中' : run.state === 'orphan' ? '记录已过期' : '未知'}`);
-    for (const git of task.git) lines.push(`  ${git.path}  ${git.status ? `${git.status.branch ?? 'detached'} ${git.status.head ?? '—'} · ${git.status.upstream ? `↑${git.status.upstream.ahead} ↓${git.status.upstream.behind}` : '无上游'}` : 'Git 未知'}`);
+    for (const git of task.git) lines.push(`  ${git.path}  ${git.status ? `${git.status.branch ?? 'detached'} ${git.status.head ?? '—'} · ${git.status.upstream ? `↑${git.status.upstream.ahead} ↓${git.status.upstream.behind}` : '无上游'} · 改动 ${Object.values(git.status.dirty).reduce((a, b) => a + b, 0)} · ${git.observedAt ? new Date(git.observedAt).toLocaleTimeString() : '未知'}` : git.error ? 'Git 未知' : 'Git 读取中'}`);
     lines.push('');
   }
   const footer = 'j/k 滚动 · b 返回 · r 刷新 · q 退出';

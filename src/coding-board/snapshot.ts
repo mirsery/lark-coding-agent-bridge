@@ -1,12 +1,12 @@
 import { readBuildQueue, type QueueSnapshot } from './build-queue';
 import { join } from 'node:path';
-import { readRepoStatus, type GitRepoStatus } from '../git/status';
+import { createGitReader, type BoardGit } from './git-reader';
 import { readTasks, type CodingTask } from './store';
 import { createPrReader, type BoardPr } from './pull-requests';
 import type { MonitorBot } from '../terminal/snapshot';
 
 export interface CodingBoardTask extends CodingTask {
-  git: { path: string; observedAt: number; status?: GitRepoStatus; error?: string }[];
+  git: BoardGit[];
   phase: '构建持锁' | '构建排队' | '检查失败' | '检查中' | 'PR 已合并' | 'PR 待处理' | '未知';
   queue: QueueSnapshot;
   pullRequests: BoardPr[];
@@ -15,7 +15,7 @@ export interface CodingBoardTask extends CodingTask {
 export interface CodingBoardSnapshot { observedAt: number; tasks: CodingBoardTask[]; error?: string }
 
 /** Git reads are bounded by git's own timeout; no external commands mutate tasks. */
-export async function readCodingBoard(rootDir: string, now = Date.now(), bots: MonitorBot[] = [], readPr = createPrReader()): Promise<CodingBoardSnapshot> {
+export async function readCodingBoard(rootDir: string, now = Date.now(), bots: MonitorBot[] = [], readPr = createPrReader(), readGit = createGitReader()): Promise<CodingBoardSnapshot> {
   let tasks: CodingTask[];
   try { tasks = await readTasks(join(rootDir, 'coding-board', 'tasks.json')); }
   catch { return { observedAt: now, tasks: [], error: '任务登记无法读取' }; }
@@ -23,13 +23,7 @@ export async function readCodingBoard(rootDir: string, now = Date.now(), bots: M
   const queue = await readBuildQueue(now);
   // Limit work to four git probes at a time.
   for (const task of tasks.filter(t => !t.archived)) {
-    const git: CodingBoardTask['git'] = [];
-    for (let i = 0; i < task.worktrees.length; i += 4) {
-      git.push(...await Promise.all(task.worktrees.slice(i, i + 4).map(async path => {
-        const status = await readRepoStatus(path).catch(() => undefined);
-        return { path, observedAt: now, ...(status ? { status } : { error: '无法读取 Git 状态' }) };
-      })));
-    }
+    const git = readGit(task.worktrees, now);
     const runStates = task.runs.map(run => {
       const match = bots.find(bot => bot.profile === run.profile)?.runs.find(r => r.scope === run.scope);
       return { ...run, state: match ? (match.orphan ? 'orphan' as const : 'running' as const) : 'unknown' as const };

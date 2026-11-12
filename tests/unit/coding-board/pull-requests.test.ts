@@ -18,3 +18,16 @@ it('does not count skipped or unfinished checks as passing', async () => {
   const { countChecks } = await import('../../../src/coding-board/pull-requests');
   expect(countChecks([{ conclusion: 'SUCCESS' }, { conclusion: 'SKIPPED' }, { status: 'IN_PROGRESS' }, { conclusion: 'FAILURE' }])).toEqual({ passed: 1, skipped: 1, pending: 1, failed: 1 });
 });
+
+it('eventually reads more than four PRs without exceeding four concurrent requests', async () => {
+  let active = 0, max = 0;
+  const query = vi.fn(async (ref: { repository: string; number: number }, now: number) => {
+    active++; max = Math.max(max, active); await new Promise(r => setTimeout(r, 5)); active--;
+    return { ...ref, observedAt: now, state: 'unavailable' as const };
+  });
+  const read = createPrReader(query);
+  const refs = Array.from({ length: 9 }, (_, i) => ({ repository: 'org/repo', number: i + 1 }));
+  read(refs, 1);
+  await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(9));
+  expect(max).toBeLessThanOrEqual(4);
+});
