@@ -1,3 +1,4 @@
+import { readBuildQueue, type QueueSnapshot } from './build-queue';
 import { join } from 'node:path';
 import { readRepoStatus, type GitRepoStatus } from '../git/status';
 import { readTasks, type CodingTask } from './store';
@@ -6,6 +7,7 @@ import type { MonitorBot } from '../terminal/snapshot';
 
 export interface CodingBoardTask extends CodingTask {
   git: { path: string; observedAt: number; status?: GitRepoStatus; error?: string }[];
+  queue: QueueSnapshot;
   pullRequests: BoardPr[];
   runStates: { profile: string; scope: string; state: 'running' | 'orphan' | 'unknown' }[];
 }
@@ -17,6 +19,7 @@ export async function readCodingBoard(rootDir: string, now = Date.now(), bots: M
   try { tasks = await readTasks(join(rootDir, 'coding-board', 'tasks.json')); }
   catch { return { observedAt: now, tasks: [], error: '任务登记无法读取' }; }
   const result: CodingBoardTask[] = [];
+  const queue = await readBuildQueue(now);
   // Limit work to four git probes at a time.
   for (const task of tasks.filter(t => !t.archived)) {
     const git: CodingBoardTask['git'] = [];
@@ -30,7 +33,7 @@ export async function readCodingBoard(rootDir: string, now = Date.now(), bots: M
       const match = bots.find(bot => bot.profile === run.profile)?.runs.find(r => r.scope === run.scope);
       return { ...run, state: match ? (match.orphan ? 'orphan' as const : 'running' as const) : 'unknown' as const };
     });
-    result.push({ ...task, git, runStates, pullRequests: readPr(task.prs, now) });
+    result.push({ ...task, git, runStates, queue: { ...queue, entries: queue.entries.filter(entry => task.worktrees.includes(entry.path)) }, pullRequests: readPr(task.prs, now) });
   }
   return { observedAt: now, tasks: result };
 }
