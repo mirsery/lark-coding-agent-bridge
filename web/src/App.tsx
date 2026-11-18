@@ -7,6 +7,7 @@ import { Sidebar } from "@/views/Sidebar";
 import { ProfileDetail } from "@/views/ProfileDetail";
 import { OnboardWizard } from "@/views/OnboardWizard";
 import { TASKS_VIEW, TasksView } from "@/views/TasksView";
+import { CODING_VIEW, CodingView } from "@/views/CodingView";
 
 export function App() {
   const [onboard, setOnboard] = useState<OnboardState | null>(null);
@@ -51,8 +52,10 @@ export function App() {
     <div className="flex h-screen overflow-hidden">
       <Sidebar selected={selected} onSelect={setSelected} refreshToken={refreshToken} />
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-3xl p-6 pb-16">
-          {selected === TASKS_VIEW ? (
+        <div className={selected === CODING_VIEW ? "mx-auto max-w-7xl p-6 pb-16" : "mx-auto max-w-3xl p-6 pb-16"}>
+          {selected === CODING_VIEW ? (
+            <CodingView />
+          ) : selected === TASKS_VIEW ? (
             <TasksView />
           ) : selected ? (
             <ProfileDetail

@@ -146,6 +146,24 @@ export interface HostMetricsInfo {
   io?: { disk: { read: number; write: number } | null; network: { read: number; write: number } | null };
 }
 
+/** Mirrors `CodingBoardSnapshot` in src/coding-board/snapshot.ts. */
+export type CodingPhase = "构建中" | "构建排队" | "门禁失败" | "CI 失败" | "编码中" | "CI 中" | "待合并" | "等 review" | "门禁通过" | "闲置" | "已关闭" | "已合并";
+export interface CodingJob { id: string; label: string; cmd: string; startedAt: number; state: "running" | "waiting" | "passed" | "failed" | "interrupted"; exitCode?: number; position?: number; logTail?: string[] }
+export interface CodingSession { profile: string; scope: string; chatId: string; threadId?: string; chatName?: string; chatType?: string; running: boolean; startedAt?: number; ledger?: string; chatUrl?: string }
+export interface CodingPr { number: number; title: string; branch: string; state: "open" | "closed" | "merged"; url?: string; review?: string; updatedAt?: number; checks?: { passed: number; failed: number; pending: number; skipped: number } }
+export interface CodingWorktree { path: string; name: string; repo: string; branch?: string; cleaned?: boolean; dirty?: number; lastCommitAt?: number; phase: CodingPhase; jobs: CodingJob[]; pr?: CodingPr; sessions: CodingSession[]; activityAt?: number }
+export interface CodingTask { key: string; jira?: string; title: string; repo: string; phase: CodingPhase; activityAt?: number; worktrees: CodingWorktree[]; ledger?: string; nextStep?: string }
+export interface CodingBoardInfo {
+  observedAt: number;
+  tasks: CodingTask[];
+  merged: { key: string; title: string; worktrees: string[] }[];
+  queue: { name: string; path: string; state: "running" | "waiting"; position?: number; cmd?: string; startedAt?: number; label?: string }[];
+  counts: Partial<Record<CodingPhase, number>>;
+  idle: number;
+  loading?: boolean;
+  error?: string;
+}
+
 export interface MonitorInfo {
   now: number;
   host: string;
@@ -153,7 +171,7 @@ export interface MonitorInfo {
   load: number;
   metrics?: HostMetricsInfo;
   bots: MonitorBot[];
-  codingBoard?: { observedAt: number; error?: string; tasks: { id: string; title: string; jira?: string; phase: string; gates?: { id: string; head: string; dirty: boolean; endHead?: string; endDirty?: boolean; finishedAt?: number; exitCode?: number | null }[]; queue: { state: string; observedAt: number; entries: { path: string; state: string; position?: number }[] }; pullRequests: { repository: string; number: number; state: string; head?: string; url?: string; observedAt?: number; checks?: { passed: number; failed: number; pending: number; skipped: number } }[]; runStates: { profile: string; scope: string; state: "running" | "orphan" | "unknown" }[]; prs: { repository: string; number: number }[]; git: { path: string; observedAt?: number; status?: { branch?: string; head?: string; dirty: { staged: number; unstaged: number; untracked: number; conflicted: number }; upstream?: { ahead: number; behind: number } }; error?: string }[] }[] };
+  codingBoard?: CodingBoardInfo;
 }
 
 /** Owner user-identity auth status (for the "我的群" picker). */
