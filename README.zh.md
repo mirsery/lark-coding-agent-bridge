@@ -184,6 +184,21 @@ macOS 上安装 `osx-cpu-temp`（`brew install osx-cpu-temp`）后，面板还�
 
 面板只读取本机状态，无需重启 bot。CPU 根据相邻采样计算，首次显示等待；RAM 为非空闲内存，包含系统缓存。磁盘容量缓存 60 秒，未变化的日志复用解析结果，每次最多读取 256 KiB 日志尾部。任务阶段来自实际日志，不估算完成百分比；退出或过期的任务会标记为已中断。
 
+### 编码任务看板
+
+`monitor` 中按 `b` 切换到编码任务看板，Web 控制台侧栏「编码任务」页展示同一份数据。看板自动发现，不需要手动登记：
+
+- **worktree**：扫描 `~/workspace` 下各仓库的 linked worktree（分支、未提交改动数、最近提交时间）。用环境变量 `LARK_CODING_ROOTS` 指定其他目录，多个用 `:` 分隔。
+- **构建与门禁**：读取 `build-queue` 的锁、排队记录和任务目录（`~/.cache/build-queue.lock.jobs/`，可用 `BUILD_QUEUE_LOCK` 改位置），展示正在构建、排队位置、最近 7 天每次门禁的退出码；进程已退出却没有退出码的标为中断，不当作成功。
+- **PR**：对有 GitHub 远端的仓库调用 `gh pr list --author @me`，展示 review 状态和 CI 通过/失败/进行中数量。
+- **会话**：构建记录里的 agent 会话 ID 对应到 bridge 的会话，展示群名或私聊、最近一次提问和任务台账「下一步」，可直接跳回飞书会话。
+
+同一 Jira 号（分支名、worktree 名或 PR 标题里的 `ABC-123`）的 worktree、构建和 PR 合为一个任务；没有 Jira 号时按 worktree 分组。任务按阶段排序：构建中、构建排队、门禁失败、CI 失败、编码中、CI 中、待合并、等 review、门禁通过。全部已合并或关闭的任务收进底部「已合并」一行（提示可清理），既没有未提交改动、构建记录、PR，也没有运行中会话的闲置 worktree 只计数不展开；worktree 已清理但 PR 仍开着的任务照常显示。
+
+TUI 中 `↑` / `↓` 或 `j` / `k` 选择任务，回车展开（下一步、构建日志尾部、会话），`o` 在飞书中打开该任务的会话，`b` 返回。Web 页可按阶段筛选和搜索，点任务看详情。git 和 `gh` 查询在后台异步刷新并缓存，不阻塞面板；`--once` / `--json` 会等本次查询完成。
+
+`coding-board` 命令保留为覆盖手段：`add` 给任务起标题或把指定 worktree 并入某个任务，`link <任务ID> --archive` 从看板隐藏某个任务，`--unarchive` 恢复。
+
 ### Web 控制台（`--web-ui`）
 
 `--web-ui` 是上面单 profile 后台服务的**替代方案**，不是可以叠加使用的附加项。给 `start` 加上它，会启动一个"全机唯一"的 supervisor 进程，统一托管所有 profile，并提供本地 web 控制台来启动/停止/配置它们：
@@ -198,7 +213,7 @@ lark-channel-bridge start --web-ui
 
 ⚠️ **不要对同一个 profile 同时用这两种方式。** 如果某个 profile 已经有单 profile 后台服务在跑，这时又单独起了 `run --web-ui` / `start --web-ui`，控制台会尝试去接管这个 profile，但拿不到它的 runtime lock（已经被前一个进程持有），于是静默失败并把它显示为**未运行**——即便原来那个 daemon 其实还活着、还在正常收发消息。控制台目前只能感知自己托管的 profile，感知不到被其他进程保活的 profile。想用控制台的话，先停掉单 profile 后台服务（`lark-channel-bridge stop --profile <name>`），再让控制台来接管启动。
 
-控制台侧栏的「运行概览」与终端面板同源：顶部是主机 CPU / 内存 / 磁盘 / 网络；下面每个 bot 一张卡片，顺序固定，展示 Sponsor、5 小时和本周额度条及本地重置时间（≥ 90% 标红，用尽标「额度已用尽」），卡片里列出该 bot 的会话（当前步骤、已运行、摘要、所在会话和发起人）。页面每 5 秒刷新；控制台进程托管的任务可以直接停止，其他进程的任务只能查看。
+控制台侧栏的「运行概览」与终端面板同源：顶部是主机 CPU / 内存 / 磁盘 / 网络；下面每个 bot 一张卡片，顺序固定，展示 Sponsor、5 小时和本周额度条及本地重置时间（≥ 90% 标红，用尽标「额度已用尽」），卡片里列出该 bot 的会话（当前步骤、已运行、摘要、所在会话和发起人）。页面每 5 秒刷新；控制台进程托管的任务可以直接停止，其他进程的任务只能查看。侧栏「编码任务」页展示本机编码任务的进度，见[编码任务看板](#编码任务看板)。
 
 ![Web 控制台「运行概览」示例（演示数据）](docs/images/web-console-overview.png)
 
@@ -1021,19 +1036,3 @@ export default createAdapter;
 每个 bridge profile 每 30 秒记录一次系统内存压力余量、swap、磁盘可用空间和 RSS 最高的进程（仅进程名、PID、父 PID、RSS，不记录参数）。记录位于 profile 的 `logs/host-memory.jsonl`，达到 1 MiB 时轮转，保留一份上一文件；停止 bridge 即停止采样。采样反映整台宿主机，但并发控制只作用于当前 bridge 进程，无法限制其他 profile、容器或自行启动的构建。
 
 默认仅记录并在连续三次压力余量不高于 15% 时写警告，连续三次达到 25% 后记录恢复。先观察采样并校准阈值；如要试用自动排队，可在 Web Config 或飞书 `/config` 打开「内存压力保护」。启用后高压只暂停当前 bridge 新任务，已有任务不终止；压力恢复后继续，连续三次采样失败则解除暂停。关闭开关后恢复仅观测模式；旧版环境变量 `LARK_CHANNEL_MEMORY_GATE` 不再控制此功能。排队任务仍受现有策略有效期限制，重启处理遵循原有队列规则。这些阈值为初始值，并不能保证避免系统内存耗尽。
-
-### Coding 任务看板
-
-`monitor` 中按 `b` 切换到只读 Coding 看板，按 `j` / `k` 滚动；Web 控制台运行概览也展示同一批登记任务。任务关联需要显式登记：
-
-```bash
-lark-channel-bridge coding-board add '任务描述' --jira ANTELOPE-1234 --worktree /path/to/worktree
-lark-channel-bridge coding-board list
-lark-channel-bridge coding-board discover /path/to/repository
-lark-channel-bridge coding-board gate --worktree /path/to/worktree <任务ID> -- mvnd test
-lark-channel-bridge coding-board link <任务ID> --pr 'owner/repo#123'
-lark-channel-bridge coding-board link <任务ID> --run 'profile:scope'
-lark-channel-bridge coding-board link <任务ID> --archive
-```
-
-可重复关联多个 worktree、PR 和会话；`--unarchive` 恢复归档任务。Git 的 ahead/behind 使用本地上游引用，不表示实时远端。构建队列只观察兼容的本机队列快照；使用 `coding-board gate` 显式运行的命令会记录退出状态、开始和结束时的提交及工作区状态，中断或状态不明不会当作成功；PR 检查按 GitHub 返回的 head 展示，采集时间及 head 匹配情况同时显示。未关联或读取不到的状态显示未知，不以会话结束推断任务完成。

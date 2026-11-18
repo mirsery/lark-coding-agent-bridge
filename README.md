@@ -184,6 +184,21 @@ Working bots appear first, task summaries wrap and long URLs collapse to their f
 
 The dashboard reads local state without requiring a bot restart. CPU utilization uses successive samples and is unavailable on the first frame. RAM shows non-free memory, including OS cache. Disk capacity is cached for 60 seconds; unchanged logs reuse parsed events, with each tail read capped at 256 KiB. Task stages come from real telemetry rather than estimated completion percentages, and exited or expired tasks are marked as interrupted.
 
+### Coding task board
+
+Press `b` in `monitor` to switch to the coding task board. The web console's 编码任务 page in the sidebar shows the same data. The board discovers tasks automatically, with no registration:
+
+- **Worktrees**: linked worktrees of every repository under `~/workspace` (branch, uncommitted changes, last commit time). Set `LARK_CODING_ROOTS` to scan other directories, separated by `:`.
+- **Builds and gates**: the `build-queue` lock, queue tickets and job directories (`~/.cache/build-queue.lock.jobs/`; `BUILD_QUEUE_LOCK` moves it), showing the running build, queue position and the exit code of each gate run in the last 7 days. A job whose process exited without an exit code is marked interrupted, never successful.
+- **PRs**: `gh pr list --author @me` for repositories with a GitHub remote, showing review state and passed / failed / pending CI checks.
+- **Sessions**: the agent session ID recorded with each build is matched to the bridge session, showing the chat, the latest prompt and the task ledger's next step, with a link back to the Feishu chat.
+
+Worktrees, builds and PRs that share a Jira key (`ABC-123` in a branch, worktree name or PR title) form one task; without a key, each worktree is its own task. Tasks are sorted by phase: building, queued, gate failed, CI failed, coding, CI running, ready to merge, awaiting review, gate passed. Tasks that are fully merged or closed collapse into a merged line at the bottom (a hint to clean up); idle worktrees (no uncommitted changes, builds, PR or running session) are only counted. A task whose worktree is gone but whose PR is still open stays on the board.
+
+In the TUI, `↑` / `↓` or `j` / `k` selects a task, Enter expands it (next step, build log tail, session), `o` opens its Feishu chat and `b` returns. The web page filters by phase, searches, and shows details for the selected task. Git and `gh` probes refresh in the background and are cached, so they never block the dashboard; `--once` / `--json` wait for the current probe.
+
+The `coding-board` command remains for overrides: `add` sets a task title or forces a worktree into a task, `link <task-id> --archive` hides a task and `--unarchive` restores it.
+
 ### Web console (`--web-ui`)
 
 `--web-ui` is an alternative background service, not an add-on to the per-profile daemons above. Add it to `start` to run one machine-wide supervisor process that hosts every profile and serves a local web console to start/stop/configure them:
@@ -198,7 +213,7 @@ Pick one mode per machine:
 
 ⚠️ **Do not run both for the same profile.** If a profile already has a per-profile daemon running and you separately start `run --web-ui` / `start --web-ui`, the console tries to host that profile too, fails to acquire its runtime lock (already held by the other process), and silently falls back to showing it as **not running** — even though the original daemon is still alive and answering messages. The console currently only reports profiles it hosts itself; it does not detect profiles kept alive by another process. If you want the console, stop the per-profile daemon first (`lark-channel-bridge stop --profile <name>`) and let the console start it instead.
 
-The console’s **运行概览** page shows the same data as the terminal dashboard. The top row shows host CPU, memory, disk and network. Below it, each bot has its own card, in a stable order, with its Sponsor and its five-hour and weekly quota bars with local reset times. Usage at 90% or more turns red, and a `额度已用尽` badge marks an exhausted quota. Each bot’s sessions are listed under it, showing the current step, elapsed time, summary, chat and starter. The page refreshes every five seconds. Runs hosted by the console process can be stopped from the page; runs owned by other processes are view-only.
+The console’s **运行概览** page shows the same data as the terminal dashboard. The top row shows host CPU, memory, disk and network. Below it, each bot has its own card, in a stable order, with its Sponsor and its five-hour and weekly quota bars with local reset times. Usage at 90% or more turns red, and a `额度已用尽` badge marks an exhausted quota. Each bot’s sessions are listed under it, showing the current step, elapsed time, summary, chat and starter. The page refreshes every five seconds. Runs hosted by the console process can be stopped from the page; runs owned by other processes are view-only. The sidebar's 编码任务 page tracks local coding tasks; see [Coding task board](#coding-task-board).
 
 ![The web console’s 运行概览 page with demonstration data](docs/images/web-console-overview.png)
 
@@ -1010,7 +1025,3 @@ A missing module, a bad factory, or a throwing adapter all degrade to noop — t
 [MIT](./LICENSE)
 
 <img src="./assets/feedback-group-qr.png" alt="Feedback group QR code" width="360">
-
-### Coding task board
-
-The `monitor` command switches to a read-only coding board with `b` (`j` / `k` scroll). The web console also shows registered tasks. Register and explicitly associate local worktrees, sessions and PRs with `coding-board add`, `coding-board list` and `coding-board link`; use `--help` for options. Queue observations are snapshots, not recorded build results. Git divergence uses local tracking refs; unknown or unavailable data is not treated as success.
