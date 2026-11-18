@@ -43,10 +43,21 @@ export async function boardGate(id: string, command: string[], opts: { worktree:
   process.exitCode = await runRecordedGate(file(), id, resolve(opts.worktree), normalizeGateCommand(command));
 }
 
+/** One settled board snapshot: JSON for cards and scripts, the TUI board as text otherwise. */
+export async function boardStatus(opts: { json?: boolean; width?: string }): Promise<void> {
+  const { createMonitorReader } = await import('../../terminal/snapshot');
+  const { renderCodingBoard } = await import('../../terminal/coding-board');
+  const snapshot = await createMonitorReader()(resolveAppPaths().rootDir, undefined, Date.now(), false, { subscriptions: false, waitForBoard: true });
+  if (opts.json) { console.log(JSON.stringify(snapshot.codingBoard ?? null, null, 2)); return; }
+  const width = Number(opts.width ?? process.stdout.columns ?? 120);
+  console.log(renderCodingBoard(snapshot, Number.isFinite(width) && width > 40 ? width : 120, 1000, { cursor: -1, expanded: false }, false));
+}
+
 export function registerCodingBoard(program: Command): void {
   const board = program.command('coding-board').description('Manage local coding task associations').enablePositionalOptions();
   board.command('add <title>').option('--jira <key>').option('--worktree <path...>').action(boardAdd);
   board.command('list').action(boardList);
+  board.command('status').description('Print the auto-discovered coding board once').option('--json').option('--width <columns>').action(boardStatus);
   board.command('link <id>').option('--worktree <path>').option('--run <profile:scope>').option('--pr <owner/repo#number>').option('--archive').option('--unarchive').action(boardLink);
   board.command('gate <id> <command...>').requiredOption('--worktree <path>').passThroughOptions().description('Run and record a gate for an explicitly linked worktree').action(boardGate);
   board.command('discover <repository>').description('List unregistered worktrees as unconfirmed candidates').action(boardDiscover);

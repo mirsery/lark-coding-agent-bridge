@@ -188,7 +188,7 @@ macOS 上安装 `osx-cpu-temp`（`brew install osx-cpu-temp`）后，面板还�
 
 `monitor` 中按 `b` 切换到编码任务看板，Web 控制台侧栏「编码任务」页展示同一份数据。看板自动发现，不需要手动登记：
 
-- **worktree**：扫描 `~/workspace` 下各仓库的 linked worktree（分支、未提交改动数、最近提交时间）。用环境变量 `LARK_CODING_ROOTS` 指定其他目录，多个用 `:` 分隔。
+- **worktree**：扫描配置目录下各仓库的 linked worktree（分支、未提交改动数、最近提交时间）。目录在飞书 `/config` 或 Web 配置页的「编码看板扫描目录」里设置，可填仓库本身（如 `~/workspace/antelope`）或放仓库的目录，多个用逗号分隔；留空时扫描该 profile 的工作目录。看板汇总所有 profile 的扫描目录；临时调试可用环境变量 `LARK_CODING_ROOTS`（`:` 分隔）覆盖。
 - **构建与门禁**：读取 `build-queue` 的锁、排队记录和任务目录（`~/.cache/build-queue.lock.jobs/`，可用 `BUILD_QUEUE_LOCK` 改位置），展示正在构建、排队位置、最近 7 天每次门禁的退出码；进程已退出却没有退出码的标为中断，不当作成功。
 - **PR**：对有 GitHub 远端的仓库调用 `gh pr list --author @me`，展示 review 状态和 CI 通过/失败/进行中数量。
 - **会话**：构建记录里的 agent 会话 ID 对应到 bridge 的会话，展示群名或私聊、最近一次提问和任务台账「下一步」，可直接跳回飞书会话。
@@ -197,7 +197,9 @@ macOS 上安装 `osx-cpu-temp`（`brew install osx-cpu-temp`）后，面板还�
 
 TUI 中 `↑` / `↓` 或 `j` / `k` 选择任务，回车展开（下一步、构建日志尾部、会话），`o` 在飞书中打开该任务的会话，`b` 返回。Web 页可按阶段筛选和搜索，点任务看详情。git 和 `gh` 查询在后台异步刷新并缓存，不阻塞面板；`--once` / `--json` 会等本次查询完成。
 
-`coding-board` 命令保留为覆盖手段：`add` 给任务起标题或把指定 worktree 并入某个任务，`link <任务ID> --archive` 从看板隐藏某个任务，`--unarchive` 恢复。
+`lark-channel-bridge coding-board status` 输出一次看板（`--json` 给脚本和飞书卡片用，`/show-coding` 就读这份数据）。
+
+`coding-board` 命令还保留为覆盖手段：`add` 给任务起标题或把指定 worktree 并入某个任务，`link <任务ID> --archive` 从看板隐藏某个任务，`--unarchive` 恢复。
 
 ### Web 控制台（`--web-ui`）
 

@@ -67,7 +67,8 @@ export function createMonitorReader(intervalMs = 10_000) {
   const readSubscription = createSubscriptionReader();
   const sampleHost = createHostSampler(intervalMs);
   const readBoard = createCodingBoardReader();
-  return async (rootDir: string, profile?: string, now = Date.now(), waitForSubscription = false): Promise<MonitorSnapshot> => {
+  /** `subscriptions: false` skips quota lookups (one-shot board readers); `waitForBoard` defaults to `waitForSubscription`. */
+  return async (rootDir: string, profile?: string, now = Date.now(), waitForSubscription = false, extra: { subscriptions?: boolean; waitForBoard?: boolean } = {}): Promise<MonitorSnapshot> => {
   const root = await loadRootConfig(join(rootDir, 'config.json')).catch(() => undefined);
   const entries = readAndPrune(join(rootDir, 'registry', 'processes.json'));
   let dirs: string[] = [];
@@ -79,7 +80,7 @@ export function createMonitorReader(intervalMs = 10_000) {
     const events = await recentActivity(paths.logsDir, cache);
     const entry: ProcessEntry | undefined = entries.find(e => e.profileName === name && isAlive(e.pid));
     const config = root?.profiles[name];
-    const subscription = config ? await readSubscription(name, config, paths.profileDir, now, waitForSubscription) : undefined;
+    const subscription = config && extra.subscriptions !== false ? await readSubscription(name, config, paths.profileDir, now, waitForSubscription) : undefined;
     const activity = events.at(-1);
     return { profile: name, name: entry?.botName ?? name, agent: entry?.agentKind ?? config?.agentKind ?? 'unknown', pid: entry?.pid,
       online: Boolean(entry), activity, subscription,
@@ -91,7 +92,7 @@ export function createMonitorReader(intervalMs = 10_000) {
   }));
   const metrics = await sampleHost(now);
   const tenants = Object.fromEntries(Object.entries(root?.profiles ?? {}).map(([name, p]) => [name, (p as { accounts?: { app?: { tenant?: string } } }).accounts?.app?.tenant]));
-  if (waitForSubscription) await readBoard.settle(rootDir, bots);
+  if (extra.waitForBoard ?? waitForSubscription) await readBoard.settle(rootDir, bots);
   const codingBoard = await readBoard(rootDir, now, bots, tenants).catch((): CodingBoardSnapshot => ({ observedAt: now, tasks: [], merged: [], queue: [], counts: {}, idle: 0, error: '编码任务读取失败' }));
   return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics, codingBoard };
   };

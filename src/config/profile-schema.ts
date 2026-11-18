@@ -545,9 +545,13 @@ function normalizePreferences(
     messageReply,
     forceReplyInThread,
     memoryPressureGate,
+    codingBoardRoots,
     topicSessionRetentionMonths,
     ...rest
   } = preferences ?? {};
+  if (codingBoardRoots !== undefined && (!Array.isArray(codingBoardRoots) || !codingBoardRoots.every(r => typeof r === 'string'))) {
+    throw new Error('preferences.codingBoardRoots must be an array of paths');
+  }
   if (memoryPressureGate !== undefined && typeof memoryPressureGate !== 'boolean') {
     throw new Error('preferences.memoryPressureGate must be a boolean');
   }
@@ -564,6 +568,7 @@ function normalizePreferences(
     ...rest,
     ...(forceReplyInThread !== undefined ? { forceReplyInThread } : {}),
     ...(memoryPressureGate !== undefined ? { memoryPressureGate } : {}),
+    ...(codingBoardRoots?.length ? { codingBoardRoots } : {}),
     ...(topicSessionRetentionMonths !== undefined ? { topicSessionRetentionMonths } : {}),
     ...(messageReply !== undefined && isMessageReply(messageReply) ? { messageReply } : {}),
   };

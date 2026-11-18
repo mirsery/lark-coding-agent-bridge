@@ -53,6 +53,7 @@ import { agentDescriptor } from '../agent/registry';
 import { log } from '../core/logger';
 import { HttpError } from './http';
 import type { UiRuntime } from './types';
+import { parseRootsInput } from '../coding-board/sources';
 
 /** HTTP-shaped error the server turns into a JSON error response. */
 export class ApiError extends HttpError {}
@@ -83,6 +84,10 @@ export interface ConfigView {
   cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
   memoryPressureGate: boolean;
+  /** Saved coding-board roots; empty means the working directory below. */
+  codingBoardRoots: string[];
+  /** The profile's working directory, scanned when {@link codingBoardRoots} is empty. */
+  workspaceDir?: string;
   runIdleTimeoutMinutes: number;
   requireMentionInGroup: boolean;
   larkCliIdentity: LarkCliIdentityPreset;
@@ -125,6 +130,8 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
     cotMessages: getCotMessages(state.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(state.cfg),
     memoryPressureGate: state.cfg.preferences?.memoryPressureGate === true,
+    codingBoardRoots: state.cfg.preferences?.codingBoardRoots ?? [],
+    ...(state.profileConfig.workspaces.default ? { workspaceDir: state.profileConfig.workspaces.default } : {}),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(state.cfg),
     larkCliIdentity: state.profileConfig.larkCli.identityPreset,
@@ -344,6 +351,9 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       cotMessages,
       maxConcurrentRuns,
       memoryPressureGate: typeof fv.memoryPressureGate === 'boolean' ? fv.memoryPressureGate : state.cfg.preferences?.memoryPressureGate === true,
+      codingBoardRoots: Array.isArray(fv.codingBoardRoots)
+        ? parseRootsInput(fv.codingBoardRoots.filter((r: unknown): r is string => typeof r === 'string').join('\n'))
+        : state.cfg.preferences?.codingBoardRoots,
       runIdleTimeoutMinutes,
     },
   };

@@ -6,26 +6,56 @@ import { parsePorcelainV2 } from '../git/status';
 import { parseWorktreeList } from '../git/worktree';
 import { countChecks } from './pull-requests';
 
-/** Directories scanned for repositories: `LARK_CODING_ROOTS` (`:`-separated), default `~/workspace`. */
-export function codingRoots(env = process.env): string[] {
+const expandHome = (p: string) => p === '~' ? homedir() : p.startsWith('~/') ? join(homedir(), p.slice(2)) : p;
+
+/**
+ * Directories scanned for repositories: `LARK_CODING_ROOTS` (`:`-separated)
+ * overrides the configured roots. A root may be a repository itself or a
+ * directory of repositories.
+ */
+export function codingRoots(env = process.env, configured: string[] = []): string[] {
   const raw = env.LARK_CODING_ROOTS?.trim();
-  const list = raw ? raw.split(':').map(s => s.trim()).filter(Boolean) : [join(homedir(), 'workspace')];
-  return list.map(p => p.startsWith('~/') ? join(homedir(), p.slice(2)) : p);
+  return [...new Set((raw ? raw.split(':').map(s => s.trim()).filter(Boolean) : configured).map(expandHome))];
 }
 
-/** Main checkouts directly under each root (a `.git` directory, not a linked worktree's `.git` file). */
+/** Settings input → absolute paths: split on commas, semicolons or newlines; `~` expands; relative entries are dropped. */
+export function parseRootsInput(text: string): string[] {
+  return [...new Set(text.split(/[,，;；\n]/).map(s => expandHome(s.trim())).filter(s => s.startsWith('/')).map(s => s.length > 1 ? s.replace(/\/+$/, '') : s))];
+}
+
+/** One profile's roots: `preferences.codingBoardRoots`, else its working directory. */
+export function profileCodingRoots(profile: { preferences?: { codingBoardRoots?: string[] }; workspaces?: { default?: string } }): string[] {
+  const saved = profile.preferences?.codingBoardRoots?.filter(Boolean);
+  if (saved?.length) return saved;
+  return profile.workspaces?.default ? [profile.workspaces.default] : [];
+}
+
+/** The board is machine-wide: the union of every profile's roots. */
+export async function readConfiguredRoots(rootDir: string): Promise<string[]> {
+  // Read the raw file: one profile failing validation must not blank the board.
+  let profiles: Record<string, unknown> = {};
+  try { profiles = (JSON.parse(await readFile(join(rootDir, 'config.json'), 'utf8')) as { profiles?: Record<string, unknown> }).profiles ?? {}; }
+  catch { return []; }
+  return [...new Set(Object.values(profiles).flatMap(raw => {
+    const p = (raw ?? {}) as { preferences?: { codingBoardRoots?: unknown }; workspaces?: { default?: unknown } };
+    const saved = Array.isArray(p.preferences?.codingBoardRoots) ? p.preferences.codingBoardRoots.filter((r): r is string => typeof r === 'string') : undefined;
+    return profileCodingRoots({ preferences: { codingBoardRoots: saved }, workspaces: { default: typeof p.workspaces?.default === 'string' ? p.workspaces.default : undefined } });
+  }))];
+}
+
+const isRepo = async (path: string) => (await stat(join(path, '.git')).catch(() => undefined))?.isDirectory() ?? false;
+
+/** Main checkouts: each root that is one, else those directly under it (a `.git` directory, not a linked worktree's `.git` file). */
 export async function listRepos(roots: string[]): Promise<string[]> {
   const out: string[] = [];
   for (const root of roots) {
+    if (await isRepo(root)) { out.push(root); continue; }
     let names: string[] = [];
     try { names = (await readdir(root, { withFileTypes: true })).filter(d => d.isDirectory() && !d.name.startsWith('.')).map(d => d.name); }
     catch { continue; }
-    for (const name of names.sort()) {
-      const info = await stat(join(root, name, '.git')).catch(() => undefined);
-      if (info?.isDirectory()) out.push(join(root, name));
-    }
+    for (const name of names.sort()) if (await isRepo(join(root, name))) out.push(join(root, name));
   }
-  return out;
+  return [...new Set(out)];
 }
 
 export interface RepoInfo {

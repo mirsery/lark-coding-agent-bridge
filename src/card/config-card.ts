@@ -19,6 +19,10 @@ export interface ConfigFormOpts {
   cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
   memoryPressureGate?: boolean;
+  /** Saved coding-board roots; empty scans {@link workspaceDir}. */
+  codingBoardRoots?: string[];
+  /** The profile's working directory (the coding board's default root). */
+  workspaceDir?: string;
   /** 0 means "disabled". */
   runIdleTimeoutMinutes: number;
   /** Whole calendar months; 0 keeps topic sessions forever. */
@@ -382,6 +386,17 @@ export function configFormCard(opts: ConfigFormOpts): object {
               },
               {
                 tag: 'markdown',
+                content: `**编码看板扫描目录**\n<font color="grey">TUI / Web 编码任务看板从这些目录找仓库和 worktree，可填仓库本身或放仓库的目录，多个用逗号分隔；留空 = 工作目录${opts.workspaceDir ? ` ${opts.workspaceDir}` : ''}</font>`,
+              },
+              {
+                tag: 'input',
+                name: 'coding_board_roots',
+                default_value: (opts.codingBoardRoots ?? []).join(', '),
+                placeholder: { tag: 'plain_text', content: opts.workspaceDir ? `留空 = ${opts.workspaceDir}` : '例如 ~/workspace/antelope' },
+                input_type: 'text',
+              },
+              {
+                tag: 'markdown',
                 content:
                   '**并发上限**（1–50，默认 10）\n<font color="grey">全局同时运行的 agent 数，超出 FIFO 排队</font>',
               },
@@ -618,6 +633,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
         kvBlock('⚙️ **运行与权限**', [
           ['并发上限', String(opts.maxConcurrentRuns)],
           ['内存压力保护', opts.memoryPressureGate ? '开' : '关'],
+          ['编码看板扫描', opts.codingBoardRoots?.length ? opts.codingBoardRoots.join('、') : '工作目录'],
           ['run 探活', opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'],
           ['强制话题回复', opts.forceReplyInThread ? '开启' : '关闭'],
           ['话题会话保留', opts.topicSessionRetentionMonths === 0 ? '永不' : `${opts.topicSessionRetentionMonths} 个月`],

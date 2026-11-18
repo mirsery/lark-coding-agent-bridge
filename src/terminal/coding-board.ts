@@ -2,6 +2,7 @@ import type { BoardJob, BoardWorktree, CodingBoardSnapshot, CodingBoardTask, Pha
 import { clean, fit, width } from './text';
 import { foreground, type MonitorTheme } from './theme';
 
+/** `cursor: -1` renders a static board (no selection, no key footer) for one-shot output. */
 export interface BoardView { cursor: number; expanded: boolean; offset?: number }
 
 /** Theme colour per phase: cyan running, yellow waiting, red failing, magenta waiting on people, gray done. */
@@ -63,7 +64,7 @@ export function renderCodingBoard(s: { now: number; codingBoard?: CodingBoardSna
     const nameW = w >= 140 ? 28 : 22, gateW = 14, prW = 16, sessW = 8;
     const branchW = Math.max(10, w - 4 - nameW - gateW - prW - sessW - 8);
     out.push(paint(fit(`  ${fit('JIRA / WORKTREE', nameW + 2)}  ${fit('阶段 · 分支', branchW)}  ${fit('门禁', gateW)}  ${fit('PR', prW)}  ${fit('会话', sessW)}`, w), 90));
-    const cursor = Math.min(Math.max(0, view.cursor), Math.max(0, board.tasks.length - 1));
+    const cursor = view.cursor < 0 ? -1 : Math.min(Math.max(0, view.cursor), Math.max(0, board.tasks.length - 1));
     board.tasks.forEach((task, i) => {
       const sel = i === cursor;
       const mark = sel ? paint('›', 36) : ' ';
@@ -110,5 +111,5 @@ export function renderCodingBoard(s: { now: number; codingBoard?: CodingBoardSna
     const marker = out.findIndex(l => clean(l).startsWith('› '));
     start = Math.max(0, Math.min(out.length - body, marker - Math.floor(body / 3)));
   }
-  return [...out.slice(start, start + body), footer].map(l => indent + l).join('\n');
+  return [...out.slice(start, start + body), ...(view.cursor < 0 ? [] : [footer])].map(l => indent + l).join('\n');
 }

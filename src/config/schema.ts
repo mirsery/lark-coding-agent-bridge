@@ -179,6 +179,11 @@ export interface AppPreferences {
   /** Pause new runs during sustained host memory pressure; default off. */
   memoryPressureGate?: boolean;
   /**
+   * Directories the coding board scans for repositories (each a repository
+   * or a directory of them). Unset scans the profile's working directory.
+   */
+  codingBoardRoots?: string[];
+  /**
    * Global default idle-timeout for claude runs, in minutes. When set,
    * if claude emits no stream event for this long the bridge kills the
    * run as presumed-hung. Undefined / 0 = no timeout (the default — runs

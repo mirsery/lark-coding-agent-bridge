@@ -188,7 +188,7 @@ The dashboard reads local state without requiring a bot restart. CPU utilization
 
 Press `b` in `monitor` to switch to the coding task board. The web console's 编码任务 page in the sidebar shows the same data. The board discovers tasks automatically, with no registration:
 
-- **Worktrees**: linked worktrees of every repository under `~/workspace` (branch, uncommitted changes, last commit time). Set `LARK_CODING_ROOTS` to scan other directories, separated by `:`.
+- **Worktrees**: linked worktrees of the repositories under the configured roots (branch, uncommitted changes, last commit time). Set them as 编码看板扫描目录 in Feishu `/config` or the web Config page: a repository itself (such as `~/workspace/antelope`) or a directory of repositories, comma-separated. Empty scans the profile's working directory. The board combines every profile's roots; `LARK_CODING_ROOTS` (`:`-separated) overrides them for debugging.
 - **Builds and gates**: the `build-queue` lock, queue tickets and job directories (`~/.cache/build-queue.lock.jobs/`; `BUILD_QUEUE_LOCK` moves it), showing the running build, queue position and the exit code of each gate run in the last 7 days. A job whose process exited without an exit code is marked interrupted, never successful.
 - **PRs**: `gh pr list --author @me` for repositories with a GitHub remote, showing review state and passed / failed / pending CI checks.
 - **Sessions**: the agent session ID recorded with each build is matched to the bridge session, showing the chat, the latest prompt and the task ledger's next step, with a link back to the Feishu chat.
@@ -196,6 +196,8 @@ Press `b` in `monitor` to switch to the coding task board. The web console's 编
 Worktrees, builds and PRs that share a Jira key (`ABC-123` in a branch, worktree name or PR title) form one task; without a key, each worktree is its own task. Tasks are sorted by phase: building, queued, gate failed, CI failed, coding, CI running, ready to merge, awaiting review, gate passed. Tasks that are fully merged or closed collapse into a merged line at the bottom (a hint to clean up); idle worktrees (no uncommitted changes, builds, PR or running session) are only counted. A task whose worktree is gone but whose PR is still open stays on the board.
 
 In the TUI, `↑` / `↓` or `j` / `k` selects a task, Enter expands it (next step, build log tail, session), `o` opens its Feishu chat and `b` returns. The web page filters by phase, searches, and shows details for the selected task. Git and `gh` probes refresh in the background and are cached, so they never block the dashboard; `--once` / `--json` wait for the current probe.
+
+`lark-channel-bridge coding-board status` prints the board once (`--json` for scripts and the `/show-coding` Feishu card).
 
 The `coding-board` command remains for overrides: `add` sets a task title or forces a worktree into a task, `link <task-id> --archive` hides a task and `--unarchive` restores it.
 

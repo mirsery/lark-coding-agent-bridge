@@ -163,6 +163,7 @@ import {
 } from '../policy/access';
 import { buildEncryptedAccountConfig } from '../config/store';
 import * as configOps from '../config/config-ops';
+import { parseRootsInput } from '../coding-board/sources';
 import { log, reportMetric } from '../core/logger';
 import { renderCard } from '../card/run-renderer';
 import {
@@ -4087,6 +4088,8 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     cotMessages: getCotMessages(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     memoryPressureGate: ctx.controls.cfg.preferences?.memoryPressureGate === true,
+    codingBoardRoots: ctx.controls.cfg.preferences?.codingBoardRoots ?? [],
+    workspaceDir: ctx.controls.profileConfig.workspaces.default,
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
     larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
@@ -4179,6 +4182,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
           ? 'off'
           : getCotMessages(ctx.controls.cfg);
   const memoryPressureGate = fv.memory_pressure_gate === 'on' ? true : fv.memory_pressure_gate === 'off' ? false : ctx.controls.cfg.preferences?.memoryPressureGate === true;
+  // A missing field keeps the saved roots; an emptied one falls back to the working directory.
+  const codingBoardRoots = typeof fv.coding_board_roots === 'string' ? parseRootsInput(fv.coding_board_roots) : ctx.controls.cfg.preferences?.codingBoardRoots ?? [];
   // Parse max_concurrent_runs; invalid input falls back to current value.
   const rawMaxCC = String(fv.max_concurrent_runs ?? '').trim();
   const parsedMaxCC = Number(rawMaxCC);
@@ -4284,6 +4289,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       cotMessages,
       maxConcurrentRuns,
       memoryPressureGate,
+      codingBoardRoots,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
       smartSession,
@@ -4373,6 +4379,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         cotMessages,
         maxConcurrentRuns,
         memoryPressureGate,
+        codingBoardRoots,
+        workspaceDir: ctx.controls.profileConfig.workspaces.default,
         runIdleTimeoutMinutes,
         requireMentionInGroup,
         larkCliIdentity,

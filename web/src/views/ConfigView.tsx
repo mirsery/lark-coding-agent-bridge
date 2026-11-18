@@ -46,11 +46,14 @@ export function ConfigView({ profile }: { profile: string }) {
   // chat_id → display name, for the allowed-chats list. Seeded from the bot's
   // known chats and topped up with names captured when adding from the picker.
   const [chatNames, setChatNames] = useState<Record<string, string>>({});
+  // Free text while editing; split into paths on save.
+  const [rootsText, setRootsText] = useState("");
 
   const load = () =>
     apiGet<ConfigData>(`/api/config?profile=${encodeURIComponent(profile)}`)
       .then((c) => {
         setCfg(c);
+        setRootsText((c.codingBoardRoots ?? []).join(", "));
         setError(null);
       })
       .catch((e) => setError(String(e.message ?? e)));
@@ -95,11 +98,13 @@ export function ConfigView({ profile }: { profile: string }) {
         cotMessages: cfg.cotMessages,
         maxConcurrentRuns: cfg.maxConcurrentRuns,
         memoryPressureGate: cfg.memoryPressureGate,
+        codingBoardRoots: rootsText.split(/[,，;；\n]/).map((s) => s.trim()).filter(Boolean),
         runIdleTimeoutMinutes: cfg.runIdleTimeoutMinutes,
         requireMentionInGroup: cfg.requireMentionInGroup,
         larkCliIdentity: cfg.larkCliIdentity,
       });
       setCfg(next);
+      setRootsText((next.codingBoardRoots ?? []).join(", "));
       setSavedCount((n) => n + 1);
       toast.success(next.live ? "已保存，立即生效" : "已保存，下次启动该 profile 生效");
     } catch (e) {
@@ -191,6 +196,11 @@ export function ConfigView({ profile }: { profile: string }) {
           </Field>
           <ToggleRow label="内存压力保护" hint="仅 macOS：持续内存高压时暂停当前 bridge 的新任务，恢复后继续；不会终止正在运行的任务。默认关闭，建议先观察采样。"
             checked={cfg.memoryPressureGate} onChange={(v) => set("memoryPressureGate", v)} />
+          <Field label="编码看板扫描目录"
+            hint={`TUI / Web 编码任务看板从这些目录找仓库和 worktree：可填仓库本身或放仓库的目录，多个用逗号分隔，~ 表示主目录。留空 = 工作目录${cfg.workspaceDir ? `（${cfg.workspaceDir}）` : ""}。`}>
+            <Input value={rootsText} placeholder={cfg.workspaceDir ?? "~/workspace/antelope"}
+              onChange={(e) => setRootsText(e.target.value)} />
+          </Field>
           <div className="grid grid-cols-2 gap-4">
             <Field label="并发上限（1-50）">
               <Input type="number" min={1} max={50} value={cfg.maxConcurrentRuns}

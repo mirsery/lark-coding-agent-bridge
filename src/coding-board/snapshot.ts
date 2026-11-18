@@ -5,7 +5,7 @@ import type { MonitorBot } from '../terminal/snapshot';
 import { readBuildQueue } from './build-queue';
 import { createRefresher } from './cache';
 import { readBuildJobs, tailLog, type BuildJob } from './jobs';
-import { codingRoots, jiraKey, listRepoPrs, listRepos, readRepo, readSessionScopes, readWorktreeState, type RepoInfo, type RepoPr, type WorktreeState } from './sources';
+import { codingRoots, jiraKey, readConfiguredRoots, listRepoPrs, listRepos, readRepo, readSessionScopes, readWorktreeState, type RepoInfo, type RepoPr, type WorktreeState } from './sources';
 import { readTasks, type CodingTask } from './store';
 
 /**
@@ -105,8 +105,8 @@ export interface CodingBoardReaderOptions {
 }
 
 export function createCodingBoardReader(opts: CodingBoardReaderOptions = {}) {
-  const roots = opts.roots ?? codingRoots();
-  const repos = createRefresher(() => (opts.listRepos ?? listRepos)(roots), 60_000, 1);
+  // Saved roots are re-read with each repository scan, so `coding-board roots` applies without a restart.
+  const repos = createRefresher(async (rootDir: string) => (opts.listRepos ?? listRepos)(opts.roots ?? codingRoots(process.env, await readConfiguredRoots(rootDir))), 60_000, 1);
   const repoInfo = createRefresher(path => (opts.readRepo ?? readRepo)(path), 30_000);
   const trees = createRefresher(path => (opts.readWorktree ?? readWorktreeState)(path), 10_000);
   const prs = createRefresher(slug => (opts.listPrs ?? listRepoPrs)(slug), 60_000, 2);
@@ -122,7 +122,7 @@ export function createCodingBoardReader(opts: CodingBoardReaderOptions = {}) {
     const [jobs, queueSnap, scopes] = await Promise.all([readJobs(now), readQueue(now), readSessionScopes(rootDir)]);
     const running = queueSnap.entries.find(e => e.state === 'running')?.path;
     const waiting = new Map(queueSnap.entries.filter(e => e.state === 'waiting').map(e => [e.path, e.position ?? 0]));
-    const repoList = repos.get('repos', now);
+    const repoList = repos.get(rootDir, now);
     const infos = (repoList ?? []).map(p => repoInfo.get(p, now)).filter((r): r is RepoInfo => Boolean(r));
     const loading = !repoList || infos.length < (repoList?.length ?? 0);
 

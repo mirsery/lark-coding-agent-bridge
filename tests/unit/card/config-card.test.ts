@@ -40,6 +40,20 @@ describe('configFormCard memory pressure switch', () => {
   });
 });
 
+describe('configFormCard coding board roots', () => {
+  it('prefills the saved roots and names the working directory fallback', () => {
+    const card = JSON.stringify(configFormCard({ ...base, codingBoardRoots: ['/w/antelope'], workspaceDir: '/w/claude' }));
+    expect(card).toContain('"name":"coding_board_roots"');
+    expect(card).toContain('"default_value":"/w/antelope"');
+    expect(card).toContain('留空 = /w/claude');
+  });
+
+  it('reports the roots, or the working directory, after saving', () => {
+    expect(JSON.stringify(configSavedCard({ ...base, codingBoardRoots: ['/w/antelope', '/w/other'] }))).toContain('/w/antelope、/w/other');
+    expect(JSON.stringify(configSavedCard(base))).toMatch(/编码看板扫描.*工作目录/);
+  });
+});
+
 describe('configFormCard forced thread switch', () => {
   it('shows the configured state', () => {
     expect(findNamedSelect(configFormCard(base), 'force_reply_in_thread')?.initial_option).toBe('off');

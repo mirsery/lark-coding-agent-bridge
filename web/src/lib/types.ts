@@ -64,6 +64,8 @@ export interface ConfigView {
   cotMessages: CotMessages;
   maxConcurrentRuns: number;
   memoryPressureGate: boolean;
+  codingBoardRoots: string[];
+  workspaceDir?: string;
   runIdleTimeoutMinutes: number;
   requireMentionInGroup: boolean;
   larkCliIdentity: LarkCliIdentity;
