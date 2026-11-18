@@ -153,7 +153,7 @@ export type CodingPhase = "构建中" | "构建排队" | "门禁失败" | "CI �
 export interface CodingJob { id: string; label: string; cmd: string; startedAt: number; state: "running" | "waiting" | "passed" | "failed" | "interrupted"; exitCode?: number; position?: number; logTail?: string[] }
 export interface CodingSession { profile: string; scope: string; chatId: string; threadId?: string; chatName?: string; chatType?: string; running: boolean; startedAt?: number; ledger?: string; chatUrl?: string }
 export interface CodingPr { number: number; title: string; branch: string; state: "open" | "closed" | "merged"; url?: string; review?: string; updatedAt?: number; checks?: { passed: number; failed: number; pending: number; skipped: number } }
-export interface CodingWorktree { path: string; name: string; repo: string; branch?: string; cleaned?: boolean; dirty?: number; lastCommitAt?: number; phase: CodingPhase; jobs: CodingJob[]; pr?: CodingPr; sessions: CodingSession[]; activityAt?: number }
+export interface CodingWorktree { path: string; name: string; repo: string; branch?: string; dirty?: number; lastCommitAt?: number; phase: CodingPhase; jobs: CodingJob[]; pr?: CodingPr; sessions: CodingSession[]; activityAt?: number }
 export interface CodingTask { key: string; jira?: string; title: string; repo: string; phase: CodingPhase; activityAt?: number; worktrees: CodingWorktree[]; ledger?: string; nextStep?: string }
 export interface CodingBoardInfo {
   observedAt: number;

@@ -32,8 +32,6 @@ export interface BoardSession {
 }
 export interface BoardWorktree {
   path: string; name: string; repo: string; branch?: string;
-  /** No local worktree any more; only the open PR remains. */
-  cleaned?: boolean;
   dirty?: number; lastCommitAt?: number; phase: Phase;
   jobs: BoardJob[]; pr?: RepoPr; sessions: BoardSession[]; activityAt?: number;
 }
@@ -152,12 +150,10 @@ export function createCodingBoardReader(opts: CodingBoardReaderOptions = {}) {
     for (const info of infos) {
       const repoName = basename(info.path);
       const repoPrs = info.slug && info.worktrees.length ? prs.get(info.slug, now) ?? [] : [];
-      const branches = new Set<string>();
       for (const wt of info.worktrees) {
         if (hidden.has(wt.path)) continue;
         const state = trees.get(wt.path, now);
         const branch = state?.branch ?? wt.branch;
-        if (branch) branches.add(branch);
         const pr = branch ? repoPrs.filter(p => p.branch === branch).sort((a, b) => b.number - a.number)[0] : undefined;
         const own = jobs.filter(j => j.cwd === wt.path);
         const boardJobs = own.slice(-5).map((j): BoardJob => {
@@ -180,15 +176,6 @@ export function createCodingBoardReader(opts: CodingBoardReaderOptions = {}) {
         g.worktrees.push(worktree);
         groups.set(key, g);
       }
-      // Open PRs whose worktree is already gone still need attention.
-      for (const pr of repoPrs.filter(p => p.state === 'open' && !branches.has(p.branch))) {
-        const jira = jiraKey(pr.branch, pr.title);
-        if (jira && hidden.has(jira)) continue;
-        const key = jira ?? `${repoName}#${pr.number}`;
-        const g = groups.get(key) ?? { ...(jira ? { jira } : {}), repo: repoName, worktrees: [] };
-        g.worktrees.push({ path: '', name: '(worktree 已清理)', repo: repoName, branch: pr.branch, cleaned: true, jobs: [], pr, sessions: [], phase: '等 review' });
-        groups.set(key, g);
-      }
     }
 
     // Runs that announced a ledger naming the task key join it even before the first build.
@@ -196,7 +183,7 @@ export function createCodingBoardReader(opts: CodingBoardReaderOptions = {}) {
       const jira = jiraKey(run.ledger ? basename(run.ledger) : undefined);
       const g = jira ? groups.get(jira) : undefined;
       if (!g) continue;
-      const target = g.worktrees.find(w => !w.cleaned && !w.sessions.length) ?? g.worktrees[0];
+      const target = g.worktrees.find(w => !w.sessions.length) ?? g.worktrees[0];
       if (target && !g.worktrees.some(w => w.sessions.some(s => s.scope === scope))) target.sessions.push(session(profile, scope));
     }
 
@@ -204,7 +191,7 @@ export function createCodingBoardReader(opts: CodingBoardReaderOptions = {}) {
     const merged: CodingBoardSnapshot['merged'] = [];
     for (const [key, g] of groups) {
       for (const w of g.worktrees) {
-        w.phase = w.cleaned ? worktreePhase({ ...w, jobs: [], sessions: [] }) : worktreePhase(w);
+        w.phase = worktreePhase(w);
         const times = [w.lastCommitAt, w.pr?.updatedAt, ...w.jobs.map(j => j.startedAt), ...w.sessions.map(s => s.startedAt)].filter((t): t is number => typeof t === 'number');
         if (times.length) w.activityAt = Math.max(...times);
       }
@@ -218,7 +205,7 @@ export function createCodingBoardReader(opts: CodingBoardReaderOptions = {}) {
         ?? pr?.title.replace(/^\s*[A-Z][A-Z0-9]+-\d+\s*[:：]\s*/, '').trim()
         ?? ledger.title ?? visible.find(w => w.branch)?.branch ?? key;
       if (visible.every(w => DONE.has(w.phase))) {
-        if (visible.some(w => !w.cleaned)) merged.push({ key, title, worktrees: visible.filter(w => !w.cleaned).map(w => w.path) });
+        merged.push({ key, title, worktrees: visible.map(w => w.path) });
         continue;
       }
       visible.sort((a, b) => rank(a.phase) - rank(b.phase) || (b.activityAt ?? 0) - (a.activityAt ?? 0));

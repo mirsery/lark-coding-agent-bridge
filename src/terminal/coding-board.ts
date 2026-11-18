@@ -75,11 +75,11 @@ export function renderCodingBoard(s: { now: number; codingBoard?: CodingBoardSna
         const jobs = wt.jobs.slice(-3);
         const gate = jobs.map(job => paint(JOB_ICON[job.state][0], JOB_ICON[job.state][1])).join('');
         const lastJob = jobs.at(-1);
-        const gateText = lastJob ? lastJob.state === 'waiting' ? ` 第 ${lastJob.position ?? '?'} 位` : ` ${clock(lastJob.startedAt, now)}` : wt.cleaned ? '' : '—';
+        const gateText = lastJob ? lastJob.state === 'waiting' ? ` 第 ${lastJob.position ?? '?'} 位` : ` ${clock(lastJob.startedAt, now)}` : '—';
         const gateCells = jobs.length + [...gateText].reduce((n, ch) => n + width(ch), 0);
         const sess = wt.sessions.some(x => x.running) ? paint(fit('● 运行', sessW), 92) : cell(wt.sessions.length ? '已结束' : '—', sessW, 90);
         const tree = j === task.worktrees.length - 1 ? '└' : '├';
-        out.push(`    ${cell(`${tree} ${wt.name}`, nameW)}  ${cell(branch, branchW, wt.cleaned ? 90 : 37)}  ${gate}${paint(gateText, 90)}${' '.repeat(Math.max(0, gateW - gateCells))}  ${cell(prLabel(wt), prW, wt.pr?.state === 'merged' ? 92 : wt.pr?.state === 'open' ? 35 : 90)}  ${sess}`);
+        out.push(`    ${cell(`${tree} ${wt.name}`, nameW)}  ${cell(branch, branchW, 37)}  ${gate}${paint(gateText, 90)}${' '.repeat(Math.max(0, gateW - gateCells))}  ${cell(prLabel(wt), prW, wt.pr?.state === 'merged' ? 92 : wt.pr?.state === 'open' ? 35 : 90)}  ${sess}`);
       });
       if (sel && view.expanded) out.push(...detail(task));
     });

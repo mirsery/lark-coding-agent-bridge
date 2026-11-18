@@ -68,7 +68,7 @@ function JobDots({ jobs, now }: { jobs: CodingJob[]; now: number }) {
 
 function PrCell({ w }: { w: CodingWorktree }) {
   const pr = w.pr;
-  if (!pr) return <span className="text-muted-foreground">{w.cleaned ? "" : "还没开 PR"}</span>;
+  if (!pr) return <span className="text-muted-foreground">还没开 PR</span>;
   const state = pr.state === "merged" ? "已合并" : pr.state === "closed" ? "已关闭" : pr.review === "APPROVED" ? "已批准" : pr.review === "CHANGES_REQUESTED" ? "要修改" : "开着";
   const c = pr.state === "open" ? pr.checks : undefined;
   return (
@@ -108,7 +108,7 @@ function TaskRow({ task, now, selected, onSelect }: { task: CodingTask; now: num
               {w.branch ?? "(detached)"}
               {w.dirty ? <span className="text-amber-600"> · {w.dirty} 处改动</span> : null}
             </span>
-            <JobDots jobs={w.cleaned ? [] : w.jobs} now={now} />
+            <JobDots jobs={w.jobs} now={now} />
             <PrCell w={w} />
             <SessionCell w={w} />
           </div>
@@ -142,7 +142,7 @@ function Detail({ task, now }: { task: CodingTask; now: number }) {
             <p className="text-sm">{task.nextStep}</p>
           </div>
         )}
-        {task.worktrees.filter((w) => !w.cleaned && w.phase !== "已合并" && w.phase !== "已关闭").map((w) => (
+        {task.worktrees.filter((w) => w.phase !== "已合并" && w.phase !== "已关闭").map((w) => (
           <dl key={w.path} className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs">
             <dt className="text-muted-foreground">worktree</dt><dd className="break-all">{w.path}</dd>
             <dt className="text-muted-foreground">分支</dt><dd className="break-all font-mono">{w.branch ?? "(detached)"}</dd>

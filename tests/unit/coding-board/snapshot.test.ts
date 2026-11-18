@@ -83,23 +83,23 @@ it('groups worktrees by Jira key, links builds to bridge sessions, and parks mer
     const bots = [{ profile: 'claude', name: 'CC', agent: 'claude', online: true, runs: [{ runId: 'r', scope: 'oc_1:omt_1', chatId: 'oc_1', threadId: 'omt_1', originMessageId: 'm', promptPreview: 'p', startedAt: now - 600_000, ownerPid: 1, chatType: 'p2p' as const, orphan: false }] }];
     await read.settle(root, bots);
     const board = await read(root, now, bots);
-    expect(board.tasks.map(t => [t.key, t.phase])).toEqual([['ANTELOPE-8387', '构建中'], ['ANTELOPE-8359', '等 review']]);
+    // An open PR whose worktree is gone (8359) stays off the board.
+    expect(board.tasks.map(t => [t.key, t.phase])).toEqual([['ANTELOPE-8387', '构建中']]);
     const task = board.tasks[0]!;
     expect(task.title).toBe('real-status 接入 EEBUS');
     expect(task.worktrees.map(w => [w.name, w.phase, w.dirty])).toEqual([['8387-fields', '构建中', 18], ['ANTELOPE-8387', '已合并', 0]]);
     expect(task.worktrees[0]!.sessions).toMatchObject([{ profile: 'claude', chatId: 'oc_1', threadId: 'omt_1', running: true }]);
     expect(task.worktrees[1]!.jobs.map(j => j.state)).toEqual(['failed', 'passed']);
-    expect(board.tasks[1]!.worktrees[0]).toMatchObject({ cleaned: true, pr: { number: 5559 } });
     expect(board.merged).toEqual([{ key: 'ANTELOPE-8404', title: '电价', worktrees: ['/w/ANTELOPE-8404'] }]);
     expect(board.idle).toBe(1);
     expect(board.queue).toMatchObject([{ name: '8387-fields', state: 'running', cmd: 'mvnd -q install' }]);
-    expect(board.counts).toEqual({ 构建中: 1, '等 review': 1 });
+    expect(board.counts).toEqual({ 构建中: 1 });
 
     // The registry still overrides: archiving a key hides it.
     const file = join(root, 'coding-board', 'tasks.json');
-    const t = await addTask(file, { title: '隐藏', jira: 'ANTELOPE-8359' });
+    const t = await addTask(file, { title: '隐藏', jira: 'ANTELOPE-8387' });
     await updateTask(file, t.id, x => { x.archived = true; });
-    expect((await read(root, now, bots)).tasks.map(x => x.key)).toEqual(['ANTELOPE-8387']);
+    expect((await read(root, now, bots)).tasks.map(x => x.key)).toEqual([]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

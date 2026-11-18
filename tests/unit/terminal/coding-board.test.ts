@@ -17,7 +17,7 @@ const board: CodingBoardSnapshot = {
         jobs: [{ id: 'a', label: '8387', cmd: 'mvnd -q install', startedAt: now - 89_000, state: 'running', logTail: ['[INFO] Building internal-api', '[ERROR] boom'] }],
         sessions: [{ profile: 'claude', scope: 'oc_1:omt_1', chatId: 'oc_1', threadId: 'omt_1', running: true, chatType: 'p2p', chatUrl: 'https://applink.feishu.cn/client/chat/open?openChatId=oc_1' }] }] },
     { key: 'ANTELOPE-8359', jira: 'ANTELOPE-8359', title: 'OMS 账号', repo: 'antelope', phase: '等 review', activityAt: now - 2 * 86_400_000,
-      worktrees: [{ path: '', name: '(worktree 已清理)', repo: 'antelope', branch: 'feature/ANTELOPE-8359', cleaned: true, phase: '等 review', jobs: [], sessions: [],
+      worktrees: [{ path: '/w/8359', name: 'ANTELOPE-8359', repo: 'antelope', branch: 'feature/ANTELOPE-8359', phase: '等 review', jobs: [], sessions: [],
         pr: { number: 5559, title: 'x', branch: 'feature/ANTELOPE-8359', state: 'open' } }] },
   ],
 };
