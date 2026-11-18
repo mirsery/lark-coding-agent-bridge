@@ -1,33 +1,35 @@
 import { expect, it, vi } from 'vitest';
-import { createPrReader } from '../../../src/coding-board/pull-requests';
+import { countChecks } from '../../../src/coding-board/pull-requests';
+import { createRefresher } from '../../../src/coding-board/cache';
 
-it('does not block the board while fetching and retains the observation time', async () => {
-  let finish!: (value: any) => void;
-  const query = vi.fn(() => new Promise<any>(resolve => { finish = resolve; }));
-  const read = createPrReader(query, 1000);
-  const ref = { repository: 'owner/repo', number: 4 };
-  expect(read([ref], 100)[0]?.state).toBe('loading');
-  expect(read([ref], 200)[0]?.state).toBe('loading');
-  expect(query).toHaveBeenCalledTimes(1);
-  finish({ ...ref, state: 'open', head: 'abc', observedAt: 100 });
-  await vi.waitFor(() => expect(read([ref], 300)[0]?.state).toBe('open'));
-  expect(read([ref], 300)[0]?.observedAt).toBe(100);
-});
-
-it('does not count skipped or unfinished checks as passing', async () => {
-  const { countChecks } = await import('../../../src/coding-board/pull-requests');
+it('does not count skipped or unfinished checks as passing', () => {
   expect(countChecks([{ conclusion: 'SUCCESS' }, { conclusion: 'SKIPPED' }, { status: 'IN_PROGRESS' }, { conclusion: 'FAILURE' }])).toEqual({ passed: 1, skipped: 1, pending: 1, failed: 1 });
 });
 
-it('eventually reads more than four PRs without exceeding four concurrent requests', async () => {
-  let active = 0, max = 0;
-  const query = vi.fn(async (ref: { repository: string; number: number }, now: number) => {
+it('never blocks a read and refreshes once per key until the TTL passes', async () => {
+  let finish!: (value: string) => void;
+  const load = vi.fn(() => new Promise<string>(resolve => { finish = resolve; }));
+  const cache = createRefresher(load, 1000);
+  expect(cache.get('a', 100)).toBeUndefined();
+  expect(cache.get('a', 200)).toBeUndefined();
+  expect(load).toHaveBeenCalledTimes(1);
+  finish('v');
+  await vi.waitFor(() => expect(cache.get('a')).toBe('v'));
+  expect(load).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the previous value when a refresh fails and bounds concurrency', async () => {
+  let active = 0, max = 0, fail = false;
+  const cache = createRefresher(async (key: string) => {
     active++; max = Math.max(max, active); await new Promise(r => setTimeout(r, 5)); active--;
-    return { ...ref, observedAt: now, state: 'unavailable' as const };
-  });
-  const read = createPrReader(query);
-  const refs = Array.from({ length: 9 }, (_, i) => ({ repository: 'org/repo', number: i + 1 }));
-  read(refs, 1);
-  await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(9));
-  expect(max).toBeLessThanOrEqual(4);
+    if (fail) throw new Error('boom');
+    return key.toUpperCase();
+  }, 0, 2);
+  for (const k of ['a', 'b', 'c', 'd', 'e']) cache.get(k);
+  await cache.settle();
+  expect(max).toBeLessThanOrEqual(2);
+  expect(cache.get('a')).toBe('A');
+  fail = true;
+  await cache.settle();
+  expect(cache.get('a')).toBe('A');
 });

@@ -11,3 +11,8 @@ for (const key of [
 ]) {
   delete process.env[key];
 }
+
+// The coding board scans ~/workspace and the host's build queue by default;
+// point both at nothing so monitor snapshots in tests never walk real repos.
+process.env.LARK_CODING_ROOTS = '/nonexistent/lark-coding-roots';
+process.env.BUILD_QUEUE_LOCK = '/nonexistent/build-queue.lock';

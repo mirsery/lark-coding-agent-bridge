@@ -1,6 +1,4 @@
-import { createGitReader } from '../coding-board/git-reader';
-import { createPrReader } from '../coding-board/pull-requests';
-import { readCodingBoard, type CodingBoardSnapshot } from '../coding-board/snapshot';
+import { createCodingBoardReader, type CodingBoardSnapshot } from '../coding-board/snapshot';
 import { loadRootConfig } from '../config/profile-store';
 import { createSubscriptionReader, type MonitorSubscription } from './subscription';
 import { createHostSampler, type HostMetrics } from './host';
@@ -68,8 +66,7 @@ export function createMonitorReader(intervalMs = 10_000) {
   const cache = new Map<string, LogCache>();
   const readSubscription = createSubscriptionReader();
   const sampleHost = createHostSampler(intervalMs);
-  const readPr = createPrReader();
-  const readGit = createGitReader();
+  const readBoard = createCodingBoardReader();
   return async (rootDir: string, profile?: string, now = Date.now(), waitForSubscription = false): Promise<MonitorSnapshot> => {
   const root = await loadRootConfig(join(rootDir, 'config.json')).catch(() => undefined);
   const entries = readAndPrune(join(rootDir, 'registry', 'processes.json'));
@@ -93,7 +90,9 @@ export function createMonitorReader(intervalMs = 10_000) {
       }).sort((a, b) => Number(a.orphan) - Number(b.orphan) || a.startedAt - b.startedAt) };
   }));
   const metrics = await sampleHost(now);
-  const codingBoard = await readCodingBoard(rootDir, now, bots, readPr, readGit);
+  const tenants = Object.fromEntries(Object.entries(root?.profiles ?? {}).map(([name, p]) => [name, (p as { accounts?: { app?: { tenant?: string } } }).accounts?.app?.tenant]));
+  if (waitForSubscription) await readBoard.settle(rootDir, bots);
+  const codingBoard = await readBoard(rootDir, now, bots, tenants).catch((): CodingBoardSnapshot => ({ observedAt: now, tasks: [], merged: [], queue: [], counts: {}, idle: 0, error: '编码任务读取失败' }));
   return { now, host: hostname(), cores: cpus().length, load: loadavg()[0] ?? 0, bots, metrics, codingBoard };
   };
 }

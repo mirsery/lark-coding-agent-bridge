@@ -6,16 +6,8 @@ import { activityLabel, type MonitorBot, type MonitorSnapshot } from './snapshot
 
 export { createMonitorReader, readMonitor, type Activity, type MonitorBot, type MonitorSnapshot } from './snapshot';
 
-/** Remove terminal control sequences from all untrusted labels and prompts. */
-export function clean(text: string): string {
-  return text.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
-}
-function width(char: string): number { const c = char.codePointAt(0) ?? 0; return c >= 0x1100 && (c <= 0x115f || c >= 0x2e80) ? 2 : 1; }
-export function fit(text: string, cells: number): string {
-  let out = ''; let used = 0;
-  for (const ch of clean(text)) { const w = width(ch); if (used + w > cells) break; out += ch; used += w; }
-  return out + ' '.repeat(Math.max(0, cells - used));
-}
+import { clean, fit, width } from './text';
+export { clean, fit } from './text';
 function age(ms: number): string { const s = Math.floor(Math.max(0, ms) / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`; }
 function pad2(n: number): string { return String(n).padStart(2, '0'); }
 /** Wrap by terminal cells, preserving readable task summaries in narrow windows. */
@@ -97,7 +89,7 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
     }
   }
   out.push(line('机器人  ' + '─'.repeat(Math.max(0, w - 8)), 35));
-  const footer = [rule(), line((paused ? 'PAUSED  ·  ' : '') + 'q 退出  ·  空格暂停  ·  r 刷新' + (m ? '    *RAM 含系统缓存' : ''), 90)];
+  const footer = [rule(), line((paused ? 'PAUSED  ·  ' : '') + 'q 退出  ·  空格暂停  ·  r 刷新  ·  b 编码任务' + (s.codingBoard?.tasks.length ? `(${s.codingBoard.tasks.length})` : '') + (m ? '    *RAM 含系统缓存' : ''), 90)];
   const bodyHeight = Math.max(0, height - out.length - footer.length);
 
   const resetLabel = (resets: string | undefined): string => {
@@ -266,24 +258,4 @@ export function renderMonitor(s: MonitorSnapshot, columns = 110, rows = 36, colo
   return out.slice(0, height).map(text => indent + text).join('\n');
 }
 
-/** A separate page keeps the board usable even when the host dashboard is full. */
-export function renderCodingBoard(s: MonitorSnapshot, columns = 110, rows = 36, offset = 0): string {
-  const w = Math.max(1, columns - 1), h = Math.max(1, rows - 1);
-  const board = s.codingBoard;
-  const lines = ['CODING  /  任务看板', `更新 ${board ? new Date(board.observedAt).toLocaleTimeString() : '未知'}`, ''];
-  if (board?.error) lines.push(board.error);
-  else if (!board?.tasks.length) lines.push('暂无已登记任务；使用 coding-board add 登记。');
-  else for (const task of board.tasks) {
-    lines.push(`${task.jira ?? '无 Jira'}  ${task.title}${task.jira ? ' · Jira 状态未知' : ''}`);
-    lines.push(`  阶段：${task.phase} · 构建结果：未知 · PR：${task.prs.length ? task.prs.map(p => `${p.repository}#${p.number}`).join(', ') : '未关联'}`);
-    for (const gate of (task.gates ?? []).slice(-3)) lines.push(`  门禁记录：${gate.finishedAt ? gate.exitCode === 0 ? '命令成功' : '命令失败' : '未完成/未知'} · ${gate.head.slice(0, 8)} · ${gate.dirty || gate.endDirty !== false || gate.endHead !== gate.head ? '工作区变化或未知' : '工作区干净'}`);
-    for (const item of task.queue.entries) lines.push(`  构建队列：${item.state === 'running' ? '持锁中' : `排队 #${item.position}`} · 结果未知`);
-    for (const pr of task.pullRequests) lines.push(`  PR ${pr.repository}#${pr.number} · ${pr.state} · 检查 ${pr.checks ? `${pr.checks.passed}通过/${pr.checks.failed}失败/${pr.checks.pending}等待/${pr.checks.skipped}跳过` : '未知'} · ${pr.head && task.git.some(g => g.status?.head && pr.head!.startsWith(g.status.head)) ? 'HEAD 匹配' : 'HEAD 未确认'}`);
-    for (const run of task.runStates) lines.push(`  会话 ${run.profile}: ${run.state === 'running' ? '运行中' : run.state === 'orphan' ? '记录已过期' : '未知'}`);
-    for (const git of task.git) lines.push(`  ${git.path}  ${git.status ? `${git.status.branch ?? 'detached'} ${git.status.head ?? '—'} · ${git.status.upstream ? `↑${git.status.upstream.ahead} ↓${git.status.upstream.behind}` : '无上游'} · 改动 ${Object.values(git.status.dirty).reduce((a, b) => a + b, 0)} · ${git.observedAt ? new Date(git.observedAt).toLocaleTimeString() : '未知'}` : git.error ? 'Git 未知' : 'Git 读取中'}`);
-    lines.push('');
-  }
-  const footer = 'j/k 滚动 · b 返回 · r 刷新 · q 退出';
-  const start = Math.min(Math.max(0, offset), Math.max(0, lines.length - Math.max(0, h - 1)));
-  return [...lines.slice(start, start + Math.max(0, h - 1)), footer].map(x => fit(x, w)).join('\n');
-}
+export { renderCodingBoard, type BoardView } from './coding-board';
