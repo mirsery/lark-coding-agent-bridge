@@ -542,6 +542,44 @@ describe('account failover', () => {
     expect(pool.refusedUntil('default')).toBe(NOW + HOUR);
   });
 
+  it('hands later turns and the end of input to the attempt that is running', async () => {
+    const { pool } = await poolWith([]);
+    const sent: string[] = [];
+    const run = runWithAccountFailover(OPTS, {
+      pool,
+      spawn: () => ({
+        ...fakeRun([
+          { type: 'background', count: 1 },
+          { type: 'done', sessionId: 's1', terminationReason: 'normal' },
+        ]),
+        send: (prompt: string) => {
+          sent.push(prompt);
+          return true;
+        },
+        endInput: () => {
+          sent.push('<end>');
+        },
+      }),
+      labelOf: async () => 'me',
+    });
+    await collect(run);
+    // The executor lingers for background tasks only when the run offers `send`.
+    expect(run.send?.('next')).toBe(true);
+    run.endInput?.();
+    expect(sent).toEqual(['next', '<end>']);
+  });
+
+  it('reports a run that takes no further input as such', async () => {
+    const { pool } = await poolWith([]);
+    const run = runWithAccountFailover(OPTS, {
+      pool,
+      spawn: () => fakeRun([{ type: 'done', terminationReason: 'normal' }]),
+      labelOf: async () => 'me',
+    });
+    await collect(run);
+    expect(run.send?.('next')).toBe(false);
+  });
+
   it('does not switch a run that was stopped', async () => {
     const { pool } = await poolWith(['b']);
     const spawned: string[] = [];

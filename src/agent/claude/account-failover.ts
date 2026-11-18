@@ -203,6 +203,13 @@ export function runWithAccountFailover(opts: AgentRunOptions, deps: AccountFailo
       await current.stop();
     },
     waitForExit: (timeoutMs) => current.waitForExit(timeoutMs),
+    // The executor keeps a process up past `done` — so the background tasks it
+    // left running can report back in turns of their own — only for a run that
+    // takes further turns. Dropping `send` here made every Claude run look
+    // single-turn: the process was reaped 10s after `done` and its background
+    // Bash (a quality gate, a waiter) died with it.
+    send: (prompt) => current.send?.(prompt) ?? false,
+    endInput: () => current.endInput?.(),
     inject: (prompt, preview) => current.inject?.(prompt, preview) ?? false,
   };
 }
