@@ -1,3 +1,4 @@
+import { agentDescriptor } from '../agent/registry';
 import type { ProfileConfig } from '../config/profile-schema';
 import { getRequireMentionInGroup, type AppConfig } from '../config/schema';
 export { accessPolicyDigest } from './fingerprint';
@@ -23,6 +24,7 @@ export interface AccessDecision {
     | 'comment-mention'
     | 'denied-user'
     | 'denied-chat'
+    | 'owner-dm-only'
     | 'denied-chat-user'
     | 'denied-admin'
     | 'run-initiator'
@@ -41,6 +43,7 @@ export function canUseDm(
   senderId: string,
 ): AccessDecision {
   if (isCreator(controls, senderId)) return allow('owner');
+  if (agentDescriptor(profile.agentKind).ownerDmOnly) return deny('owner-dm-only');
   // Team mode opens up *usage* to everyone — no allowlist gating. Admin
   // commands stay owner/admin-gated via canRunAdminCommand (unchanged).
   if (profile.mode === 'team') return allow('allowed-team');
@@ -55,6 +58,7 @@ export function canUseGroup(
   chatId: string,
   senderId: string,
 ): AccessDecision {
+  if (agentDescriptor(profile.agentKind).ownerDmOnly) return deny('owner-dm-only');
   if (isCreator(controls, senderId)) return allow('owner');
   if (profile.mode === 'team') return allow('allowed-team');
   if (profile.access.admins.includes(senderId)) return allow('allowed-admin');

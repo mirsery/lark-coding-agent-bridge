@@ -106,6 +106,10 @@ export interface SandboxConfig {
   maxMode: SandboxMode;
 }
 
+export interface AgyConfig {
+  binaryPath: string;
+}
+
 export interface CodexConfig {
   binaryPath: string;
   realpath?: string;
@@ -366,6 +370,7 @@ export interface ProfileConfig {
   permissions: PermissionConfig;
   permissionSource?: PermissionSource;
   codex?: CodexConfig;
+  agy?: AgyConfig;
   attachments: AttachmentConfig;
   comments: CommentConfig;
   /** In-meeting agent settings. See {@link MeetingConfig}. */
@@ -416,6 +421,7 @@ export interface CreateDefaultProfileConfigInput {
   sandbox?: Partial<SandboxConfig>;
   permissions?: Partial<PermissionConfig>;
   codex?: CodexConfig;
+  agy?: AgyConfig;
   secrets?: SecretsConfig;
 }
 
@@ -451,6 +457,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     sandbox?: Partial<SandboxConfig>;
     permissions?: Partial<PermissionConfig>;
     codex?: CodexConfig & { flags?: unknown };
+    agy?: Partial<AgyConfig>;
     attachments?: Partial<AttachmentConfig>;
     comments?: unknown;
     meeting?: unknown;
@@ -501,6 +508,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     permissions,
     permissionSource,
     ...(raw.codex ? { codex: normalizeCodex(raw.codex) } : {}),
+    ...(raw.agentKind === 'agy' ? { agy: normalizeAgy(raw.agy) } : {}),
     attachments: {
       maxCount: numberOr(raw.attachments?.maxCount, 10),
       maxBytes: numberOr(raw.attachments?.maxBytes, 100 * 1024 * 1024),
@@ -516,6 +524,13 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     ...(skills ? { skills } : {}),
     ...(knowledge ? { knowledge } : {}),
   };
+}
+
+function normalizeAgy(input: Partial<AgyConfig> | undefined): AgyConfig {
+  if (input !== undefined && (!input || typeof input.binaryPath !== 'string' || !input.binaryPath.trim())) {
+    throw new Error('invalid agy.binaryPath');
+  }
+  return { binaryPath: input?.binaryPath ?? process.env.LARK_CHANNEL_AGY_BIN ?? 'agy' };
 }
 
 function normalizeAccounts(input: unknown): ProfileConfig['accounts'] {

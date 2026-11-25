@@ -32,6 +32,7 @@ export interface QuotaReadOptions {
 }
 
 const QUOTA_READERS: Record<AgentKind, (profileConfig: ProfileConfig, opts: QuotaReadOptions) => Promise<QuotaReading | undefined>> = {
+  agy: async () => undefined,
   claude: (_profileConfig, opts) => readClaudeQuota(opts),
   codex: (profileConfig, opts) => readCodexQuota(profileConfig.codex, opts),
 };

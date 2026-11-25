@@ -1,3 +1,4 @@
+import { AgyAdapter } from '../agent/agy/adapter';
 import { claudeAccountPool } from '../agent/claude/accounts';
 import { ClaudeAdapter } from '../agent/claude/adapter';
 import { CodexAdapter } from '../agent/codex/adapter';
@@ -46,6 +47,8 @@ interface AdapterFactoryContext {
 
 /** One adapter constructor per agent kind; see src/agent/registry.ts for adding one. */
 const ADAPTER_FACTORIES: Record<AgentKind, (profileConfig: ProfileConfig, ctx: AdapterFactoryContext) => AgentAdapter> = {
+  agy: (profileConfig, ctx) =>
+    new AgyAdapter({ binary: profileConfig.agy?.binaryPath ?? 'agy', larkChannel: ctx.larkChannel }),
   claude: (_profileConfig, ctx) =>
     new ClaudeAdapter({ larkChannel: ctx.larkChannel, accounts: claudeAccountPool(ctx.profileDir) }),
   codex: (profileConfig, ctx) => {

@@ -795,7 +795,24 @@ const RESUME_LISTS: Record<
 > = {
   claude: sendClaudeResumeList,
   codex: sendCodexResumeList,
+  agy: sendCatalogResumeList,
 };
+
+async function sendCatalogResumeList(ctx: CommandContext, cwd: string): Promise<void> {
+  const identity = ctx.sessionCatalogIdentity;
+  const entry = identity && ctx.sessionCatalog?.entries().find((item) =>
+    item.scopeId === identity.scopeId && item.agentId === identity.agentId &&
+    item.cwdRealpath === identity.cwdRealpath && item.policyFingerprint === identity.policyFingerprint,
+  );
+  const entries = identity && entry?.sessionId ? [{
+    sessionId: issueResumeCandidate(identity, { sessionId: entry.sessionId }),
+    displayId: entry.sessionId,
+    preview: entry.lastSummary ?? agentDescriptor(identity.agentId).displayName,
+    relTime: formatRelTime(entry.updatedAt),
+    current: entry.status === 'active',
+  }] : [];
+  await ctx.channel.send(ctx.msg.chatId, { card: resumeCard(cwd, entries) }, commandReplyOptions(ctx));
+}
 
 async function sendCodexResumeList(ctx: CommandContext, cwd: string, limit: number): Promise<void> {
   const identity = ctx.sessionCatalogIdentity;
@@ -1014,7 +1031,9 @@ function selectedResumeCwd(ctx: CommandContext): string | undefined {
 function runtimeAccessStatus(
   profileConfig: ProfileConfig,
 ): { label: string; value: string } {
-  if (agentDescriptor(profileConfig.agentKind).accessControl === 'permission-mode') {
+  const { accessControl } = agentDescriptor(profileConfig.agentKind);
+  if (accessControl === 'native') return { label: '工具权限', value: '由 Antigravity CLI 管理' };
+  if (accessControl === 'permission-mode') {
     return {
       label: 'permission',
       value: accessToClaudePermissionMode(

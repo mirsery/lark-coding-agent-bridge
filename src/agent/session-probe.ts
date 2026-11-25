@@ -31,6 +31,7 @@ const SESSION_PROBES: Record<
   AgentKind,
   (profileConfig: ProbeProfile, handle: string, cwd: string) => Promise<AgentSessionProbe | undefined>
 > = {
+  agy: async () => undefined,
   claude: (_profileConfig, handle, cwd) => probeClaudeSession(handle, cwd),
   codex: (profileConfig, handle) => {
     const home = effectiveCodexHome(profileConfig.codex);
@@ -55,6 +56,7 @@ export async function probeAgentSession(
 }
 
 const KNOWLEDGE_CHECKS: Record<AgentKind, ((handle: string, cwd: string, version: string) => boolean) | undefined> = {
+  agy: undefined,
   claude: (handle, cwd, version) => claudeSessionHasKnowledge(handle, cwd, version),
   // Codex keeps its thread elsewhere; it always gets the full block.
   codex: undefined,

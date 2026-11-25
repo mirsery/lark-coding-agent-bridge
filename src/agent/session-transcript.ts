@@ -13,6 +13,7 @@ const TRANSCRIPT_READERS: Record<
   AgentKind,
   (profileConfig: TranscriptProfile, handle: string, cwd: string) => Promise<AgentTranscript | undefined>
 > = {
+  agy: async () => undefined,
   claude: (_profileConfig, handle, cwd) => readClaudeTranscript(handle, cwd),
   codex: (profileConfig, handle) => {
     const home = effectiveCodexHome(profileConfig.codex);

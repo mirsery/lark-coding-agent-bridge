@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { agentAccountName } from '../agent/account';
 import { agentCapability } from '../agent/capability';
+import { agentDescriptor } from '../agent/registry';
 import {
   modelLabel,
   normalizeModelSelection,
@@ -1364,6 +1365,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     msg.chatType === 'p2p'
       ? canUseDm(controls.profileConfig, controls, msg.senderId)
       : canUseGroup(controls.profileConfig, controls, msg.chatId, msg.senderId);
+  if (agentDescriptor(controls.profileConfig.agentKind).ownerDmOnly && senderTypeOf(msg) === 'bot') return;
   if (!accessDecision.ok) {
     log.info('intake', 'skip-not-allowed-user', {
       scope,
@@ -1858,17 +1860,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     replyInThread: sendOpts.replyInThread === true,
   });
 
+  const capability = agentCapability(controls.profileConfig);
   const accessDecision =
-    firstMsg.chatType === 'p2p'
-      ? canUseDm(controls.profileConfig, controls, firstMsg.senderId)
-      : canUseGroup(controls.profileConfig, controls, firstMsg.chatId, firstMsg.senderId);
+    capability.descriptor.ownerDmOnly && !ownerRun
+      ? { ok: false, reason: 'owner-dm-only' as const }
+      : firstMsg.chatType === 'p2p'
+        ? canUseDm(controls.profileConfig, controls, firstMsg.senderId)
+        : canUseGroup(controls.profileConfig, controls, firstMsg.chatId, firstMsg.senderId);
   const scopeContext: ScopeContext = {
     source: 'im',
     chatId,
+    chatType: firstMsg.chatType === 'p2p' ? 'p2p' : 'group',
     actorId: firstMsg.senderId,
     ...(threadId ? { threadId } : {}),
   };
-  const capability = agentCapability(controls.profileConfig);
   // Agents that post the answer as its own reply (see AgentDescriptor.finalReply)
   // treat the progress stream as best-effort: its failures are logged, not fatal.
   const separateFinalReply = capability.descriptor.finalReply === 'separate';

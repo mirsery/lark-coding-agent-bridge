@@ -337,6 +337,11 @@ interface AgentModelCatalog {
 }
 
 const MODEL_CATALOGS: Record<AgentKind, AgentModelCatalog> = {
+  agy: {
+    models: () => [{ value: DEFAULT_MODEL, label: '跟随 Antigravity 默认' }],
+    efforts: [],
+    actualModelLabel: (id) => id,
+  },
   claude: { models: claudeModelOptions, efforts: EFFORT_LEVELS, actualModelLabel: claudeModelIdLabel },
   codex: { models: () => codexModels(), efforts: CODEX_EFFORT_LEVELS, actualModelLabel: (id) => id },
 };

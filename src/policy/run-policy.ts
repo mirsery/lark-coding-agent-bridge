@@ -19,6 +19,7 @@ import {
 export interface ScopeContext {
   source: 'im' | 'card' | 'comment' | 'meeting' | 'cron' | 'dream';
   chatId?: string;
+  chatType?: 'p2p' | 'group';
   threadId?: string;
   actorId: string;
   commentScopeId?: string;
@@ -91,6 +92,12 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
     return reject('access-denied', '当前用户无权发起运行。');
   }
 
+  const { descriptor } = input.capability;
+  if (descriptor.ownerDmOnly &&
+      (input.scope.source !== 'im' || input.scope.chatType !== 'p2p' || input.access.reason !== 'owner')) {
+    return reject('access-denied', `${descriptor.displayName} 当前仅支持 bot 主人私聊。`);
+  }
+
   if (input.scope.resourceBindings?.some((binding) => binding.kind === 'folder' && !binding.verified)) {
     return reject('folder-allowlist-unverified', '暂不支持 folder allowlist，已拒绝运行。');
   }
@@ -109,6 +116,9 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
     input.profileConfig.permissions.maxAccess,
     input.capability.permissions.maxAccess,
   );
+  if (descriptor.accessControl === 'native' && accessMode !== 'full') {
+    return reject('access-denied', `${descriptor.displayName} 当前要求 bridge 的权限级别为 full，具体工具权限由 CLI 决定。`);
+  }
   const sandbox = accessToCodexSandbox(accessMode);
   const permissionMode = accessToClaudePermissionMode(
     accessMode,

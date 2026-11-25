@@ -17,6 +17,7 @@ import type { AgentKind } from './registry';
 type AccountProfile = Pick<ProfileConfig, 'agentKind' | 'codex'>;
 
 const ACCOUNT_NAMES: Record<AgentKind, (profileConfig: AccountProfile) => Promise<string | undefined>> = {
+  agy: async () => undefined,
   claude: () => claudeAccountName(),
   codex: (profileConfig) => codexAccountName(effectiveCodexHome(profileConfig.codex)),
 };

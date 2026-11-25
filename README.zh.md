@@ -235,6 +235,20 @@ lark-channel-bridge restart --profile codex
 lark-channel-bridge status --profile codex
 ```
 
+#### Antigravity CLI（主人私聊）
+
+安装 Antigravity CLI（已验证 1.5.17）后，在运行 bridge 的机器上登录 Google 账号，然后创建独立 profile：
+
+```bash
+agy acp --login
+lark-channel-bridge profile create agy --agent agy
+lark-channel-bridge start --profile agy
+```
+
+如果 `agy` 不在当前终端的 `PATH`，创建 profile 时可用 `LARK_CHANNEL_AGY_BIN` 指定二进制绝对路径。bridge 在创建时保存该路径，后台服务也会使用它。
+
+在飞书私聊里发消息即可获得流式回复。同一会话、工作区和权限策略下自动续聊，`/new` 开始新会话，`/resume` 可选回当前工作区最近一条 bridge 会话，`/stop` 取消当前运行。模型和工具权限沿用本机 Antigravity 配置，需要界面确认的工具动作会被 bridge 拒绝。首版使用文本 ACP 输入，仅供该 bot 的主人在私聊中使用。
+
 #### 用已有机器人新建 profile
 
 如果机器人已经在飞书 / Lark 开放平台建好了（不走扫码创建），用它的 App ID 建 profile，再作为后台服务启动：
@@ -286,8 +300,8 @@ lark-channel-bridge status --profile <name>   # 确认起来了
 ### 宿主 CLI
 
 ```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
-lark-channel-bridge migrate [--profile <name>] [--agent claude|codex]
+lark-channel-bridge run [--profile <name>] [--agent claude|codex|agy] [--workspace <path>] [-c <config>]
+lark-channel-bridge migrate [--profile <name>] [--agent claude|codex|agy]
 lark-channel-bridge ps
 lark-channel-bridge kill <id|#>
 lark-channel-bridge --help

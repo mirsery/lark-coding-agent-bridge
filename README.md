@@ -235,6 +235,20 @@ lark-channel-bridge restart --profile codex
 lark-channel-bridge status --profile codex
 ```
 
+#### Antigravity CLI (owner DMs)
+
+Install Antigravity CLI (verified with 1.5.17), sign in on the bridge host, and create a dedicated profile:
+
+```bash
+agy acp --login
+lark-channel-bridge profile create agy --agent agy
+lark-channel-bridge start --profile agy
+```
+
+If `agy` is outside your shell's `PATH`, set `LARK_CHANNEL_AGY_BIN` to the absolute binary path when creating the profile. The bridge saves that path for the background service.
+
+Send a private message to the bot for a streamed reply. The bridge resumes the same conversation for the same chat, workspace, and policy. Use `/new` to start fresh, `/resume` to select the latest bridge conversation in the workspace, and `/stop` to cancel a turn. The CLI's native settings control models and tool permissions. The bridge declines tool actions that ask for interactive confirmation. The initial release accepts text ACP prompts from the bot owner in DMs.
+
 #### Adding a bot from an existing app
 
 To attach another bot you already created on the Feishu / Lark Open Platform (instead of creating one through the QR wizard), create the profile with its App ID, then start it as a background service:
@@ -286,8 +300,8 @@ Skipping the `pnpm build` step is the easy mistake — `restart` alone just rela
 ### Host CLI
 
 ```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
-lark-channel-bridge migrate [--profile <name>] [--agent claude|codex]
+lark-channel-bridge run [--profile <name>] [--agent claude|codex|agy] [--workspace <path>] [-c <config>]
+lark-channel-bridge migrate [--profile <name>] [--agent claude|codex|agy]
 lark-channel-bridge ps
 lark-channel-bridge kill <id|#>
 lark-channel-bridge --help

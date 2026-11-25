@@ -10,6 +10,7 @@ import { readCodexQuota } from './codex/quota';
 export interface AgentSubscription { sponsor?: string; quota?: QuotaReading }
 type Reader = (config: ProfileConfig, profileDir: string) => Promise<AgentSubscription>;
 const READERS: Record<AgentKind, Reader> = {
+  agy: async () => ({}),
   claude: async (_config, profileDir) => {
     // Pick exactly the account new runs use, never the emptiest account in the pool.
     const pool = new ClaudeAccountPool({ paths: claudeAccountsPaths(profileDir) });

@@ -71,7 +71,7 @@ describe('static architecture contracts', () => {
     // "the other one".
     const allowed = [/^src\/ui\/generated\//, /^src\/agent\//, /^src\/config\//, /^src\/cli\//, /^src\/runtime\/profile-runtime\.ts$/];
     const literalBranch =
-      /\b(?:agentKind|agentId|agent\.id)\s*[!=]==?\s*['"](?:claude|codex)['"]|['"](?:claude|codex)['"]\s*[!=]==?\s*[\w.]*\b(?:agentKind|agentId)\b/;
+      /\b(?:agentKind|agentId|agent\.id)\s*[!=]==?\s*['"](?:claude|codex|agy)['"]|['"](?:claude|codex|agy)['"]\s*[!=]==?\s*[\w.]*\b(?:agentKind|agentId)\b/;
     const files = [...collectTsFiles('src'), ...collectTsFiles('web/src')].filter(
       (file) => !allowed.some((pattern) => pattern.test(file.split('\\').join('/'))),
     );

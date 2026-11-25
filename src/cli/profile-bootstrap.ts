@@ -1,5 +1,6 @@
 import { mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
+import { agentDescriptor } from '../agent/registry';
 import { AgentPreflightError } from '../agent/preflight';
 import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '../config/profile-schema';
 import type { AppConfig } from '../config/schema';
@@ -29,12 +30,16 @@ export async function createBootstrapProfileConfig(
     input.agentKind === 'codex'
       ? await createBootstrapCodexConfig(input.codexBinaryPath)
       : undefined;
+  const agy = input.agentKind === 'agy'
+    ? { binaryPath: await resolveBootstrapBinary('agy') }
+    : undefined;
   const profile = createDefaultProfileConfig({
     agentKind: input.agentKind,
     accounts: input.accounts,
     preferences: input.preferences,
     secrets: input.secrets,
     ...(codex ? { codex } : {}),
+    ...(agy ? { agy } : {}),
   });
   if (workspace) {
     profile.workspaces = {
@@ -60,25 +65,28 @@ async function ensureManagedDefaultWorkspace(path: string): Promise<string> {
 }
 
 export async function createBootstrapCodexConfig(binaryPath: string | undefined) {
-  const command = binaryPath ?? process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex';
-  let resolvedBinary: string;
+  return { binaryPath: await resolveBootstrapBinary('codex', binaryPath) };
+}
+
+async function resolveBootstrapBinary(kind: AgentKind, binaryPath?: string): Promise<string> {
+  const descriptor = agentDescriptor(kind);
+  const command = binaryPath ?? process.env[descriptor.commandEnv] ?? descriptor.command;
   try {
-    resolvedBinary = await resolveExecutablePath(command);
+    return await resolveExecutablePath(command);
   } catch (err) {
     const errno = (err as NodeJS.ErrnoException).code;
     throw new AgentPreflightError({
-      code: codexBootstrapBinaryErrorCode(errno),
-      agentId: 'codex',
-      agentName: 'Codex CLI',
+      code: bootstrapBinaryErrorCode(errno),
+      agentId: kind,
+      agentName: descriptor.displayName,
       command,
       binaryPath: command,
       errno,
     });
   }
-  return { binaryPath: resolvedBinary };
 }
 
-function codexBootstrapBinaryErrorCode(errno: string | undefined) {
+function bootstrapBinaryErrorCode(errno: string | undefined) {
   if (errno === 'EACCES' || errno === 'EPERM') return 'agent-binary-not-executable';
   if (errno === 'ELOOP' || errno === 'ENOTDIR' || errno === 'EINVAL') {
     return 'agent-binary-resolve-failed';

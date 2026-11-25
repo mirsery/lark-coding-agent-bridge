@@ -26,6 +26,7 @@ const roots: string[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -101,6 +102,25 @@ describe('profile create command', () => {
       defaultMode: 'danger-full-access',
       maxMode: 'danger-full-access',
     });
+  });
+
+  it('detects and pins the Antigravity CLI when creating a dedicated profile', async () => {
+    const root = await makeRoot();
+    await writeProfiles(root, 'claude', ['claude']);
+    const binary = await writeVersionExecutable(root, 'agy', '1.5.17');
+    vi.stubEnv('LARK_CHANNEL_AGY_BIN', binary);
+
+    await runProfileCreate('agy', {
+      rootDir: root,
+      agent: 'agy',
+      appId: 'cli_agy',
+      appSecret: 'manual-secret',
+      tenant: 'feishu',
+    });
+
+    const saved = await loadRootConfig(join(root, 'config.json'));
+    expect(saved?.activeProfile).toBe('claude');
+    expect(saved?.profiles.agy).toMatchObject({ agentKind: 'agy', agy: { binaryPath: binary } });
   });
 
   it('refuses to overwrite an existing profile', async () => {

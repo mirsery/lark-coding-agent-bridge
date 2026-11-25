@@ -18,14 +18,14 @@
  * See CLAUDE.md → "Adding an agent".
  */
 
-export const AGENT_KINDS = ['claude', 'codex'] as const;
+export const AGENT_KINDS = ['claude', 'codex', 'agy'] as const;
 
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
 /** Agent assumed when a profile / lock / legacy record predates `agentKind`. */
 export const DEFAULT_AGENT_KIND: AgentKind = 'claude';
 
-export type PromptInjectionMode = 'append-system-prompt' | 'stdin-prefix';
+export type PromptInjectionMode = 'append-system-prompt' | 'stdin-prefix' | 'acp-system-prompt';
 
 export interface AgentDescriptor {
   readonly kind: AgentKind;
@@ -57,7 +57,9 @@ export interface AgentDescriptor {
   /** Accepted image attachments are passed as CLI file arguments, not only as paths in the prompt. */
   readonly imageArgs: boolean;
   /** The access knob `/status` reports: the CLI's permission mode, or its sandbox mode. */
-  readonly accessControl: 'permission-mode' | 'sandbox';
+  readonly accessControl: 'permission-mode' | 'sandbox' | 'native';
+  /** The adapter currently supports runs and chat commands in the owner's private chats only. */
+  readonly ownerDmOnly?: true;
   /** How the bridge system prompt reaches the CLI. */
   readonly promptInjection: PromptInjectionMode;
   /** Card-callback markers this agent's older skills may still emit. */
@@ -121,6 +123,24 @@ export const AGENT_DESCRIPTORS: Readonly<Record<AgentKind, AgentDescriptor>> = {
     // The app-server transport keeps the conversation's process for the next
     // message instead of paying Codex start-up again.
     idleKeepAliveMs: 10 * 60_000,
+  },
+  agy: {
+    kind: 'agy',
+    displayName: 'Antigravity CLI',
+    command: 'agy',
+    commandEnv: 'LARK_CHANNEL_AGY_BIN',
+    provider: 'google',
+    sessionHandle: 'sessionId',
+    scopeSessionStore: false,
+    finalReply: 'stream',
+    imageArgs: false,
+    accessControl: 'native',
+    ownerDmOnly: true,
+    promptInjection: 'acp-system-prompt',
+    legacyCallbackMarkers: [],
+    effortDefaultHint: '使用 Antigravity CLI 的模型与推理配置',
+    exitGraceMs: 10_000,
+    idleKeepAliveMs: 0,
   },
 };
 

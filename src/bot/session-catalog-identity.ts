@@ -22,12 +22,15 @@ export async function commandSessionCatalogIdentity(input: {
   const workspace = await resolveWorkingDirectory(requestedCwd);
   if (!workspace.ok) return undefined;
   const capability = agentCapability(input.controls.profileConfig);
+  const threadScoped = input.mode === 'topic' ||
+    (input.mode === 'p2p' && capability.descriptor.ownerDmOnly);
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',
       chatId: input.msg.chatId,
+      chatType: input.msg.chatType === 'p2p' ? 'p2p' : 'group',
       actorId: input.msg.senderId,
-      ...(input.mode === 'topic' && input.msg.threadId ? { threadId: input.msg.threadId } : {}),
+      ...(threadScoped && input.msg.threadId ? { threadId: input.msg.threadId } : {}),
     },
     attachments: [],
     prompt: '',

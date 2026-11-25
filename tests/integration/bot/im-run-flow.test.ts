@@ -1,12 +1,13 @@
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { claudeCapability } from '../../../src/agent/capability';
+import { agentCapability, claudeCapability } from '../../../src/agent/capability';
 import { ActiveRuns } from '../../../src/bot/active-runs';
-import { startRunFlow } from '../../../src/bot/run-flow';
+import { recordRunSessionEvent, startRunFlow } from '../../../src/bot/run-flow';
 import { ProcessPool } from '../../../src/bot/process-pool';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { RunExecutor } from '../../../src/runtime/run-executor';
+import { SessionCatalog } from '../../../src/session/catalog';
 import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
@@ -74,6 +75,46 @@ describe('IM run flow', () => {
       cwd: workspaceRealpath,
       sessionId: 'sess-1',
     });
+  });
+
+  it('restores the recorded Antigravity session after reopening the catalog', async () => {
+    const h = await createHarness({ defaultWorkspace: true });
+    const profileConfig = { ...h.profileConfig, agentKind: 'agy' as const };
+    const capability = agentCapability(profileConfig);
+    const catalogPath = join(h.tmp.profile, 'sessions.catalog.json');
+    const catalog = new SessionCatalog(catalogPath);
+    const input = {
+      scopeId: 'chat-1:thread-1',
+      scope: { source: 'im', chatId: 'chat-1', chatType: 'p2p', actorId: 'ou_owner', threadId: 'thread-1' },
+      prompt: 'hello',
+      attachments: [],
+      access: { ok: true, reason: 'owner' },
+      capability,
+      profileConfig,
+      sessions: h.sessions,
+      workspaces: h.workspaces,
+      executor: h.executor,
+      now: 1000,
+    } as const;
+    const first = await startRunFlow({ ...input, attachments: [], sessionCatalog: catalog });
+    if (!first.ok) throw new Error(first.rejectReason.userVisible);
+    recordRunSessionEvent({
+      event: { type: 'system', sessionId: 'agy-conversation' },
+      capability,
+      scopeId: input.scopeId,
+      sessions: h.sessions,
+      sessionCatalog: catalog,
+      policy: first.policy,
+    });
+    for await (const _ of first.execution.subscribe()) { /* drain the turn */ }
+    await catalog.flush();
+
+    const reopened = new SessionCatalog(catalogPath);
+    await reopened.load();
+    const second = await startRunFlow({ ...input, attachments: [], sessionCatalog: reopened });
+    expect(second).toMatchObject({ ok: true, resumeFrom: 'agy-conversation' });
+    expect(h.agent.runOptions.at(-1)?.sessionId).toBe('agy-conversation');
+    if (second.ok) for await (const _ of second.execution.subscribe()) { /* drain the turn */ }
   });
 
   it('uses the profile default workspace when a scope has no explicit binding', async () => {
