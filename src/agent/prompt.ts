@@ -230,6 +230,26 @@ export function parseBridgePromptRequest(prompt: string): BridgePromptRequest | 
   };
 }
 
+/** Identity recorded in a legacy transcript eligible for private handoff. */
+export interface OwnerDmIdentity {
+  chatId: string;
+  senderId: string;
+  threadId?: string;
+}
+
+export function extractOwnerDmIdentity(prompt: string): OwnerDmIdentity | undefined {
+  const start = prompt.lastIndexOf('<user_input>\n');
+  if (start < 0) return undefined;
+  const context = readPromptSection(prompt.slice(0, start), 'bridge_context') as Partial<BridgePromptContext> | undefined;
+  if (context?.source !== 'im' || context.chatType !== 'p2p' || context.senderIsOwner !== true ||
+      typeof context.chatId !== 'string' || typeof context.senderId !== 'string') return undefined;
+  return {
+    chatId: context.chatId,
+    senderId: context.senderId,
+    ...(typeof context.threadId === 'string' ? { threadId: context.threadId } : {}),
+  };
+}
+
 /** The JSON value of the last `<tag>` section of a bridge prompt. */
 function readPromptSection(prompt: string, tag: string): unknown {
   const open = `<${tag}>\n`;

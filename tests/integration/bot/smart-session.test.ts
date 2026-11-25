@@ -1,9 +1,13 @@
 import type { NormalizedMessage } from '@larksuite/channel';
 import { readFileSync } from 'node:fs';
-import { realpath, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
+import { agentCapability } from '../../../src/agent/capability.js';
+import { buildAgentPrompt } from '../../../src/agent/prompt.js';
+import { evaluateRunPolicy } from '../../../src/policy/run-policy.js';
+import { SessionCatalog } from '../../../src/session/catalog.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
@@ -57,6 +61,7 @@ interface FakeLarkChannel {
   on(handlers: MessageHandlerMap): void;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
+  getAppInfo(): Promise<{ ownerId: string }>;
   getChatMode(chatId: string): Promise<'group' | 'topic'>;
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
   send(chatId: string, content: unknown, options?: unknown): Promise<void>;
@@ -67,8 +72,9 @@ const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   sdkMock.channel = undefined;
+  vi.unstubAllEnvs();
   sdkMock.createLarkChannel.mockClear();
-  await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
 
@@ -112,6 +118,176 @@ describe('pending messages during an agent switch', () => {
       await connected.disconnect();
     }
     expect(h.agent.runOptions).toHaveLength(1);
+  });
+});
+
+describe('conversation handoff during an agent switch', () => {
+  it('passes recent turns both ways while preserving native resume handles', async () => {
+    shown.length = 0;
+    const h = await createHarness();
+    const appPaths = testAppPaths(h.tmp);
+    const standby = new FakeAgentAdapter({ id: 'codex', events: [
+      [
+        { type: 'text', delta: '另一位发起人的回答' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      [
+        { type: 'system', threadId: 'standby-thread' },
+        { type: 'text', delta: '备用已补上回归测试' },
+        { type: 'done', threadId: 'standby-thread', terminationReason: 'normal' },
+      ],
+    ] });
+    h.agent.setEvents([
+      [
+        { type: 'system', sessionId: 'original-session' },
+        { type: 'text', delta: '实现已完成，下一步补回归测试' },
+        { type: 'done', sessionId: 'original-session', terminationReason: 'normal' },
+      ],
+      [{ type: 'done', sessionId: 'original-session', terminationReason: 'normal' }],
+    ]);
+    const originalDeps = {
+      cfg: h.profileConfig, controls: h.controls, agent: h.agent,
+      sessions: h.sessions, workspaces: h.workspaces, appPaths,
+    };
+    const replacementConfig = {
+      ...h.profileConfig,
+      agentKind: 'codex' as const,
+      codex: { binaryPath: 'codex' },
+      agentFailover: { original: 'claude' as const, standby: 'claude' as const, preferences: {} },
+    };
+    const original = await startChannel(originalDeps);
+    try {
+      await h.channel.handlers.message?.(message({ messageId: 'om_original', content: '@Bridge 实现配置面板' }));
+      await waitFor(() => shown.some((item) => item.includes('实现已完成')));
+      await original.prepareAgentSwitch?.(false);
+    } finally {
+      await original.disconnect({ agentSwitch: true });
+    }
+
+    const replacement = createFakeLarkChannel();
+    sdkMock.channel = replacement;
+    const standbyBridge = await startChannel({
+      ...originalDeps, cfg: replacementConfig, controls: createControls(replacementConfig),
+      agent: standby, sessions: new SessionStore(join(h.tmp.profile, 'sessions.codex.json')),
+    });
+    try {
+      await replacement.handlers.message?.(message({
+        messageId: 'om_other', senderId: 'ou_other', content: '@Bridge 刚才在做什么',
+      }));
+      await waitFor(() => shown.some((item) => item.includes('另一位发起人的回答')));
+      expect(standby.runOptions[0]?.prompt).not.toContain('<agent_handoff>');
+      await replacement.handlers.message?.(message({ messageId: 'om_standby', content: '@Bridge 继续' }));
+      await waitFor(() => shown.some((item) => item.includes('备用已补上回归测试')));
+      const opts = standby.runOptions[1]!;
+      expect(opts.sessionId).toBeUndefined();
+      expect(opts.threadId).toBeUndefined();
+      expect(readSection(opts.prompt, 'agent_handoff')).toMatchObject({ turns: [expect.objectContaining({
+        request: expect.stringContaining('实现配置面板'),
+        answer: '实现已完成，下一步补回归测试',
+        status: 'done',
+      })] });
+      await standbyBridge.prepareAgentSwitch?.(false);
+    } finally {
+      await standbyBridge.disconnect({ agentSwitch: true });
+    }
+
+    const returnedChannel = createFakeLarkChannel();
+    sdkMock.channel = returnedChannel;
+    const returned = await startChannel(originalDeps);
+    try {
+      await returnedChannel.handlers.message?.(message({ messageId: 'om_return', content: '@Bridge 测试结果呢' }));
+      await waitFor(() => h.agent.runOptions.length === 2);
+      const opts = h.agent.runOptions[1]!;
+      expect(opts.sessionId).toBe('original-session');
+      expect(opts.threadId).toBeUndefined();
+      expect(readSection(opts.prompt, 'agent_handoff')).toMatchObject({ turns: [expect.objectContaining({
+        answer: '备用已补上回归测试',
+      })] });
+    } finally {
+      await returned.disconnect();
+    }
+  });
+  it('keeps the unfinished request and ledger when the owner interrupts the run to switch', async () => {
+    shown.length = 0;
+    const h = await createHarness();
+    const appPaths = testAppPaths(h.tmp);
+    const active = new FakeAgentAdapter({ pause: { afterEvents: 2 }, events: [
+      { type: 'system', sessionId: 'unfinished' },
+      { type: 'text', delta: '完成了读回核对。\n📒 任务台账：~/.lark-channel/tasks/fake.md' },
+      { type: 'done', sessionId: 'unfinished', terminationReason: 'normal' },
+    ] });
+    const original = await startChannel({
+      cfg: h.profileConfig, controls: h.controls, agent: active,
+      sessions: h.sessions, workspaces: h.workspaces, appPaths,
+    });
+    try {
+      await h.channel.handlers.message?.(message({ messageId: 'om_unfinished', content: '@Bridge 处理测试任务' }));
+      await waitFor(() => shown.some((item) => item.includes('完成了读回核对')));
+      const ready = original.prepareAgentSwitch?.(true);
+      active.runs[0]?.release();
+      await ready;
+    } finally {
+      await original.disconnect({ agentSwitch: true });
+    }
+
+    const profileConfig = { ...h.profileConfig, agentKind: 'codex' as const, codex: { binaryPath: 'codex' } };
+    const replacement = createFakeLarkChannel();
+    sdkMock.channel = replacement;
+    await startTestBridge({ ...h, profileConfig, controls: createControls(profileConfig) }, appPaths);
+    await replacement.handlers.message?.(message({ messageId: 'om_continue', content: '@Bridge 接着处理' }));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    expect(readSection(h.agent.runOptions[0]!.prompt, 'agent_handoff')).toMatchObject({ turns: [expect.objectContaining({
+      request: expect.stringContaining('处理测试任务'),
+      answer: expect.stringContaining('完成了读回核对'),
+      ledger: '~/.lark-channel/tasks/fake.md',
+      status: 'interrupted',
+    })] });
+  });
+
+  it('recovers the last pre-upgrade turn from the original owner DM', async () => {
+    const h = await createHarness();
+    const appPaths = testAppPaths(h.tmp);
+    const claudeConfig = join(h.tmp.profile, 'claude-config');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', claudeConfig);
+    const project = join(claudeConfig, 'projects', h.workspace.replace(/[^A-Za-z0-9]/g, '-'));
+    await mkdir(project, { recursive: true });
+    const sourceScope = { source: 'im', chatId: 'oc_chat', chatType: 'p2p', actorId: 'ou_owner' } as const;
+    const ask = buildAgentPrompt({
+      context: { source: 'im', chatId: 'oc_chat', chatType: 'p2p', senderId: 'ou_owner', senderIsOwner: true },
+      userInput: '升级前的请求',
+    });
+    const lines = [
+      { type: 'user', message: { content: ask } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: '升级前已经准备好测试数据' }] } },
+    ];
+    await writeFile(join(project, 'old-native.jsonl'), lines.map((line) => JSON.stringify(line)).join('\n'));
+    const oldPolicy = evaluateRunPolicy({
+      scope: sourceScope, attachments: [], prompt: ask, access: { ok: true, reason: 'owner' },
+      cwdRealpath: h.workspace, requestedCwd: h.workspace,
+      profileConfig: h.profileConfig, capability: agentCapability(h.profileConfig), now: Date.now(),
+    });
+    if (!oldPolicy.ok) throw new Error('owner DM policy was denied');
+    const catalog = new SessionCatalog(join(h.tmp.profile, 'sessions.json.catalog.json'));
+    catalog.upsertActive({
+      scopeId: 'oc_chat', agentId: 'claude', cwdRealpath: h.workspace,
+      policyFingerprint: oldPolicy.policyFingerprint, sessionId: 'old-native',
+    });
+    await catalog.flush();
+
+    const profileConfig = {
+      ...h.profileConfig,
+      agentKind: 'codex' as const,
+      codex: { binaryPath: 'codex', inheritCodexHome: true },
+      agentFailover: { original: 'claude' as const, standby: 'claude' as const, preferences: { claude: {} } },
+    };
+    await startTestBridge({ ...h, profileConfig, controls: createControls(profileConfig) }, appPaths);
+    await h.channel.handlers.message?.({
+      ...message({ messageId: 'om_legacy_continue', senderId: 'ou_owner', content: '继续' }), chatType: 'p2p',
+    });
+    await waitFor(() => h.agent.runOptions.length === 1);
+    expect(readSection(h.agent.runOptions[0]!.prompt, 'agent_handoff')).toMatchObject({ turns: [expect.objectContaining({
+      request: '升级前的请求', answer: '升级前已经准备好测试数据', status: 'unknown',
+    })] });
   });
 });
 
@@ -455,6 +631,9 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
     },
     async connect() {},
     async disconnect() {},
+    async getAppInfo() {
+      return { ownerId: 'ou_owner' };
+    },
     async getChatMode() {
       return 'group';
     },
@@ -561,6 +740,7 @@ function testAppPaths(tmp: TmpProfile) {
     jobsFile: join(tmp.profile, 'jobs.json'),
     pendingFile: join(tmp.profile, 'pending.json'),
     rotationsFile: join(tmp.profile, 'pending-rotations.json'),
+    agentHandoffFile: join(tmp.profile, 'agent-handoff.json'),
     usageFile: join(tmp.profile, 'usage.json'),
     auditFile: join(tmp.profile, 'audit.jsonl'),
     profileDir: tmp.profile,

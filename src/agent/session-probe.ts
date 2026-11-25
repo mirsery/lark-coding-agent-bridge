@@ -3,6 +3,7 @@ import { claudeSessionHasKnowledge, probeClaudeSession } from './claude/session-
 import { effectiveCodexHome } from './codex/account';
 import { probeCodexSession } from './codex/session-probe';
 import type { AgentKind } from './registry';
+import type { OwnerDmIdentity } from './prompt';
 
 /**
  * What the bridge can tell about a stored conversation without resuming it —
@@ -23,6 +24,8 @@ export interface AgentSessionProbe {
   lastAnswerText?: string;
   /** The latest answer that names a task ledger (raw text; see `findLedger`). */
   ledgerText?: string;
+  /** The latest bridge request, if its transcript establishes an owner DM. */
+  ownerDm?: OwnerDmIdentity & { answer?: string };
 }
 
 type ProbeProfile = Pick<ProfileConfig, 'agentKind' | 'codex'>;

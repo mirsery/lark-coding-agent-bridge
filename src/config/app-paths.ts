@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type { AgentKind } from '../agent/registry';
 
 export interface ResolveAppPathsOptions {
   rootDir?: string;
@@ -18,6 +19,8 @@ export interface AppPaths {
   runsFile: string;
   /** Durable copy of messages queued behind a run (PendingStore). */
   pendingFile: string;
+  /** Recent IM turns handed from one agent to another within a profile. */
+  agentHandoffFile: string;
   /** Agent-requested session closes awaiting the next message (PendingRotationStore). */
   rotationsFile: string;
   /** Per-scope cursor for the group / topic catch-up context (ChatContextCursorStore). */
@@ -83,6 +86,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     workspacesFile: join(profileDir, 'workspaces.json'),
     runsFile: join(profileDir, 'runs.json'),
     pendingFile: join(profileDir, 'pending.json'),
+    agentHandoffFile: join(profileDir, 'agent-handoff.json'),
     rotationsFile: join(profileDir, 'pending-rotations.json'),
     contextCursorsFile: join(profileDir, 'chat-context-cursors.json'),
     usageFile: join(profileDir, 'usage.json'),
@@ -112,6 +116,10 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     profileLockFile: join(userLockDir, 'profile', `${profile}.lock`),
     appLockFile: (appId: string) => join(userLockDir, 'app', `${lockSafeName(appId)}.lock`),
   };
+}
+
+export function agentSessionsFile(file: string, agent: AgentKind, original: AgentKind): string {
+  return agent === original ? file : file.replace(/\.json$/, `.${agent}.json`);
 }
 
 function normalizeProfileName(profile: string): string {

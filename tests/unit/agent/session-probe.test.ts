@@ -143,15 +143,20 @@ describe('claudeSessionHasKnowledge', () => {
 });
 
 describe('probeCodexSession', () => {
-  it('reads the last token_count and the last user message from the rollout', async () => {
+  it('reads the last token_count and binds the latest reply to the owner DM in the rollout', async () => {
     const home = await tmp('codex-home-');
     const day = join(home, 'sessions', '2026', '10', '12');
     await mkdir(day, { recursive: true });
+    const prompt = buildAgentPrompt({
+      context: { chatId: 'oc_x', chatType: 'p2p', senderId: 'ou_x', senderIsOwner: true, source: 'im' },
+      userInput: 'Codex 的问题',
+    });
     const lines = [
+      { timestamp: '2026-10-12T01:59:59.000Z', type: 'event_msg', payload: { type: 'task_started' } },
       {
         timestamp: '2026-10-12T02:00:00.000Z',
         type: 'response_item',
-        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: bridgePrompt('Codex 的问题') }] },
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] },
       },
       {
         timestamp: '2026-10-12T02:00:30.000Z',
@@ -161,7 +166,10 @@ describe('probeCodexSession', () => {
           info: { total_token_usage: { input_tokens: 9_999_999 }, last_token_usage: { input_tokens: 220_553 } },
         },
       },
-      { timestamp: '2026-10-12T02:00:31.000Z', type: 'event_msg', payload: { type: 'task_complete' } },
+      {
+        timestamp: '2026-10-12T02:00:31.000Z', type: 'event_msg',
+        payload: { type: 'task_complete', last_agent_message: 'Codex 的回答' },
+      },
     ];
     await writeFile(
       join(day, 'rollout-2026-10-12T02-00-00-thread-9.jsonl'),
@@ -172,6 +180,7 @@ describe('probeCodexSession', () => {
       contextTokens: 220_553,
       lastActivityAt: Date.parse('2026-10-12T02:00:30.000Z'),
       lastUserText: 'Codex 的问题',
+      ownerDm: { chatId: 'oc_x', senderId: 'ou_x', answer: 'Codex 的回答' },
     });
   });
 });

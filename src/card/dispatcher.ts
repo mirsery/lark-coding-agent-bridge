@@ -38,6 +38,7 @@ export interface CardDispatchDeps {
   pending: PendingQueue;
   chatModeCache: ChatModeCache;
   callbackAuth?: CallbackAuth;
+  clearAgentHandoff?: (scope: string) => void;
   callbackPolicyFingerprint?: string;
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
 }
@@ -101,6 +102,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       scope,
       chatMode: mode,
       sessions: deps.sessions,
+      clearAgentHandoff: deps.clearAgentHandoff,
       sessionCatalog: deps.sessionCatalog,
       sessionCatalogIdentity: await commandSessionCatalogIdentity({
         msg,

@@ -8,6 +8,7 @@ import type { AgentAdapter } from '../agent/types';
 import { log } from '../core/logger';
 import { refreshOwnerControls } from '../policy/owner';
 import { SessionStore } from '../session/store';
+import { AgentHandoffStore } from '../session/agent-handoff';
 import { SessionCatalog } from '../session/catalog';
 import { WorkspaceStore } from '../workspace/store';
 import { preFlightChecks } from '../cli/preflight';
@@ -88,6 +89,7 @@ class ManagedProfile {
   private restarting = false;
   private switchSocket?: Awaited<ReturnType<typeof listenForAgentSwitch>>;
   private connected = false;
+  private readonly agentHandoff: AgentHandoffStore;
 
   constructor(
     readonly profile: string,
@@ -103,7 +105,9 @@ class ManagedProfile {
     private onExitCommand: (profile: string) => void,
     private onSwitchAgent: NonNullable<Controls['switchAgent']>,
     private onConfigureStandby: (kind: AgentKind | null) => Promise<void>,
-  ) {}
+  ) {
+    this.agentHandoff = new AgentHandoffStore(appPaths.agentHandoffFile);
+  }
 
   get appId(): string {
     return this.cfg.accounts.app.id;
@@ -129,6 +133,7 @@ class ManagedProfile {
       this.locks.push(
         await acquireAppRuntimeLock(this.appPaths, this.appId, this.profileConfig.agentKind),
       );
+      await this.agentHandoff.load();
       this.entry = await register({
         appId: this.appId,
         tenant: this.cfg.accounts.app.tenant,
@@ -145,6 +150,7 @@ class ManagedProfile {
         agent: this.agent,
         sessions: this.sessions,
         sessionCatalog: this.sessionCatalog,
+        agentHandoff: this.agentHandoff,
         workspaces: this.workspaces,
         controls: this.controls,
         appPaths: agentConversationPaths(this.appPaths, this.profileConfig),
@@ -274,6 +280,7 @@ class ManagedProfile {
         agent: nextAgent,
         sessions: this.sessions,
         sessionCatalog: this.sessionCatalog,
+        agentHandoff: this.agentHandoff,
         workspaces: this.workspaces,
         controls: nextControls,
         appPaths: agentConversationPaths(nextRuntime.appPaths, nextRuntime.profileConfig),
@@ -377,7 +384,8 @@ class ManagedProfile {
     const controls = this.makeControls(appPaths, cfg, profileConfig);
     controls.botOwnerId = owner;
     this.bridge = await this.startChannelFn({
-      cfg, agent, sessions, sessionCatalog: catalog, workspaces: this.workspaces, controls, appPaths: paths,
+      cfg, agent, sessions, sessionCatalog: catalog, agentHandoff: this.agentHandoff,
+      workspaces: this.workspaces, controls, appPaths: paths,
     });
     this.connected = true;
     this.cfg = cfg;

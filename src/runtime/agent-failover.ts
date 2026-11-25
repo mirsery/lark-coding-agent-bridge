@@ -6,7 +6,7 @@ import { AGENT_KINDS, agentDescriptor, isAgentKind } from '../agent/registry';
 import { agentCapability } from '../agent/capability';
 import { resolveModelArg } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
-import type { AppPaths } from '../config/app-paths';
+import { agentSessionsFile, type AppPaths } from '../config/app-paths';
 import { normalizeProfileConfig, type AgentKind, type ProfileConfig } from '../config/profile-schema';
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../config/profile-store';
 import { evaluateRunPolicy } from '../policy/run-policy';
@@ -115,7 +115,7 @@ export function agentConversationPaths(paths: AppPaths, profile: ProfileConfig):
   const suffix = `.${profile.agentKind}.json`;
   return {
     ...paths,
-    sessionsFile: paths.sessionsFile.replace(/\.json$/, suffix),
+    sessionsFile: agentSessionsFile(paths.sessionsFile, profile.agentKind, origin),
     rotationsFile: paths.rotationsFile.replace(/\.json$/, suffix),
     autoResumeFile: paths.autoResumeFile.replace(/\.json$/, suffix),
   };

@@ -89,6 +89,8 @@ export interface StartRunFlowInput {
    * resumes still holds this `version` in full (agents that can tell).
    */
   knowledge?: { version: string; full: string; stub: string };
+  /** IM context from another agent, resolved after the current policy and session. */
+  agentHandoff?: (policy: RunPolicyAllow, resumeFrom: string | undefined) => Promise<string | undefined>;
   observability?: {
     profile: string;
     agent: string;
@@ -232,6 +234,10 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       version: input.knowledge.version,
       savedChars: full.length - stub.length,
     });
+  }
+  if (input.agentHandoff) {
+    const handoff = await input.agentHandoff(policy, resumeFrom);
+    if (handoff) runPolicy = { ...runPolicy, prompt: `${handoff}\n\n${runPolicy.prompt}` };
   }
   // Read after 会话智能压缩: a rotated conversation has dropped its override.
   const sessionEffort = input.sessions.getEffort(input.scopeId);

@@ -1,11 +1,11 @@
 import { linesBackward } from '../../utils/reverse-lines';
-import { extractUserInputText } from '../prompt';
+import { extractOwnerDmIdentity, extractUserInputText } from '../prompt';
 import type { AgentSessionProbe } from '../session-probe';
 import { transcriptPath } from './session-cost';
 
 const ASSISTANT = Buffer.from('"type":"assistant"');
 const USER = Buffer.from('"type":"user"');
-const USER_INPUT = Buffer.from('<user_input>');
+const USER_TEXT = [Buffer.from('"content":"'), Buffer.from('"type":"text"')];
 /** Cheap pre-filter for {@link LEDGER_LINE} ("Task ledger" / "task ledger" alike). */
 const LEDGER_WORDS = [Buffer.from('任务台账'), Buffer.from('ask ledger')];
 /** An answer announcing its ledger (`📒 任务台账：~/…`; the path itself is read by findLedger). */
@@ -46,6 +46,7 @@ export async function probeClaudeSession(
   if (!file) return undefined;
   const probe: AgentSessionProbe = {};
   let haveCall = false;
+  let foundUserMessage = false;
   let scanned = 0;
   for (const line of linesBackward(file, { maxBytes: MAX_SCAN_BYTES })) {
     scanned += line.length + 1;
@@ -72,12 +73,17 @@ export async function probeClaudeSession(
           probe.ledgerText = answer;
         }
       }
-    } else if (probe.lastUserText === undefined && line.includes(USER) && line.includes(USER_INPUT)) {
+    } else if (probe.lastUserText === undefined && line.includes(USER) && USER_TEXT.some((marker) => line.includes(marker))) {
       const rec = parse(line);
       if (rec && rec.type === 'user' && rec.isSidechain !== true) {
         const text = userText(rec.message?.content);
         const asked = text ? extractUserInputText(text) : undefined;
-        if (asked) probe.lastUserText = asked;
+        if (asked) {
+          probe.lastUserText = asked;
+          const identity = !foundUserMessage && text ? extractOwnerDmIdentity(text) : undefined;
+          if (identity) probe.ownerDm = { ...identity, answer: probe.lastAnswerText };
+        }
+        if (text) foundUserMessage = true;
       }
     }
     if (probe.lastUserText !== undefined && (probe.ledgerText !== undefined || scanned > LEDGER_SCAN_BYTES)) break;
@@ -127,11 +133,10 @@ function parse(line: Buffer): TranscriptRecord | undefined {
 function userText(content: unknown): string | undefined {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return undefined;
-  for (const block of content) {
-    const b = block as { type?: unknown; text?: unknown };
-    if (b?.type === 'text' && typeof b.text === 'string' && b.text.includes('<user_input>')) return b.text;
-  }
-  return undefined;
+  const texts = content
+    .filter((b): b is { type: 'text'; text: string } => b?.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text);
+  return texts.find((text) => text.includes('<user_input>')) ?? texts[0];
 }
 
 /** The text an assistant record shows the user, unless it is only a control marker. */

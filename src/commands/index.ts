@@ -290,6 +290,7 @@ export interface CommandContext {
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   sessionCatalogIdentity?: SessionCatalogIdentity;
+  clearAgentHandoff?: (scope: string) => void;
   workspaces: WorkspaceStore;
   agent: AgentAdapter;
   activeRuns: ActiveRuns;
@@ -576,6 +577,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     });
   }
   ctx.sessions.clear(ctx.scope);
+  ctx.clearAgentHandoff?.(ctx.scope);
   await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
 }
 
@@ -637,6 +639,7 @@ async function handleCd(args: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
   ctx.sessions.clear(ctx.scope);
+  ctx.clearAgentHandoff?.(ctx.scope);
   await reply(ctx, `✓ 已切换 cwd 到 \`${workspace.cwdRealpath}\`\n（session 已重置）`);
 }
 
@@ -702,6 +705,7 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
   ctx.sessions.clear(ctx.scope);
+  ctx.clearAgentHandoff?.(ctx.scope);
   await reply(ctx, `✓ 已切换到 \`${name}\` (${workspace.cwdRealpath})\n（session 已重置）`);
 }
 
@@ -902,6 +906,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
         [handleField]: handle,
       });
       if (descriptor.scopeSessionStore) ctx.sessions.set(ctx.scope, handle, identity.cwdRealpath);
+      ctx.clearAgentHandoff?.(ctx.scope);
       await reply(ctx, RESUME_APPLIED_REPLY);
       return;
     }
@@ -917,6 +922,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     }
     ctx.activeRuns.interrupt(ctx.scope);
     ctx.sessions.set(ctx.scope, sessionId, identity.cwdRealpath);
+    ctx.clearAgentHandoff?.(ctx.scope);
     await reply(ctx, RESUME_APPLIED_REPLY);
     return;
   }
@@ -933,6 +939,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
   }
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.sessions.set(ctx.scope, sessionId, cwd);
+  ctx.clearAgentHandoff?.(ctx.scope);
   await reply(ctx, RESUME_APPLIED_REPLY);
 }
 
@@ -2216,6 +2223,7 @@ async function worktreeAdd(branch: string, base: string | undefined, ctx: Comman
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, resolved.cwdRealpath);
   ctx.sessions.clear(ctx.scope);
+  ctx.clearAgentHandoff?.(ctx.scope);
   log.info('git', 'worktree-added', { scope: ctx.scope, branch: created.branch });
   await reply(
     ctx,
@@ -2254,6 +2262,7 @@ async function worktreeUse(needle: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, resolved.cwdRealpath);
   ctx.sessions.clear(ctx.scope);
+  ctx.clearAgentHandoff?.(ctx.scope);
   await reply(ctx, `✓ 已切到 \`${resolved.cwdRealpath}\`（分支 \`${match.branch ?? '游离'}\`），会话已重置。`);
 }
 

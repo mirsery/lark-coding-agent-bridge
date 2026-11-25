@@ -217,7 +217,9 @@ The console’s **运行概览** page shows the same data as the terminal dashbo
 
 #### Agent failover
 
-The bot owner can send `/agent` in a private chat or open the Agent switch panel from `/config`. The panel shows the current agent and lets the owner select a standby or switch to it. The default action checks the standby and waits up to 60 seconds for running tasks. The interrupt action requires confirmation. The progress card updates with the result. Use **切换到…并启动** in the local web console when the profile is offline. Each agent keeps its own conversation history and model preferences. Antigravity CLI serves only the bot owner's private chats.
+The bot owner can send `/agent` in a private chat or open the Agent switch panel from `/config`. The panel shows the current agent and lets the owner select a standby or switch to it. The default action checks the standby and waits up to 60 seconds for running tasks. The interrupt action requires confirmation. The progress card updates with the result. Use **切换到…并启动** in the local web console when the profile is offline. Antigravity CLI serves only the bot owner's private chats.
+
+The bot identity, workspace and Bridge memory stay with the profile. Switching hands off recent requests, replies and task ledger references for the same conversation, workspace, participants and permissions. Each agent retains its native conversation and model preferences. Switching back brings over progress made by the standby. After an interruption, ask the agent to continue in the same chat. It uses the handoff to check what already happened before acting. The handoff retains up to six turns for 30 days. For pre-upgrade history, it can recover the last turn from a transcript verified to belong to the owner's private chat.
 
 ### Multiple profiles: Claude and Codex
 

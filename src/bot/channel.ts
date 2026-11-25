@@ -20,6 +20,7 @@ import {
 } from '../agent/models';
 import {
   buildAgentPrompt,
+  extractUserInputText,
   promptSection,
   type BridgePromptInteractiveCard,
   type BridgePromptKnowledge,
@@ -85,7 +86,8 @@ import {
 import { MeetingManager } from '../meeting/manager';
 import type { VcRequestClient } from '../meeting/api';
 import { attachMeetingAgent, summarizeEndedMeeting } from '../meeting/orchestrator';
-import type { ScopeContext } from '../policy/run-policy';
+import type { RunPolicyAllow, ScopeContext } from '../policy/run-policy';
+import { digestCanonical } from '../policy/fingerprint';
 import { createOwnerRefreshController } from '../policy/owner';
 import {
   RunExecutor,
@@ -120,7 +122,7 @@ import {
   type PendingResume,
 } from './auto-resume';
 import { KickoffInbox, kickoffScope, type Kickoff } from './kickoff-inbox';
-import { INTERRUPT_RESUME_DELAY_MS, MAX_INTERRUPT_RESUMES, isKilledExit } from './task-ledger';
+import { findLedger, INTERRUPT_RESUME_DELAY_MS, MAX_INTERRUPT_RESUMES, isKilledExit } from './task-ledger';
 import {
   grantedToolsFor,
   isOwnerBatch,
@@ -137,6 +139,7 @@ import { createRunsMonitor } from './runs-monitor';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
+import { legacyAgentHandoff } from './legacy-agent-handoff';
 import { reportInterruptedRuns } from './interrupted-notice';
 import { RunRegistry } from '../runtime/run-registry';
 import { buildKnowledgeContext, knowledgeStub, withKnowledgeVersion, withoutSkillWrite } from '../knowledge/inject';
@@ -154,6 +157,7 @@ import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { PendingStore, type PendingRecord } from './pending-store';
 import { PendingRotationStore } from '../session/rotation-store';
+import { AgentHandoffStore } from '../session/agent-handoff';
 import { startTopicSessionRetention } from '../session/topic-retention';
 import { formatUsageLine, UsageLedger } from '../runtime/usage-ledger';
 import { ApprovalBroker, type GateContext } from '../runtime/approvals';
@@ -308,6 +312,7 @@ export interface StartChannelDeps {
   agent: AgentAdapter;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
+  agentHandoff?: AgentHandoffStore;
   workspaces: WorkspaceStore;
   controls: Controls;
   appPaths?: Pick<
@@ -327,6 +332,7 @@ export interface StartChannelDeps {
       Pick<
         AppPaths,
         | 'rotationsFile'
+        | 'agentHandoffFile'
         | 'contextCursorsFile'
         | 'skillLibrariesDir'
         | 'knowledgeLibrariesDir'
@@ -349,6 +355,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // re-queued or reported once the channel is up.
   const pendingStore = deps.appPaths?.pendingFile ? new PendingStore(deps.appPaths.pendingFile, controls.profileConfig.agentKind) : undefined;
   await pendingStore?.load();
+  const handoffFile = deps.appPaths?.agentHandoffFile;
+  const agentHandoff = deps.agentHandoff ?? (handoffFile ? new AgentHandoffStore(handoffFile) : undefined);
+  if (!deps.agentHandoff) await agentHandoff?.load();
+  const clearAgentHandoff = agentHandoff ? (scope: string) => agentHandoff.clear(scope) : undefined;
   const leftoverPending = pendingStore?.snapshot() ?? [];
   // Who consumed how much of the owner's agent quota (/usage, card byline).
   const usageLedger = deps.appPaths?.usageFile ? new UsageLedger(deps.appPaths.usageFile) : undefined;
@@ -651,6 +661,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           activePolicyFingerprints,
           lastRunModelByScope,
           autoEfforts,
+          agentHandoff,
+          profileDir: deps.appPaths?.profileDir,
           pendingRotations,
           contextCursors,
           scope,
@@ -756,6 +768,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           msg,
           controls,
           chatModeCache,
+          clearAgentHandoff,
           forcedTopics,
           logThreadModeOverride,
           executor,
@@ -783,6 +796,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           pending,
           chatModeCache,
           callbackAuth,
+          clearAgentHandoff,
           callbackPolicyFingerprintForScope: (scope) => activePolicyFingerprints.get(scope),
         });
       }).catch((err) => log.fail('cardAction', err));
@@ -848,6 +862,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         return;
       }
       const outcome = applyRecall(evt.messageId, { pending, activeRuns, recalled });
+      agentHandoff?.recall(evt.messageId);
       log.info('recall', outcome.action, {
         msgId: evt.messageId,
         chatId: evt.chatId,
@@ -973,6 +988,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     isProtected: (scope) =>
       activeRuns.hasScope(scope) || pending.hasScope(scope) || autoResumer.hasScope(scope),
     onExpire: (scope) => {
+      clearAgentHandoff?.(scope);
       activePolicyFingerprints.delete(scope);
       lastRunModelByScope.delete(scope);
       autoEfforts.delete(scope);
@@ -1204,6 +1220,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         jobs?.flush(),
         autoResumer.flush(),
         pendingRotations.flush(),
+        agentHandoff?.flush(),
         contextCursors.flush(),
         usageLedger?.flush(),
         auditLog?.flush(),
@@ -1321,6 +1338,7 @@ interface IntakeDeps {
   msg: NormalizedMessage;
   controls: Controls;
   chatModeCache: ChatModeCache;
+  clearAgentHandoff?: (scope: string) => void;
   forcedTopics: ForcedTopicJoiner;
   logThreadModeOverride: LogThreadModeOverride;
   executor: RunExecutor;
@@ -1518,6 +1536,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     scope,
     chatMode,
     sessions,
+    clearAgentHandoff: deps.clearAgentHandoff,
     workspaces,
     agent,
     activeRuns,
@@ -1645,6 +1664,8 @@ interface RunBatchDeps {
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
   autoEfforts: Map<string, AutoEffortState>;
+  agentHandoff?: AgentHandoffStore;
+  profileDir?: string;
   pendingRotations: PendingRotationStore;
   contextCursors: ChatContextCursorStore;
   scope: string;
@@ -1675,6 +1696,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     activePolicyFingerprints,
     lastRunModelByScope,
     autoEfforts,
+    agentHandoff,
     pendingRotations,
     contextCursors,
     scope,
@@ -2006,6 +2028,29 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // A process still serving this scope (background work) would be retired by
   // a different effort; the light rule is not worth killing that work for.
   const lightTurn = !rotationBlocked && lightBatch;
+  // Button payloads belong to the session that created the card.
+  const handoff = batch.some((msg) => msg.rawContentType === 'card_action') ? undefined : agentHandoff;
+  // Match participants and permissions without binding the history to CLI
+  // settings. Snapshot the audience before awaiting this run's submission.
+  const profile = controls.profileConfig;
+  const audience = handoff && digestCanonical({
+    appId: profile.accounts.app.id,
+    tenant: profile.accounts.app.tenant,
+    scope: scopeContext,
+    participants: [...new Set(batch.map((msg) => `${msg.senderId}:${senderTypeOf(msg) ?? ''}`))].sort(),
+    ownerRun,
+    adminRun,
+    access: profile.access,
+    approvals: profile.approvals,
+    attachments: profile.attachments,
+    gated: Boolean(gate),
+  });
+  const audienceFor = (policy: RunPolicyAllow) => digestCanonical({
+    audience,
+    cwd: policy.cwdRealpath,
+    accessMode: policy.accessMode,
+    permissionMode: policy.permissionMode,
+  });
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -2026,6 +2071,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     ...(autoEffort ? { autoEffort } : {}),
     ...(readHook ? { readHook } : {}),
     ...(knowledgeSwap ? { knowledge: knowledgeSwap } : {}),
+    ...(handoff ? {
+      agentHandoff: async (policy, resumeFrom) => {
+        const shared = handoff.prompt(scope, audienceFor(policy), agentKind, resumeFrom);
+        if (shared || resumeFrom || handoff.hasScope(scope) || !deps.profileDir || !ownerRun || restrictedChat) return shared;
+        return legacyAgentHandoff({
+          profileDir: deps.profileDir, profile, scopeId: scope, scope: scopeContext, policy,
+        });
+      },
+    } : {}),
     ...(smartSession
       ? {
           compactWindowTokens: smartSession.compactWindowTokens,
@@ -2064,6 +2118,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 
   const { execution, cwdRealpath: cwd } = flow;
+  if (handoff && !batch.some((msg) => deps.recalled?.has(msg.messageId))) {
+    handoff.begin(scope, {
+      runId: execution.runId,
+      agent: agentKind,
+      audience: audienceFor(flow.policy),
+      messageIds: batch.map((msg) => msg.messageId),
+      request: extractUserInputText(prompt),
+    });
+  }
   // The asked-for level is spent; what this turn ran at is kept for a turn
   // that arrives while its background work is still running.
   if (autoEffortOn) autoEfforts.set(scope, flow.effortSource === 'auto' && flow.effort ? { ran: flow.effort } : {});
@@ -2116,7 +2179,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       log.info('recall', outcome.action, { scope, early: true });
     }
   }
-  handle.onLedger = (ledger) => runs?.annotate(execution.runId, { ledger });
+  handle.onLedger = (ledger) => {
+    runs?.annotate(execution.runId, { ledger });
+    if (mode === 'p2p') handoff?.update(scope, execution.runId, { status: 'running', ledger });
+  };
   for (const id of supplementTarget.initiators) handle.initiators?.add(id);
   const eventStream = execution.subscribe();
   if (flow.resumeFrom) {
@@ -2282,6 +2348,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           : cardRenderOptions,
       });
     } finally {
+      const backgroundReply = answerTextOf(state);
+      if (handoff && backgroundReply && (mode === 'p2p' || sent)) {
+        handoff.update(scope, execution.runId, { backgroundReply });
+      }
       if (autoResumer && (ended?.terminal === 'paused' || ended?.terminal === 'done')) {
         scheduleAutoResume({
           autoResumer,
@@ -2681,6 +2751,23 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } catch (err) {
     log.fail('stream', err);
   } finally {
+    if (handoff) {
+      const state = lastRawState && stripControlMarkers(lastRawState);
+      // A group session itself can be used by other members later. Only carry
+      // answer text that was sent to that group, along with visible ledger links.
+      const privateChat = mode === 'p2p';
+      const answer = privateChat || runTerminal ? answerTextOf(state) : undefined;
+      const tools = privateChat ? state?.blocks.flatMap((block) =>
+        block.kind === 'tool' && block.tool.status === 'done' ? [block.tool.name] : [],
+      ) : undefined;
+      handoff.update(scope, execution.runId, {
+        answer,
+        ledger: privateChat ? handle.ledger : answer ? findLedger(answer) : undefined,
+        status: runTerminal ?? state?.terminal ?? 'error',
+        handle: conversationHandle,
+        tools: tools?.slice(-5),
+      });
+    }
     runs?.finish(execution.runId);
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
