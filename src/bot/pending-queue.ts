@@ -24,6 +24,8 @@ export type ChangeHandler = (scope: string, messages: readonly NormalizedMessage
  */
 export class PendingQueue {
   private readonly map = new Map<string, PendingEntry>();
+  private paused = false;
+  private stopped = false;
   private readonly blocked = new Set<string>();
   private readonly delayMs: number;
   private readonly onFlush: FlushHandler;
@@ -36,6 +38,7 @@ export class PendingQueue {
   }
 
   push(scope: string, msg: NormalizedMessage): number {
+    if (this.stopped) return 0;
     const existing = this.map.get(scope);
     if (existing) {
       if (existing.timer) clearTimeout(existing.timer);
@@ -44,14 +47,14 @@ export class PendingQueue {
       let at = existing.messages.length;
       while (at > 0 && existing.messages[at - 1]!.createTime > msg.createTime) at--;
       existing.messages.splice(at, 0, msg);
-      existing.timer = this.blocked.has(scope) ? undefined : this.armTimer(scope);
+      existing.timer = this.paused || this.blocked.has(scope) ? undefined : this.armTimer(scope);
       this.onChange?.(scope, existing.messages);
       return existing.messages.length;
     }
     const messages = [msg];
     this.map.set(scope, {
       messages,
-      timer: this.blocked.has(scope) ? undefined : this.armTimer(scope),
+      timer: this.paused || this.blocked.has(scope) ? undefined : this.armTimer(scope),
     });
     this.onChange?.(scope, messages);
     return 1;
@@ -120,11 +123,26 @@ export class PendingQueue {
    * next process to pick up. Used on shutdown / reconnect.
    */
   stop(): void {
+    this.stopped = true;
     for (const entry of this.map.values()) {
       if (entry.timer) clearTimeout(entry.timer);
     }
     this.map.clear();
     this.blocked.clear();
+  }
+
+  pause(): () => void {
+    this.paused = true;
+    for (const entry of this.map.values()) {
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.timer = undefined;
+    }
+    return () => {
+      this.paused = false;
+      for (const [scope, entry] of this.map) {
+        if (!entry.timer && !this.blocked.has(scope)) entry.timer = this.armTimer(scope);
+      }
+    };
   }
 
   /** Pause the debounce timer; pushed messages keep accumulating. */
@@ -145,7 +163,7 @@ export class PendingQueue {
     this.blocked.delete(scope);
     const entry = this.map.get(scope);
     log.info('queue', 'unblocked', { scope, queued: entry?.messages.length ?? 0 });
-    if (!entry || entry.messages.length === 0) return;
+    if (!entry || this.paused || entry.messages.length === 0) return;
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = this.armTimer(scope);
   }

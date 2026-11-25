@@ -1,3 +1,4 @@
+import type { agentFailoverView } from '../runtime/agent-failover';
 import { agentDescriptor } from '../agent/registry';
 import { modelLabel, supportedEfforts, supportedModels } from '../agent/models';
 import type { KnownChat } from '../bot/lark-info';
@@ -7,6 +8,7 @@ import { EFFORT_LEVEL_LABELS, type CotMessagesMode, type EffortLevel, type Messa
 export interface ConfigFormOpts {
   /** Profile's agent kind — decides which model catalog the picker shows. */
   agentKind: AgentKind;
+  agentFailover?: ReturnType<typeof agentFailoverView>;
   /** Deployment mode: 'personal' (default) or 'team'. */
   mode: ProfileMode;
   /** Current model selection (a value from {@link supportedModels}). */
@@ -252,6 +254,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
       padding: '12px 12px 16px 12px',
       vertical_spacing: '8px',
       elements: [
+        ...(opts.agentFailover ? agentFailoverElements(opts.agentFailover) : []),
         ...(opts.consoleUrl
           ? [
               {
@@ -570,6 +573,28 @@ export function configFormCard(opts: ConfigFormOpts): object {
       ],
     },
   };
+}
+
+function agentFailoverElements(state: ReturnType<typeof agentFailoverView>): object[] {
+  const current = agentDescriptor(state.current);
+  const standby = state.standby ? agentDescriptor(state.standby) : undefined;
+  return [
+    {
+      tag: 'markdown',
+      content: `**当前 agent** ${current.displayName}　**备用 agent** ${standby?.displayName ?? '未配置'}` +
+        (standby?.ownerDmOnly ? '\n切换后仅支持主人私聊，群聊及其他入口暂停服务。' : ''),
+    },
+    ...(standby ? [{
+      tag: 'button',
+      text: { tag: 'plain_text', content: '等待任务结束后切换' },
+      behaviors: [{ type: 'callback', value: { cmd: 'config.agent.switch', arg: `${current.kind} ${standby.kind}` } }],
+    }] : []),
+    {
+      tag: 'button',
+      text: { tag: 'plain_text', content: '备用设置与中断选项' },
+      behaviors: [{ type: 'callback', value: { cmd: 'config.agent' } }],
+    },
+  ];
 }
 
 export function configSavedCard(opts: ConfigFormOpts): object {

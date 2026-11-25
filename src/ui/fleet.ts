@@ -65,7 +65,7 @@ export async function listProfiles(
   const registryFile = resolveAppPaths({ rootDir }).userRegistryFile;
   const liveElsewhere = new Set(
     readAndPrune(registryFile)
-      .filter((e) => isAlive(e.pid))
+      .filter((e) => e.ready !== false && isAlive(e.pid))
       .map((e) => e.profileName),
   );
   return profiles.map((p) => {

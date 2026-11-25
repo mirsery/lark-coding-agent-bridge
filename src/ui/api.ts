@@ -247,6 +247,9 @@ interface ParsedConfig {
 function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfig {
   const fv = asRecord(body);
   const agentKind = state.profileConfig.agentKind;
+  if (fv.agentKind !== undefined && fv.agentKind !== agentKind) {
+    throw new ApiError(409, 'agent 已变更，请刷新设置后重试');
+  }
 
   const mode: ProfileMode =
     fv.mode === 'team' || fv.mode === 'personal' ? fv.mode : state.profileConfig.mode;

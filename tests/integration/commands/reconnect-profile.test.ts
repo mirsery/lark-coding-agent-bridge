@@ -55,16 +55,15 @@ describe('/reconnect profile lifecycle', () => {
 
   it('guards direct bridge disconnects and IM commands with the current profile runtime context', async () => {
     const source = await readFile(new URL('../../../src/bot/channel.ts', import.meta.url), 'utf8');
-    const disconnectBlock = source.slice(
-      source.indexOf('disconnect: async () => {'),
-      source.indexOf('async function commandSessionCatalogIdentity'),
-    );
+    const disconnectStart = source.indexOf('disconnect: async (options) => {');
+    expect(disconnectStart).toBeGreaterThanOrEqual(0);
+    const disconnectBlock = source.slice(disconnectStart, source.indexOf('\n}\n', disconnectStart));
 
-    expect(source).toContain("activeRuns.pauseNewRuns('bridge-disconnect')");
+    expect(disconnectBlock).toContain("activeRuns.pauseNewRuns('bridge-disconnect')");
     expect(disconnectBlock).not.toContain('resumeNewRuns');
     expect(disconnectBlock).toContain('await Promise.allSettled([');
     expect(disconnectBlock).toContain('channel.disconnect()');
-    expect(disconnectBlock).toContain('activeRuns.stopAll()');
+    expect(disconnectBlock).toContain('activeRuns.stopAll(');
     expect(source).toContain('sessionCatalogIdentity: await commandSessionCatalogIdentity({');
   });
 });

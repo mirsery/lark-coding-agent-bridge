@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AgyAdapter } from '../../src/agent/agy/adapter';
 import type { AgentEvent } from '../../src/agent/types';
+import { createDefaultProfileConfig } from '../../src/config/profile-schema';
+import { probeSwitchTarget } from '../../src/runtime/agent-failover';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -16,6 +18,10 @@ async function fixture(needsLogin = false) {
   const binary = join(cwd, 'agy');
   await writeFile(binary, `#!${process.execPath}
 const { createInterface } = require('node:readline');
+if (process.argv.includes('--version')) {
+  console.log('1.5.17');
+  process.exit(0);
+}
 const send = (data) => console.log(JSON.stringify({ jsonrpc: '2.0', ...data }));
 const result = (id, value) => send({ id, result: value });
 const update = (value) => send({ method: 'session/update', params: { sessionId: 'conversation', update: value } });
@@ -38,6 +44,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   if (msg.method === 'session/prompt') {
     if (msg.params.sessionId !== 'conversation') process.exit(6);
     turn = msg.id;
+    if (msg.params.prompt[0].text.startsWith('Connectivity check.')) {
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OK' } });
+      return result(turn, { stopReason: 'end_turn' });
+    }
     if (msg.params.prompt[0].text === 'slow') {
       return update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'working' } });
     }
@@ -76,6 +86,17 @@ describe('agy ACP process', () => {
       expect(events.at(-1)).toEqual({ type: 'done', sessionId: 'conversation', terminationReason: 'normal' });
       expect(await run.waitForExit(1000)).toBe(true);
     }
+  });
+
+  it('probes ACP with a fresh turn and reports login failure before cutover', async () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'agy',
+      accounts: { app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' } },
+    });
+    const signedIn = await fixture();
+    await expect(probeSwitchTarget(signedIn.adapter, profile)).resolves.toBeUndefined();
+    const signedOut = await fixture(true);
+    await expect(probeSwitchTarget(signedOut.adapter, profile)).rejects.toThrow(/登录、额度和模型配置/);
   });
 
   it('cancels the active ACP prompt', async () => {

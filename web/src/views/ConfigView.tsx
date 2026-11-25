@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { apiGet, apiPost } from "@/lib/api";
 import type {
+  AgentFailoverView,
   ConfigView as ConfigData,
   DeviceLogin,
   KnownChat,
@@ -36,6 +37,101 @@ import {
 import { toast } from "@/components/ui/sonner";
 import { DreamCard } from "./DreamCard";
 import { KnowledgeCard, SkillLibrariesCard } from "./KnowledgeCards";
+
+function AgentFailoverCard({ profile, onSwitched }: { profile: string; onSwitched: () => Promise<void> }) {
+  const [state, setState] = useState<AgentFailoverView>();
+  const [selected, setSelected] = useState("none");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const endpoint = `/api/config/agent?profile=${encodeURIComponent(profile)}`;
+
+  function show(next: AgentFailoverView) {
+    setState(next);
+    setSelected(next.standby ?? "none");
+  }
+
+  useEffect(() => {
+    let disposed = false;
+    apiGet<AgentFailoverView>(endpoint).then((next) => {
+      if (!disposed) show(next);
+    }).catch((err: Error) => {
+      if (!disposed) setError(err.message);
+    });
+    return () => { disposed = true; };
+  }, [endpoint]);
+
+  async function update(action: "standby" | "switch", interrupt = false) {
+    if (!state) return;
+    if (action === "switch" && interrupt &&
+        !window.confirm("中断当前任务并切换？已开始的任务需要人工确认后再运行。")) return;
+    setBusy(true);
+    setError("");
+    try {
+      const next = await apiPost<AgentFailoverView>(endpoint, action === "standby"
+        ? { action, standby: selected === "none" ? null : selected }
+        : { action, expected: state.current, target: state.standby, interrupt });
+      show(next);
+      if (action === "switch") await onSwitched();
+      toast.success(action === "standby" ? "备用 agent 已保存" : "已切换 agent，bot 已连接飞书");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      const latest = await apiGet<AgentFailoverView>(endpoint).catch(() => undefined);
+      if (latest) show(latest);
+      if (action === "switch") await onSwitched();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const current = state?.agents.find((agent) => agent.kind === state.current);
+  const standby = state?.agents.find((agent) => agent.kind === state.standby);
+  return (
+    <Card>
+      <CardHeader><CardTitle>Agent 切换</CardTitle></CardHeader>
+      <CardContent className="space-y-3">
+        {state && <>
+          <p className="text-sm">
+            当前 {current?.name} {current?.ownerDmOnly ? "（仅主人私聊）" : ""}
+            {" · "}{state.online ? "Bot 在线" : "Bot 离线"}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Label htmlFor="standby-agent">备用 agent</Label>
+            <Select value={selected} onValueChange={setSelected} disabled={busy}>
+              <SelectTrigger id="standby-agent" className="w-auto"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">不设置</SelectItem>
+                {state.agents.filter((agent) => agent.kind !== state.current).map((agent) => (
+                  <SelectItem key={agent.kind} value={agent.kind}>
+                    {agent.name}{agent.ownerDmOnly ? "（仅主人私聊）" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button variant="secondary" disabled={busy || selected === (state.standby ?? "none")}
+              onClick={() => void update("standby")}>保存备用</Button>
+          </div>
+          {standby?.ownerDmOnly && (
+            <p className="text-sm text-muted-foreground">切到 {standby.name} 后仅支持主人私聊，群聊及其他入口暂停服务。</p>
+          )}
+          {standby && (
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={busy} onClick={() => void update("switch")}>
+                {state.online ? "等待任务结束后切换" : "切换并启动"}
+              </Button>
+              {state.online && (
+                <Button variant="outline" disabled={busy} onClick={() => void update("switch", true)}>
+                  中断任务并切换
+                </Button>
+              )}
+            </div>
+          )}
+        </>}
+        {busy && <p className="text-sm text-muted-foreground" role="status">操作进行中…</p>}
+        {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
+      </CardContent>
+    </Card>
+  );
+}
 
 export function ConfigView({ profile }: { profile: string }) {
   const [cfg, setCfg] = useState<ConfigData | null>(null);
@@ -83,6 +179,7 @@ export function ConfigView({ profile }: { profile: string }) {
     setSaving(true);
     try {
       const next = await apiPost<ConfigData>(`/api/config?profile=${encodeURIComponent(profile)}`, {
+        agentKind: cfg.agentKind,
         mode: cfg.mode,
         meeting: cfg.meeting,
         model: cfg.model,
@@ -142,6 +239,7 @@ export function ConfigView({ profile }: { profile: string }) {
 
   return (
     <div className="space-y-4">
+      <AgentFailoverCard key={profile} profile={profile} onSwitched={load} />
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>运行模式</CardTitle>

@@ -54,6 +54,26 @@ afterEach(async () => {
 });
 
 describe('profile-aware account and config commands', () => {
+  it('lets only the owner use the private config failover action without invoking the current agent', async () => {
+    const h = await createHarness();
+    const switchAgent = vi.fn(async () => {});
+    const configureStandby = vi.fn(async () => {});
+    h.controls.switchAgent = switchAgent;
+    h.controls.configureStandby = configureStandby;
+    h.controls.botOwnerId = 'ou-other';
+    await h.command('/config agent switch claude agy');
+    expect(switchAgent).not.toHaveBeenCalled();
+    expect(JSON.stringify(h.channel.sent.at(-1)?.content)).toContain('仅限 bot 主人');
+
+    h.controls.botOwnerId = 'ou-admin';
+    await h.command('/config agent standby agy');
+    expect(configureStandby).toHaveBeenCalledWith('agy');
+    await h.command('/config agent switch claude agy');
+    expect(switchAgent).toHaveBeenCalledWith({ expected: 'claude', target: 'agy', interrupt: false });
+    await h.command('/config agent switch claude agy --interrupt');
+    expect(switchAgent).toHaveBeenCalledTimes(1);
+  });
+
   it('saves /config submit into the active v2 profile without flattening root config', async () => {
     vi.useFakeTimers();
     const h = await createHarness();

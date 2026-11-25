@@ -72,6 +72,49 @@ afterEach(async () => {
 });
 
 
+describe('pending messages during an agent switch', () => {
+  it('keeps a queued message across a connection failure and processes it once on the replacement', async () => {
+    const h = await createHarness();
+    const appPaths = testAppPaths(h.tmp);
+    const original = await startChannel({
+      cfg: h.profileConfig, agent: h.agent, sessions: h.sessions, workspaces: h.workspaces,
+      controls: h.controls, appPaths,
+    });
+    try {
+      await original.prepareAgentSwitch?.(false);
+      await h.channel.handlers.message?.(message({ messageId: 'om_queued', content: '@Bridge queued-before-switch' }));
+      expect(h.agent.runOptions).toHaveLength(0);
+    } finally {
+      await original.disconnect({ agentSwitch: true });
+    }
+
+    const replacement = createFakeLarkChannel();
+    const profileConfig = {
+      ...h.profileConfig,
+      agentKind: 'codex' as const,
+      codex: { binaryPath: 'codex' },
+      agentFailover: { original: 'claude' as const, preferences: {} },
+    };
+    const deps = {
+      cfg: profileConfig, controls: createControls(profileConfig), agent: h.agent,
+      sessions: new SessionStore(join(h.tmp.profile, 'sessions.codex.json')),
+      workspaces: h.workspaces, appPaths,
+    };
+    sdkMock.channel = replacement;
+    replacement.connect = async () => { throw new Error('Feishu connect failed'); };
+    await expect(startChannel(deps)).rejects.toThrow('Feishu connect failed');
+    sdkMock.channel = createFakeLarkChannel();
+    const connected = await startChannel(deps);
+    try {
+      await waitFor(() => h.agent.runOptions.length === 1);
+      expect(h.agent.runOptions[0]?.prompt).toContain('queued-before-switch');
+    } finally {
+      await connected.disconnect();
+    }
+    expect(h.agent.runOptions).toHaveLength(1);
+  });
+});
+
 describe('会话智能压缩 in the IM flow', () => {
   it('hides the agent close marker, then starts the next message in a fresh session with a hand-off', async () => {
     shown.length = 0;

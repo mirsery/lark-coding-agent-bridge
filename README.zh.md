@@ -101,7 +101,7 @@ lark-channel-bridge ui           # 在浏览器打开控制台
 lark-channel-bridge ui --print   # 只打印地址
 ```
 
-注意：`claude` profile 由自己的 per-profile daemon 托管，控制台拿不到它的运行锁，可能会把它显示为未运行。以 `status --profile claude` 和飞书实际收发为准，详见下文「Web 控制台」。
+控制台将独立后台服务托管的 `claude` profile 显示为「在线（外部进程）」。其飞书连接归独立进程管理，详见下文「Web 控制台」。
 
 ### 改代码后生效
 
@@ -203,21 +203,27 @@ TUI 中 `↑` / `↓` 或 `j` / `k` 选择任务，回车展开（下一步、�
 
 ### Web 控制台（`--web-ui`）
 
-`--web-ui` 是上面单 profile 后台服务的**替代方案**，不是可以叠加使用的附加项。给 `start` 加上它，会启动一个"全机唯一"的 supervisor 进程，统一托管所有 profile，并提供本地 web 控制台来启动/停止/配置它们：
+给 `start` 加上 `--web-ui` 会启动全机唯一的 supervisor，提供本地 Web 控制台来启动、停止和配置 supervisor 托管的 profile。
 
 ```bash
 lark-channel-bridge start --web-ui
 ```
 
-同一台机器上，两种模式二选一：
-- **单 profile 后台服务**（`start [--profile <name>]`，不带 `--web-ui`）——就是上面几条命令建立的方式，没有 web 控制台。
-- **Supervisor 控制台**（`start --web-ui`）——一个进程托管所有 profile，控制台展示的状态直接来自这个进程自身。
-
-⚠️ **不要对同一个 profile 同时用这两种方式。** 如果某个 profile 已经有单 profile 后台服务在跑，这时又单独起了 `run --web-ui` / `start --web-ui`，控制台会尝试去接管这个 profile，但拿不到它的 runtime lock（已经被前一个进程持有），于是静默失败并把它显示为**未运行**——即便原来那个 daemon 其实还活着、还在正常收发消息。控制台目前只能感知自己托管的 profile，感知不到被其他进程保活的 profile。想用控制台的话，先停掉单 profile 后台服务（`lark-channel-bridge stop --profile <name>`），再让控制台来接管启动。
+单 profile 后台服务和 Web supervisor 可以在同一台机器上运行。每个 profile 由其中一个进程托管，运行锁会阻止重复连接。控制台将独立进程托管的 profile 显示为「在线（外部进程）」，可在配置页操作 agent 切换。
 
 控制台侧栏的「运行概览」与终端面板同源：顶部是主机 CPU / 内存 / 磁盘 / 网络；下面每个 bot 一张卡片，顺序固定，展示 Sponsor、5 小时和本周额度条及本地重置时间（≥ 90% 标红，用尽标「额度已用尽」），卡片里列出该 bot 的会话（当前步骤、已运行、摘要、所在会话和发起人）。页面每 5 秒刷新；控制台进程托管的任务可以直接停止，其他进程的任务只能查看。侧栏「编码任务」页展示本机编码任务的进度，见[编码任务看板](#编码任务看板)。
 
 ![Web 控制台「运行概览」示例（演示数据）](docs/images/web-console-overview.png)
+
+#### Agent 故障切换
+
+在 Web 控制台打开该 profile 的「配置 → Agent 切换」，选择并保存备用 agent。也可以在主人私聊发送 `/config agent standby agy`，将 `agy` 换成需要的 agent。
+
+- 飞书还能收消息时，用私聊 `/config` 里的「等待任务结束后切换」。等待超过 60 秒会退出本次切换。`/config agent` 会列出当前可用的切换和中断命令。
+- 整个 profile 离线时，在 Web 点「切换并启动」。已安装的独立服务由系统服务管理器启动，其他 profile 由 Web supervisor 启动。
+- 备用 agent 需要在宿主机安装并完成登录。切换前 bridge 会发送一条不含会话内容的测试请求。失败时显示原因，切换成功时原 agent 成为备用。
+- 飞书身份、工作区和记忆沿用原 profile。会话和模型偏好按 agent 保存，切回可以继续原会话。已入队的普通消息可接续处理。中断的任务不会交给另一种 agent 自动重跑。
+- `agy` 只承接主人私聊。切入后群聊、定时任务和评论等 agent 入口暂停服务。
 
 ### 多 profile：分别运行 Claude 和 Codex
 

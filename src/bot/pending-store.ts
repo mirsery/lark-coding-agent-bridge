@@ -1,11 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import type { NormalizedMessage } from '@larksuite/channel';
+import type { AgentKind } from '../agent/registry';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
 
 /** One scope's queued messages, as written to disk. */
 export interface PendingRecord {
   scope: string;
+  agentKind?: AgentKind;
   /** When the oldest message in the batch was queued. */
   queuedAt: number;
   messages: NormalizedMessage[];
@@ -34,7 +36,7 @@ export class PendingStore {
   private saving: Promise<void> = Promise.resolve();
   private readonly path: string;
 
-  constructor(path: string) {
+  constructor(path: string, private readonly agentKind?: AgentKind) {
     this.path = path;
   }
 
@@ -58,9 +60,13 @@ export class PendingStore {
       if (!(scope in this.data)) return;
       delete this.data[scope];
     } else {
-      this.data[scope] = { scope, queuedAt: this.data[scope]?.queuedAt ?? now, messages: [...messages] };
+      this.data[scope] = { scope, agentKind: this.agentKind, queuedAt: this.data[scope]?.queuedAt ?? now, messages: [...messages] };
     }
     this.schedulePersist();
+  }
+
+  snapshot(): PendingRecord[] {
+    return Object.values(this.data);
   }
 
   /** Everything left by a previous process; removed as it is returned. */

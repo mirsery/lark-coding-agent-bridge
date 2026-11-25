@@ -352,9 +352,19 @@ export interface LarkCliConfig {
   };
 }
 
+export type AgentPreferences = Pick<AppPreferences, 'model' | 'effort' | 'chatEffort'>;
+
+export interface AgentFailoverConfig {
+  standby?: AgentKind;
+  /** Agent that used the unsuffixed conversation files before the first switch. */
+  original: AgentKind;
+  preferences: Partial<Record<AgentKind, AgentPreferences>>;
+}
+
 export interface ProfileConfig {
   schemaVersion: 2;
   agentKind: AgentKind;
+  agentFailover?: AgentFailoverConfig;
   /** Deployment mode switch. Default 'personal'. See {@link ProfileMode}. */
   mode: ProfileMode;
   accounts: {
@@ -441,6 +451,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   const raw = input as {
     schemaVersion?: unknown;
     agentKind?: unknown;
+    agentFailover?: unknown;
     mode?: unknown;
     accounts?: unknown;
     secrets?: SecretsConfig;
@@ -479,6 +490,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   }
 
   const preferences = normalizePreferences(raw.preferences);
+  const agentFailover = normalizeAgentFailover(raw.agentFailover, raw.agentKind);
   const access = normalizeAccess(
     raw.access ?? raw.preferences?.access,
     raw.preferences?.requireMentionInGroup,
@@ -498,6 +510,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   return {
     schemaVersion: 2,
     agentKind: raw.agentKind,
+    ...(agentFailover ? { agentFailover } : {}),
     mode: raw.mode === 'team' ? 'team' : 'personal',
     accounts,
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
@@ -508,7 +521,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     permissions,
     permissionSource,
     ...(raw.codex ? { codex: normalizeCodex(raw.codex) } : {}),
-    ...(raw.agentKind === 'agy' ? { agy: normalizeAgy(raw.agy) } : {}),
+    ...(raw.agy !== undefined || raw.agentKind === 'agy' ? { agy: normalizeAgy(raw.agy) } : {}),
     attachments: {
       maxCount: numberOr(raw.attachments?.maxCount, 10),
       maxBytes: numberOr(raw.attachments?.maxBytes, 100 * 1024 * 1024),
@@ -523,6 +536,23 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     approvals: normalizeApprovals(raw.approvals),
     ...(skills ? { skills } : {}),
     ...(knowledge ? { knowledge } : {}),
+  };
+}
+
+function normalizeAgentFailover(input: unknown, current: AgentKind): AgentFailoverConfig | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = input as Partial<AgentFailoverConfig>;
+  const preferences: AgentFailoverConfig['preferences'] = {};
+  for (const kind of AGENT_KINDS) {
+    const saved = raw.preferences?.[kind];
+    if (!saved || typeof saved !== 'object') continue;
+    const { model, effort, chatEffort } = normalizePreferences(saved);
+    preferences[kind] = { model, effort, chatEffort };
+  }
+  return {
+    original: isAgentKind(raw.original) ? raw.original : current,
+    ...(isAgentKind(raw.standby) && raw.standby !== current ? { standby: raw.standby } : {}),
+    preferences,
   };
 }
 

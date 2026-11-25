@@ -40,6 +40,13 @@ export interface ModelOption {
   label: string;
 }
 
+export interface AgentFailoverView {
+  current: AgentKind;
+  standby: AgentKind | null;
+  agents: { kind: AgentKind; name: string; ownerDmOnly: boolean }[];
+  online: boolean;
+}
+
 export interface ConfigView {
   profile: string;
   agentKind: AgentKind;

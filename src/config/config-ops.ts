@@ -244,6 +244,7 @@ export async function savePreferencesConfig(
 
     const profile = root.profiles[state.profile];
     if (!profile) throw new Error(`profile not found: ${state.profile}`);
+    if (profile.agentKind !== state.profileConfig.agentKind) throw new Error('agent 已变更，请刷新设置后重试');
     const { requireMentionInGroup: _requireMention, access: _access, ...profilePreferences } = preferences;
     root.profiles[state.profile] = {
       ...profile,

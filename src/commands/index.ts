@@ -1,3 +1,4 @@
+import { agentFailoverView, parseAgentSwitch, readFailoverProfile, type AgentSwitchRequest } from '../runtime/agent-failover';
 import {
   coffeeLeadInKey,
   coffeeLeadIns,
@@ -13,7 +14,7 @@ import { basename, dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { agentAccountsTable, switchAgentAccount } from '../agent/account';
 import { agentCapability } from '../agent/capability';
-import { agentDescriptor, type AgentKind } from '../agent/registry';
+import { agentDescriptor, isAgentKind, type AgentKind } from '../agent/registry';
 import { emptyTotals, type UsageLedger, type UsageReportRow } from '../runtime/usage-ledger';
 import type { ApprovalBroker } from '../runtime/approvals';
 import { toolLabel } from '../card/approval-cards';
@@ -216,6 +217,8 @@ export interface Controls {
   /** Restart the bridge in-process: disconnect WS, kill claude runs, reload
    * config, reconnect with the new credentials. */
   restart(opts?: { wait?: boolean }): Promise<void>;
+  switchAgent?(request: AgentSwitchRequest): Promise<void>;
+  configureStandby?(kind: AgentKind | null): Promise<void>;
   /** Stop this whole process gracefully (disconnect + exit). Used by /exit
    * when the user targets the receiving process itself. */
   exit(): Promise<void>;
@@ -4071,8 +4074,51 @@ async function handleConfig(args: string, ctx: CommandContext): Promise<void> {
       return submitConfig(ctx);
     case 'cancel':
       return cancelConfig(ctx);
+    case 'agent':
+      return handleAgentConfig(args.trim().split(/\s+/).slice(1), ctx);
     default:
       await reply(ctx, '用法:`/config`');
+  }
+}
+
+async function handleAgentConfig(args: string[], ctx: CommandContext): Promise<void> {
+  if (ctx.chatMode !== 'p2p' || !isCreator(ctx.controls, ctx.msg.senderId)) {
+    await reply(ctx, 'agent 切换仅限 bot 主人在私聊操作');
+    return;
+  }
+  if (!ctx.controls.switchAgent || !ctx.controls.configureStandby) {
+    await reply(ctx, '当前 profile 未提供 agent 切换入口');
+    return;
+  }
+  try {
+    const state = agentFailoverView(await readFailoverProfile(ctx.controls.configPath, ctx.controls.profile));
+    const [action, expected, target, option] = args;
+    if (action === 'standby' && args.length === 2 && (expected === 'none' || isAgentKind(expected))) {
+      await ctx.controls.configureStandby(expected === 'none' ? null : expected);
+      await reply(ctx, expected === 'none' ? '已取消备用 agent' : `已设为备用 agent：${agentDescriptor(expected).displayName}`);
+      return;
+    }
+    if (action === 'switch' && (args.length === 3 || (args.length === 4 && option === '--interrupt'))) {
+      const request = parseAgentSwitch({ expected, target, interrupt: option === '--interrupt' });
+      const next = agentDescriptor(request.target);
+      if (ctx.fromCardAction && request.interrupt) throw new Error('请用私聊命令明确确认中断');
+      await reply(ctx, `正在检查 ${next.displayName}，${request.interrupt ? '通过后中断当前任务并切换' : '通过后等待当前任务结束再切换'}。`);
+      await ctx.controls.switchAgent(request);
+      await reply(ctx, `已切换到 ${next.displayName}${next.ownerDmOnly ? '（仅主人私聊）' : ''}。`);
+      return;
+    }
+    const standby = state.standby;
+    await reply(ctx, [
+      `当前 agent 为 ${agentDescriptor(state.current).displayName}`,
+      standby ? `备用 agent 为 ${agentDescriptor(standby).displayName}${agentDescriptor(standby).ownerDmOnly ? '（仅主人私聊）' : ''}` : '尚未配置备用 agent',
+      `设置备用：\`/config agent standby <${state.agents.map((agent) => agent.kind).join('|')}|none>\``,
+      ...(standby ? [
+        `等待后切换：\`/config agent switch ${state.current} ${standby}\``,
+        `中断后切换：\`/config agent switch ${state.current} ${standby} --interrupt\``,
+      ] : []),
+    ].join('\n'));
+  } catch (err) {
+    await reply(ctx, err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -4093,8 +4139,12 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
   // alive so we don't advertise a stale address.
   const sidecar = await readUiSidecar(commandProfilePaths(ctx).hostUiFile).catch(() => undefined);
   const consoleUrl = sidecar && isAlive(sidecar.pid) ? sidecar.url : undefined;
+  const agentFailover = ctx.chatMode === 'p2p' && isCreator(ctx.controls, ctx.msg.senderId) && ctx.controls.switchAgent
+    ? await readFailoverProfile(ctx.controls.configPath, ctx.controls.profile).then(agentFailoverView).catch(() => undefined)
+    : undefined;
   const card = configFormCard({
     agentKind: ctx.controls.profileConfig.agentKind,
+    agentFailover,
     mode: ctx.controls.profileConfig.mode,
     model: normalizeModelSelection(
       ctx.controls.profileConfig.agentKind,

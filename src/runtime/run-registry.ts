@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import type { AgentKind } from '../agent/registry';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
@@ -12,6 +13,7 @@ import { isAlive } from './registry';
  */
 export interface RunRecord {
   runId: string;
+  agentKind?: AgentKind;
   /** Session scope key (`chatId` or `chatId:threadId`). */
   scope: string;
   chatId: string;

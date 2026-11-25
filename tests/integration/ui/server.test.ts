@@ -12,6 +12,8 @@ import {
   writeActiveProfile,
 } from '../../../src/config/profile-store';
 import { register } from '../../../src/runtime/registry';
+import { Supervisor } from '../../../src/runtime/supervisor';
+import type { BridgeChannel } from '../../../src/bot/channel';
 import { startUiServer } from '../../../src/ui/server';
 import type { UiServerHandle, UiSupervisor } from '../../../src/ui/types';
 import type { MonitorSnapshot } from '../../../src/terminal/snapshot';
@@ -118,6 +120,38 @@ afterEach(async () => {
 });
 
 describe('ui server (supervisor-backed)', () => {
+  it('switches an offline profile via the authenticated config API', async () => {
+    await handle.close();
+    const supervisor = new Supervisor({
+      configPath, rootDir, runPreflight: false, serviceAdapter: () => null,
+      startChannelFn: async () => ({
+        channel: { botIdentity: { name: 'bot-work' } },
+        disconnect: async () => {},
+      } as BridgeChannel),
+    });
+    handle = await startUiServer({ supervisor, version: 'test', rootDir });
+    base = `http://127.0.0.1:${handle.port}`;
+    try {
+      const url = '/api/config/agent?profile=work';
+      expect((await get(url)).status).toBe(401);
+      expect(await json(await get(url, handle.token))).toMatchObject({
+        current: 'claude',
+        standby: null,
+        online: false,
+        agents: expect.arrayContaining([expect.objectContaining({ kind: 'agy', ownerDmOnly: true })]),
+      });
+      expect(await json(await post(url, handle.token, { action: 'standby', standby: 'agy' })))
+        .toMatchObject({ current: 'claude', standby: 'agy', online: false });
+      const request = { action: 'switch', expected: 'claude', target: 'agy', interrupt: false };
+      expect(await json(await post(url, handle.token, request)))
+        .toMatchObject({ current: 'agy', standby: 'claude', online: true });
+      expect((await post(url, handle.token, request)).status).toBe(400);
+      expect(supervisor.list()[0]).toMatchObject({ profile: 'work', appId: 'cli_work', agentKind: 'agy' });
+    } finally {
+      await supervisor.shutdown();
+    }
+  });
+
   it.each(['claude', 'work', 'codex'])('persists smart-session toggle for online/offline profile %s', async (profile) => {
     if (profile === 'codex') {
       const root = (await loadRootConfig(configPath))!;

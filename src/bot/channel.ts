@@ -299,7 +299,8 @@ async function withDeadline(task: Promise<void>, ms: number, step: string): Prom
 
 export interface BridgeChannel {
   channel: LarkChannel;
-  disconnect(): Promise<void>;
+  disconnect(options?: { agentSwitch?: boolean }): Promise<void>;
+  prepareAgentSwitch?(interrupt: boolean): Promise<() => void>;
 }
 
 export interface StartChannelDeps {
@@ -346,9 +347,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // Durable twin of the pending queue. Whatever the previous process left is
   // taken now, before any new message can overwrite a scope's entry, and is
   // re-queued or reported once the channel is up.
-  const pendingStore = deps.appPaths?.pendingFile ? new PendingStore(deps.appPaths.pendingFile) : undefined;
+  const pendingStore = deps.appPaths?.pendingFile ? new PendingStore(deps.appPaths.pendingFile, controls.profileConfig.agentKind) : undefined;
   await pendingStore?.load();
-  const leftoverPending = pendingStore?.takeAll() ?? [];
+  const leftoverPending = pendingStore?.snapshot() ?? [];
   // Who consumed how much of the owner's agent quota (/usage, card byline).
   const usageLedger = deps.appPaths?.usageFile ? new UsageLedger(deps.appPaths.usageFile) : undefined;
   await usageLedger?.load();
@@ -600,6 +601,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // unblock arms a fresh quiet-window timer. Net effect: at most one run per
   // chat in flight, and everything sent during a run merges into the next
   // batch (only flushed once 600ms of silence has passed *after* the run).
+  const flushing = new Set<Promise<unknown>>();
+  let switchingAgent = false;
+  const pendingChanges = new Map<string, readonly NormalizedMessage[]>();
+  let pendingConnected = false;
   const pending = new PendingQueue(DEBOUNCE_MS, (scope, queued) => {
     // A recall can land after intake but before the queue had the message.
     const batch = queued.filter((m) => !recalled.has(m.messageId));
@@ -609,7 +614,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     const firstMsg = batch[0];
     if (!firstMsg) return;
     pending.block(scope);
-    void withTrace({ chatId: firstMsg.chatId }, async () => {
+    const flush = withTrace({ chatId: firstMsg.chatId }, async () => {
       log.info('flush', 'start', {
         scope,
         batchSize: batch.length,
@@ -655,6 +660,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           activeRuns,
           recalled,
           botOverload,
+          requeueAfterPause: () => {
+            if (!switchingAgent) return false;
+            for (const msg of batch) pending.push(scope, msg);
+            return true;
+          },
           ...(knowledge ? { knowledge } : {}),
           ...(deps.appPaths?.profileDir
             ? { knowledgeSnapshotDir: join(deps.appPaths.profileDir, 'knowledge-snapshots') }
@@ -667,7 +677,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         log.info('flush', 'end');
       }
     });
-  }, (scope, messages) => pendingStore?.set(scope, messages));
+    flushing.add(flush);
+    void flush.finally(() => flushing.delete(flush));
+  }, (scope, messages) => {
+    if (pendingConnected) pendingStore?.set(scope, messages);
+    else pendingChanges.set(scope, [...messages]);
+  });
 
   // The console's tasks panel reads live runs / queue depth and issues the
   // same interrupt the IM /stop command uses. Late-bound like `meeting`
@@ -895,10 +910,32 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   });
   await ownerRefresh.start();
 
+  // Merge intake during the handshake with the recovered queue in memory.
+  // Nothing is written back until the new channel has connected.
+  const resumePending = pending.pause();
+  const agentKind = controls.profileConfig.agentKind;
+  const originalAgent = controls.profileConfig.agentFailover?.original ?? agentKind;
+  const expiredPending = [];
+  for (const record of leftoverPending) {
+    if (Date.now() - record.queuedAt > PENDING_REQUEUE_WINDOW_MS) {
+      pendingChanges.set(record.scope, []);
+      expiredPending.push(record);
+      continue;
+    }
+    const sameAgent = (record.agentKind ?? originalAgent) === agentKind;
+    pendingChanges.set(record.scope, []);
+    for (const msg of record.messages) {
+      if (!sameAgent && [AUTO_RESUME_CONTENT_TYPE, 'card_action'].includes(msg.rawContentType)) continue;
+      pending.push(record.scope, msg);
+    }
+  }
+
   try {
     await channel.connect();
   } catch (err) {
     ownerRefresh.stop();
+    pending.stop();
+    stopHostMemoryMonitor();
     abandonUnconnectedSocket(channel);
     throw err;
   }
@@ -909,24 +946,21 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   if (runs) {
     const orphans = runs.takeOrphans();
     if (orphans.length > 0) {
-      const resumed = await resumeInterruptedRecords(autoResumer, orphans, 'restart', controls);
+      const ownedByAgent = orphans.filter((record) => (record.agentKind ?? originalAgent) === agentKind);
+      const resumed = await resumeInterruptedRecords(autoResumer, ownedByAgent, 'restart', controls);
       void reportInterruptedRuns(channel, orphans, 'restart', Date.now(), resumed).catch(
         (err: unknown) => log.warn('interrupted-notice', 'sweep-failed', { err: String(err) }),
       );
     }
   }
-  // Messages that were waiting behind a run when the previous process went
-  // away: recent ones are simply processed now, old ones are reported rather
-  // than acted on long after the fact.
-  for (const record of leftoverPending) {
-    if (Date.now() - record.queuedAt <= PENDING_REQUEUE_WINDOW_MS) {
-      log.info('pending', 'requeued', { scope: record.scope, count: record.messages.length });
-      for (const msg of record.messages) pending.push(record.scope, msg);
-    } else {
-      log.info('pending', 'expired', { scope: record.scope, count: record.messages.length });
-      void sendExpiredPendingNotice(channel, record);
-    }
+  pendingConnected = true;
+  for (const [scope, messages] of pendingChanges) pendingStore?.set(scope, messages);
+  pendingChanges.clear();
+  for (const record of expiredPending) {
+    log.info('pending', 'expired', { scope: record.scope, count: record.messages.length });
+    void sendExpiredPendingNotice(channel, record);
   }
+  resumePending();
   // Topic sessions are bridge-owned resume pointers, so expiry never removes
   // Lark messages or the agent CLI's native history. The first pass runs only
   // after durable pending messages have been re-queued, which protects them.
@@ -1064,7 +1098,38 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   return {
     channel,
-    disconnect: async () => {
+    prepareAgentSwitch: async (interrupt) => {
+      switchingAgent = true;
+      const unpausePending = pending.pause();
+      const unpauseRuns = activeRuns.pauseNewRuns('agent-switch');
+      const resume = () => {
+        switchingAgent = false;
+        unpauseRuns();
+        unpausePending();
+      };
+      try {
+        if (interrupt) await activeRuns.stopAll('agent-switch');
+        else if (!await activeRuns.waitForIdle(60_000)) {
+          throw new Error('仍有任务在执行，请等待完成或确认中断后切换');
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            Promise.allSettled(flushing),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error('等待消息交接超时，请重试')), 10_000);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+        return resume;
+      } catch (err) {
+        resume();
+        throw err;
+      }
+    },
+    disconnect: async (options) => {
       activeRuns.pauseNewRuns('bridge-disconnect');
       stopHostMemoryMonitor();
       await Promise.all([worktreeCleanup?.stop(), topicSessionRetention.stop()]);
@@ -1096,7 +1161,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       await approvalSocket?.close().catch(() => undefined);
       // Keep the durable copy: the next process (or the rebuilt channel after
       // /reconnect) picks the queued messages up again.
-      pending.stop();
+      if (!options?.agentSwitch) pending.stop();
       // Nothing still waiting for a decision may slip through after this.
       approvalBroker.cancelAll('bridge 正在重启或断开');
       // Background work dies with this daemon; say so while the channel is up.
@@ -1107,14 +1172,14 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       // channel, so it has to happen before `channel.disconnect()`. Doing it
       // after stopAll (rather than before) avoids racing a run that was about
       // to deliver its real answer.
-      await activeRuns.stopAll().catch((err: unknown) => {
+      await activeRuns.stopAll(options?.agentSwitch ? 'agent-switch' : 'shutdown').catch((err: unknown) => {
         log.fail('disconnect', err, { step: 'stopAll' });
       });
       if (runs) {
         // Bounded: launchd is already counting down to SIGKILL, and a hung
         // Feishu call must not be what stops us from exiting cleanly.
         const own = runs.takeOwn();
-        const resumed = await resumeInterruptedRecords(autoResumer, own, 'shutdown', controls).catch(
+        const resumed = options?.agentSwitch ? new Set<string>() : await resumeInterruptedRecords(autoResumer, own, 'shutdown', controls).catch(
           (err: unknown) => {
             log.fail('auto-resume', err, { step: 'shutdown' });
             return new Set<string>();
@@ -1128,14 +1193,16 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         await runs.flush();
       }
       const [disconnectResult, ...flushResults] = await Promise.allSettled([
-        channel.disconnect(),
+        channel.disconnect().finally(async () => {
+          if (options?.agentSwitch) pending.stop();
+          await pendingStore?.flush();
+        }),
         sessions.flush(),
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
         workspaces.flush(),
         jobs?.flush(),
         autoResumer.flush(),
-        pendingStore?.flush(),
         pendingRotations.flush(),
         contextCursors.flush(),
         usageLedger?.flush(),
@@ -1468,7 +1535,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     controls,
   });
   if (handled) {
-    const dropped = pending.cancel(scope);
+    const dropped = /^\s*\/config(?:\s|$)/.test(emsg.content ?? '') ? [] : pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }
@@ -1590,6 +1657,7 @@ interface RunBatchDeps {
   activeRuns?: ActiveRuns;
   recalled?: RecalledMessages;
   botOverload?: BotOverloadGuard;
+  requeueAfterPause?: () => boolean;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -1984,6 +2052,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     },
   });
   if (!flow.ok) {
+    if (flow.rejectReason.code === 'reconnect-in-progress' && deps.requeueAfterPause?.()) return;
     log.info('run-flow', 'rejected', { scope, code: flow.rejectReason.code });
     log.warn('policy', 'denied', {
       scope,
@@ -2008,6 +2077,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const chatName = mode === 'p2p' ? undefined : controls.knownChats?.find(c => c.id === chatId)?.name;
   runs?.start({
     runId: execution.runId,
+    agentKind,
     scope,
     chatId,
     originMessageId: replyTargetOf(lastMsg),

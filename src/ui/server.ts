@@ -1,3 +1,5 @@
+import { isAgentKind } from '../agent/registry';
+import { agentFailoverView, parseAgentSwitch } from '../runtime/agent-failover';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
@@ -234,6 +236,28 @@ async function route(
   }
 
   // --- per-profile config ---
+  if (path === '/api/config/agent' && (g || p)) {
+    const profile = url.searchParams.get('profile') ?? (await readActiveProfile(deps.rootDir));
+    if (!profile) throw new HttpError(400, 'no profile');
+    if (p) {
+      const body = await readJsonBody(req) as { action?: unknown; standby?: unknown } | null;
+      try {
+        if (body?.action === 'standby' && (body.standby === null || isAgentKind(body.standby)) && sup.configureStandby) {
+          await sup.configureStandby(profile, body.standby);
+        } else if (body?.action === 'switch' && sup.switchAgent) {
+          await sup.switchAgent(profile, parseAgentSwitch(body));
+        } else {
+          throw new Error('无效的 agent 设置');
+        }
+      } catch (err) {
+        throw new HttpError(400, err instanceof Error ? err.message : String(err));
+      }
+    }
+    const { profileConfig } = await loadProfileState(profile, deps.rootDir);
+    const status = (await listProfiles(sup, deps.rootDir)).find((entry) => entry.name === profile);
+    sendJson(res, 200, { ...agentFailoverView(profileConfig), online: status?.running === true });
+    return;
+  }
   if (path === '/api/config' && g) {
     const { state, live } = await resolveTargetState(deps, url);
     sendJson(res, 200, buildConfigView(state, live));

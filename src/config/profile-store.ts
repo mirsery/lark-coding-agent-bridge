@@ -50,6 +50,7 @@ type StoredProfileConfig = Pick<
   ProfileConfig,
   | 'schemaVersion'
   | 'agentKind'
+  | 'agentFailover'
   | 'mode'
   | 'accounts'
   | 'secrets'
@@ -93,6 +94,7 @@ function serializeProfileConfig(profile: ProfileConfig): StoredProfileConfig {
   return {
     schemaVersion: profile.schemaVersion,
     agentKind: profile.agentKind,
+    ...(profile.agentFailover ? { agentFailover: profile.agentFailover } : {}),
     mode: profile.mode,
     accounts: profile.accounts,
     ...(profile.secrets ? { secrets: profile.secrets } : {}),

@@ -101,7 +101,7 @@ lark-channel-bridge ui           # open the console in a browser
 lark-channel-bridge ui --print   # print the URL only
 ```
 
-Note: the `claude` profile is hosted by its own per-profile daemon, so the console cannot take its runtime lock and may show it as not running. Trust `status --profile claude` and real Feishu traffic instead; see "Web console" below.
+The console lists the `claude` profile as externally hosted while its own daemon holds the connection.
 
 ### Applying code changes
 
@@ -203,21 +203,21 @@ The `coding-board` command remains for overrides: `add` sets a task title or for
 
 ### Web console (`--web-ui`)
 
-`--web-ui` is an alternative background service, not an add-on to the per-profile daemons above. Add it to `start` to run one machine-wide supervisor process that hosts every profile and serves a local web console to start/stop/configure them:
+Pass `--web-ui` to start the machine-wide supervisor and its local web console.
 
 ```bash
 lark-channel-bridge start --web-ui
 ```
 
-Pick one mode per machine:
-- **Per-profile daemons** (`start [--profile <name>]`, no `--web-ui`) — what the commands above set up. No web console.
-- **Supervisor console** (`start --web-ui`) — one process hosts all profiles; the console reads their live status directly from that process.
-
-⚠️ **Do not run both for the same profile.** If a profile already has a per-profile daemon running and you separately start `run --web-ui` / `start --web-ui`, the console tries to host that profile too, fails to acquire its runtime lock (already held by the other process), and silently falls back to showing it as **not running** — even though the original daemon is still alive and answering messages. The console currently only reports profiles it hosts itself; it does not detect profiles kept alive by another process. If you want the console, stop the per-profile daemon first (`lark-channel-bridge stop --profile <name>`) and let the console start it instead.
+The supervisor and independent per-profile daemons can coexist on the same machine. The runtime lock lets only one process host each profile. The console lists profiles hosted by independent daemons and can switch their agent.
 
 The console’s **运行概览** page shows the same data as the terminal dashboard. The top row shows host CPU, memory, disk and network. Below it, each bot has its own card, in a stable order, with its Sponsor and its five-hour and weekly quota bars with local reset times. Usage at 90% or more turns red, and a `额度已用尽` badge marks an exhausted quota. Each bot’s sessions are listed under it, showing the current step, elapsed time, summary, chat and starter. The page refreshes every five seconds. Runs hosted by the console process can be stopped from the page; runs owned by other processes are view-only. The sidebar's 编码任务 page tracks local coding tasks; see [Coding task board](#coding-task-board).
 
 ![The web console’s 运行概览 page with demonstration data](docs/images/web-console-overview.png)
+
+#### Agent failover
+
+Open the profile's Configuration page and save a standby agent. In a private chat, the bot owner can also send `/config agent standby agy` or choose another agent. Use `/config` to switch while the bot is online, or use **切换并启动** in the local console if the profile is offline. The bridge probes the standby before switching, preserves the bot and workspace, and keeps each agent's conversation history and model preferences separately. Antigravity CLI can serve only the bot owner's private chats.
 
 ### Multiple profiles: Claude and Codex
 

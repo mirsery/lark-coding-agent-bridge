@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import type { AgentRun } from '../agent/types';
 
 /**
@@ -16,7 +17,7 @@ export interface SupplementTarget {
 
 /** Who or what stopped a run — logged on `card final` so the watchdog can
  * tell a wanted stop (a person, a recalled message) from a failure. */
-export type StopCause = 'user' | 'recalled' | 'shutdown' | 'timeout';
+export type StopCause = 'user' | 'recalled' | 'shutdown' | 'timeout' | 'agent-switch';
 
 export interface RunHandle {
   run: AgentRun;
@@ -196,7 +197,7 @@ export class ActiveRuns {
     return { active: true, background };
   }
 
-  async stopAll(): Promise<void> {
+  async stopAll(cause: StopCause = 'shutdown'): Promise<void> {
     const all = [...this.handles.values()];
     const lingering = [...this.lingering.values()].map((l) => l.run);
     this.handles.clear();
@@ -204,9 +205,18 @@ export class ActiveRuns {
     this.lingering.clear();
     for (const h of all) {
       h.interrupted = true;
-      h.stopCause = 'shutdown';
+      h.stopCause = cause;
     }
     await Promise.allSettled([...all.map((h) => h.run.stop()), ...lingering.map((run) => run.stop())]);
+  }
+
+  async waitForIdle(timeoutMs: number): Promise<boolean> {
+    const end = Date.now() + timeoutMs;
+    while (this.handles.size > 0 || this.lingeringScopes().length > 0) {
+      if (Date.now() >= end) return false;
+      await delay(100);
+    }
+    return true;
   }
 
   async waitForAll(timeoutMs = 300_000): Promise<void> {

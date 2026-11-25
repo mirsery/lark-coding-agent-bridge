@@ -48,6 +48,8 @@ export interface ProcessEntry {
    * WS handshake — undefined until the connection is up, or on processes
    * registered by older versions of the bridge. */
   botName?: string;
+  ready?: boolean;
+  agentSwitchSocket?: string;
 }
 
 interface RegistryFile {
@@ -121,6 +123,7 @@ export interface RegisterArgs {
   configPath: string;
   version: string;
   registryFile?: string;
+  ready?: boolean;
 }
 
 /**
@@ -142,6 +145,7 @@ export async function register(args: RegisterArgs): Promise<ProcessEntry> {
     configPath: args.configPath,
     startedAt: new Date().toISOString(),
     version: args.version,
+    ...(args.ready !== undefined ? { ready: args.ready } : {}),
   };
   await withRegistryFileLock(registryFile, async () => {
     const { entries: live } = await readForWriteState(registryFile);
@@ -167,7 +171,7 @@ export async function unregister(id: string, registryFile: string = paths.proces
  */
 export async function updateEntry(
   id: string,
-  patch: Partial<Pick<ProcessEntry, 'appId' | 'tenant' | 'configPath' | 'botName'>>,
+  patch: Partial<Pick<ProcessEntry, 'appId' | 'tenant' | 'configPath' | 'botName' | 'agentKind' | 'ready' | 'agentSwitchSocket'>>,
   registryFile: string = paths.processesFile,
 ): Promise<void> {
   await withRegistryFileLock(registryFile, async () => {

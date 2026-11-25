@@ -1,3 +1,5 @@
+import type { AgentKind } from '../agent/registry';
+import type { AgentSwitchRequest } from '../runtime/agent-failover';
 import type { LarkChannel } from '@larksuite/channel';
 import type { KnownChat } from '../bot/lark-info';
 import type { MutableProfileState } from '../config/config-ops';
@@ -27,6 +29,8 @@ export interface UiSupervisor {
   startProfile(profile: string): Promise<void>;
   stopProfile(profile: string): Promise<void>;
   restartProfile(profile: string): Promise<void>;
+  configureStandby?(profile: string, standby: AgentKind | null): Promise<void>;
+  switchAgent?(profile: string, request: AgentSwitchRequest): Promise<void>;
 }
 
 /** Everything the console server needs from the supervisor host. */
