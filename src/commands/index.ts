@@ -1,4 +1,11 @@
-import { agentFailoverView, parseAgentSwitch, readFailoverProfile, type AgentSwitchRequest } from '../runtime/agent-failover';
+import {
+  agentFailoverView,
+  parseAgentSwitch,
+  readFailoverProfile,
+  type AgentSwitchPhase,
+  type AgentSwitchRequest,
+} from '../runtime/agent-failover';
+import { agentSwitchPanel, agentSwitchProgress, type AgentSwitchResult } from '../card/agent-switch-card';
 import {
   coffeeLeadInKey,
   coffeeLeadIns,
@@ -217,7 +224,7 @@ export interface Controls {
   /** Restart the bridge in-process: disconnect WS, kill claude runs, reload
    * config, reconnect with the new credentials. */
   restart(opts?: { wait?: boolean }): Promise<void>;
-  switchAgent?(request: AgentSwitchRequest): Promise<void>;
+  switchAgent?(request: AgentSwitchRequest, onPhase?: (phase: AgentSwitchPhase) => void): Promise<void>;
   configureStandby?(kind: AgentKind | null): Promise<void>;
   /** Stop this whole process gracefully (disconnect + exit). Used by /exit
    * when the user targets the receiving process itself. */
@@ -329,6 +336,7 @@ const handlers: Record<string, Handler> = {
   '/account': handleAccount,
   '/accounts': handleAccounts,
   '/config': handleConfig,
+  '/agent': handleAgentConfig,
   '/stop': handleStop,
   '/timeout': handleTimeout,
   '/effort': handleEffort,
@@ -368,6 +376,7 @@ const ADMIN_COMMANDS = new Set([
   // Shows the owner's subscription quotas and changes which account pays.
   '/accounts',
   '/config',
+  '/agent',
   // Raises what every later turn of the conversation costs the owner's quota.
   '/effort',
   '/ps',
@@ -4075,50 +4084,158 @@ async function handleConfig(args: string, ctx: CommandContext): Promise<void> {
     case 'cancel':
       return cancelConfig(ctx);
     case 'agent':
-      return handleAgentConfig(args.trim().split(/\s+/).slice(1), ctx);
+      return handleAgentConfig(args.trim().split(/\s+/).slice(1).join(' '), ctx);
     default:
       await reply(ctx, '用法:`/config`');
   }
 }
 
-async function handleAgentConfig(args: string[], ctx: CommandContext): Promise<void> {
+const agentOperations = new Set<string>();
+const interruptCards = new Map<string, { profileKey: string; pair: string }>();
+const MAX_INTERRUPT_CARDS = 128;
+
+function rememberInterruptCard(ctx: CommandContext, messageId: string, state: ReturnType<typeof agentFailoverView>): void {
+  if (!state.standby) return;
+  interruptCards.set(messageId, {
+    profileKey: JSON.stringify([ctx.controls.configPath, ctx.controls.profile]),
+    pair: `${state.current} ${state.standby}`,
+  });
+  if (interruptCards.size > MAX_INTERRUPT_CARDS) {
+    const oldest = interruptCards.keys().next().value;
+    if (oldest !== undefined) interruptCards.delete(oldest);
+  }
+}
+
+async function handleAgentConfig(args: string, ctx: CommandContext): Promise<void> {
   if (ctx.chatMode !== 'p2p' || !isCreator(ctx.controls, ctx.msg.senderId)) {
     await reply(ctx, 'agent 切换仅限 bot 主人在私聊操作');
     return;
   }
-  if (!ctx.controls.switchAgent || !ctx.controls.configureStandby) {
+  const { switchAgent, configureStandby, configPath, profile } = ctx.controls;
+  if (!switchAgent || !configureStandby) {
     await reply(ctx, '当前 profile 未提供 agent 切换入口');
     return;
   }
+
+  const readState = async () => agentFailoverView(await readFailoverProfile(configPath, profile));
+  const sendPanel = async (result?: AgentSwitchResult, state?: Awaited<ReturnType<typeof readState>>) => {
+    const current = state ?? await readState();
+    const { messageId } = await ctx.channel.send(
+      ctx.msg.chatId, { card: agentSwitchPanel(current, result) }, commandReplyOptions(ctx),
+    );
+    rememberInterruptCard(ctx, messageId, current);
+  };
+  const key = JSON.stringify([configPath, profile]);
+  if (agentOperations.has(key)) {
+    await reply(ctx, 'Agent 操作进行中，请查看面板结果。');
+    return;
+  }
+
+  const [action, expected, target, option, ...extra] = args.trim().split(/\s+/);
   try {
-    const state = agentFailoverView(await readFailoverProfile(ctx.controls.configPath, ctx.controls.profile));
-    const [action, expected, target, option] = args;
-    if (action === 'standby' && args.length === 2 && (expected === 'none' || isAgentKind(expected))) {
-      await ctx.controls.configureStandby(expected === 'none' ? null : expected);
-      await reply(ctx, expected === 'none' ? '已取消备用 agent' : `已设为备用 agent：${agentDescriptor(expected).displayName}`);
+    if (!action) {
+      await sendPanel();
       return;
     }
-    if (action === 'switch' && (args.length === 3 || (args.length === 4 && option === '--interrupt'))) {
-      const request = parseAgentSwitch({ expected, target, interrupt: option === '--interrupt' });
-      const next = agentDescriptor(request.target);
-      if (ctx.fromCardAction && request.interrupt) throw new Error('请用私聊命令明确确认中断');
-      await reply(ctx, `正在检查 ${next.displayName}，${request.interrupt ? '通过后中断当前任务并切换' : '通过后等待当前任务结束再切换'}。`);
-      await ctx.controls.switchAgent(request);
-      await reply(ctx, `已切换到 ${next.displayName}${next.ownerDmOnly ? '（仅主人私聊）' : ''}。`);
+    if (action === 'standby' && !target && (expected === 'none' || isAgentKind(expected))) {
+      agentOperations.add(key);
+      try {
+        await configureStandby(expected === 'none' ? null : expected);
+        await sendPanel({ title: expected === 'none' ? '已取消备用' : '已保存备用', ok: true });
+      } finally {
+        agentOperations.delete(key);
+      }
       return;
     }
-    const standby = state.standby;
-    await reply(ctx, [
-      `当前 agent 为 ${agentDescriptor(state.current).displayName}`,
-      standby ? `备用 agent 为 ${agentDescriptor(standby).displayName}${agentDescriptor(standby).ownerDmOnly ? '（仅主人私聊）' : ''}` : '尚未配置备用 agent',
-      `设置备用：\`/config agent standby <${state.agents.map((agent) => agent.kind).join('|')}|none>\``,
-      ...(standby ? [
-        `等待后切换：\`/config agent switch ${state.current} ${standby}\``,
-        `中断后切换：\`/config agent switch ${state.current} ${standby} --interrupt\``,
-      ] : []),
-    ].join('\n'));
+
+    let request: AgentSwitchRequest;
+    if ((action === 'switch' || action === 'interrupt') && expected && target &&
+        extra.length === 0 && (!option || (action === 'switch' && option === '--interrupt'))) {
+      if (ctx.fromCardAction && option === '--interrupt') throw new Error('请在 /agent 面板确认中断后切换');
+      if (action === 'interrupt') {
+        const issued = interruptCards.get(ctx.msg.messageId);
+        // Only cards issued by this panel render the native interrupt confirmation.
+        if (!ctx.fromCardAction || issued?.profileKey !== key || issued.pair !== `${expected} ${target}`) {
+          throw new Error('请重新打开 /agent 面板确认中断后切换');
+        }
+        interruptCards.delete(ctx.msg.messageId);
+      }
+      request = parseAgentSwitch({ expected, target, interrupt: action === 'interrupt' || option === '--interrupt' });
+    } else if (action === 'switch' && !ctx.fromCardAction && !expected) {
+      const state = await readState();
+      if (!state.standby) {
+        await sendPanel(undefined, state);
+        return;
+      }
+      request = { expected: state.current, target: state.standby, interrupt: false };
+    } else {
+      await reply(ctx, '用法：`/agent` 打开切换面板，`/agent switch` 切到已设置的备用 agent。');
+      return;
+    }
+
+    if (agentOperations.has(key)) {
+      await reply(ctx, 'Agent 操作进行中，请查看面板结果。');
+      return;
+    }
+    agentOperations.add(key);
+    // Return to the SDK before the probe or task drain. The card callback
+    // and the per-chat intake queue must stay responsive during the switch.
+    void runAgentSwitch(ctx, request, switchAgent, readState)
+      .catch((err: unknown) => log.fail('command', err, { cmd: '/agent', step: 'switch-result' }))
+      .finally(() => agentOperations.delete(key));
   } catch (err) {
     await reply(ctx, err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function runAgentSwitch(
+  ctx: CommandContext,
+  request: AgentSwitchRequest,
+  switchAgent: NonNullable<Controls['switchAgent']>,
+  readState: () => Promise<ReturnType<typeof agentFailoverView>>,
+): Promise<void> {
+  const { channel } = ctx;
+  const chatId = ctx.msg.chatId;
+  const options = commandReplyOptions(ctx);
+  let progressId: string | undefined;
+  let progress = Promise.resolve();
+  const onPhase = (phase: AgentSwitchPhase) => {
+    progress = progress.then(async () => {
+      const card = agentSwitchProgress(request, phase);
+      if (progressId) await updateManagedCard(channel, progressId, card);
+      else ({ messageId: progressId } = await sendManagedCard(channel, chatId, card, options));
+    }).catch((err: unknown) => log.warn('command', 'agent-progress-update-failed', { err: String(err) }));
+  };
+
+  onPhase('checking');
+  let result: AgentSwitchResult;
+  try {
+    await switchAgent(request, onPhase);
+    result = { title: `已切换到 ${agentDescriptor(request.target).displayName}`, ok: true };
+  } catch (err) {
+    result = { title: '切换失败', ok: false, detail: err instanceof Error ? err.message : String(err) };
+  }
+
+  await progress;
+  try {
+    const state = await readState();
+    const card = agentSwitchPanel(state, result);
+    if (progressId) {
+      try {
+        await updateManagedCard(channel, progressId, card);
+        rememberInterruptCard(ctx, progressId, state);
+        return;
+      } catch {
+        // If the old message cannot be edited, publish the result separately.
+      }
+    }
+    const { messageId } = await channel.send(chatId, { card }, options);
+    rememberInterruptCard(ctx, messageId, state);
+  } catch (err) {
+    log.warn('command', 'agent-result-card-failed', { err: String(err) });
+    await reply(ctx, [result.title, result.detail].filter(Boolean).join('\n'));
+  } finally {
+    if (progressId) forgetManagedCard(progressId);
   }
 }
 

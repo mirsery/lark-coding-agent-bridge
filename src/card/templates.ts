@@ -338,6 +338,7 @@ export function helpCard(agentName = 'Agent'): object {
           '`/status` — 当前 profile、会话、工作目录、git、知识库状态',
           '`/accounts` — Claude 订阅账户表：各账户用量、重置时间、切换线；`/accounts switch [名字]` 切换账户',
           '`/config` — 偏好、访问控制、lark-cli 身份策略',
+          '`/agent` — 设置备用 agent 或切换（仅 bot 主人私聊）',
           '`/account` — 查看当前应用；`/account change` 换 appId/secret',
           '`/ps` · `/exit <id|#>` — 列出 / 关掉本机的 bot',
           '`/reconnect` — 强制重连（网络抖动后没反应时用）',

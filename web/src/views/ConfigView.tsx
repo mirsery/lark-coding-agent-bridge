@@ -41,7 +41,9 @@ import { KnowledgeCard, SkillLibrariesCard } from "./KnowledgeCards";
 function AgentFailoverCard({ profile, onSwitched }: { profile: string; onSwitched: () => Promise<void> }) {
   const [state, setState] = useState<AgentFailoverView>();
   const [selected, setSelected] = useState("none");
-  const [busy, setBusy] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState("");
+  const busy = pendingMessage !== "";
+  const [confirmInterrupt, setConfirmInterrupt] = useState(false);
   const [error, setError] = useState("");
   const endpoint = `/api/config/agent?profile=${encodeURIComponent(profile)}`;
 
@@ -60,11 +62,19 @@ function AgentFailoverCard({ profile, onSwitched }: { profile: string; onSwitche
     return () => { disposed = true; };
   }, [endpoint]);
 
+  const current = state?.agents.find((agent) => agent.kind === state.current);
+  const standby = state?.agents.find((agent) => agent.kind === state.standby);
+  const draftChanged = selected !== (state?.standby ?? "none");
+  const selectedAgent = state?.agents.find((agent) => agent.kind === selected);
+
   async function update(action: "standby" | "switch", interrupt = false) {
-    if (!state) return;
-    if (action === "switch" && interrupt &&
-        !window.confirm("中断当前任务并切换？已开始的任务需要人工确认后再运行。")) return;
-    setBusy(true);
+    if (!state || busy) return;
+    if (action === "switch" && (!standby || draftChanged)) return;
+    const nextStep = interrupt ? "中断当前任务" : state.online ? "等待当前任务结束" : "启动 Bot";
+    setPendingMessage(action === "standby"
+      ? "正在保存备用设置…"
+      : `正在切换到 ${standby?.name}。先检查可用性，再${nextStep}。`);
+    setConfirmInterrupt(false);
     setError("");
     try {
       const next = await apiPost<AgentFailoverView>(endpoint, action === "standby"
@@ -72,30 +82,32 @@ function AgentFailoverCard({ profile, onSwitched }: { profile: string; onSwitche
         : { action, expected: state.current, target: state.standby, interrupt });
       show(next);
       if (action === "switch") await onSwitched();
-      toast.success(action === "standby" ? "备用 agent 已保存" : "已切换 agent，bot 已连接飞书");
+      toast.success(action === "standby" ? "备用设置已保存" : `已切换到 ${standby?.name}${next.online ? "，Bot 已连接飞书" : ""}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       const latest = await apiGet<AgentFailoverView>(endpoint).catch(() => undefined);
-      if (latest) show(latest);
-      if (action === "switch") await onSwitched();
+      if (latest) {
+        show(latest);
+        if (latest.current !== state.current) await onSwitched();
+      }
     } finally {
-      setBusy(false);
+      setPendingMessage("");
     }
   }
 
-  const current = state?.agents.find((agent) => agent.kind === state.current);
-  const standby = state?.agents.find((agent) => agent.kind === state.standby);
   return (
     <Card>
       <CardHeader><CardTitle>Agent 切换</CardTitle></CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-4">
+        {!state && !error && <p className="text-sm text-muted-foreground" role="status">加载 Agent 状态…</p>}
         {state && <>
-          <p className="text-sm">
-            当前 {current?.name} {current?.ownerDmOnly ? "（仅主人私聊）" : ""}
-            {" · "}{state.online ? "Bot 在线" : "Bot 离线"}
-          </p>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+            <span>当前配置 <strong>{current?.name}</strong>{current?.ownerDmOnly ? "（仅主人私聊）" : ""}</span>
+            <span>备用 <strong>{standby?.name ?? "未设置"}</strong></span>
+            <Badge variant={state.online ? "secondary" : "outline"}>{state.online ? "Bot 在线" : "Bot 离线"}</Badge>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Label htmlFor="standby-agent">备用 agent</Label>
+            <Label htmlFor="standby-agent">设置备用</Label>
             <Select value={selected} onValueChange={setSelected} disabled={busy}>
               <SelectTrigger id="standby-agent" className="w-auto"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -107,26 +119,42 @@ function AgentFailoverCard({ profile, onSwitched }: { profile: string; onSwitche
                 ))}
               </SelectContent>
             </Select>
-            <Button variant="secondary" disabled={busy || selected === (state.standby ?? "none")}
+            <Button variant="secondary" disabled={busy || !draftChanged}
               onClick={() => void update("standby")}>保存备用</Button>
           </div>
-          {standby?.ownerDmOnly && (
-            <p className="text-sm text-muted-foreground">切到 {standby.name} 后仅支持主人私聊，群聊及其他入口暂停服务。</p>
+          {selectedAgent?.ownerDmOnly && (
+            <p className="text-sm text-muted-foreground">切入 {selectedAgent.name} 后仅主人私聊可用，群聊、定时任务和评论暂停。</p>
           )}
-          {standby && (
+          {draftChanged && <p className="text-sm text-muted-foreground">保存备用设置后即可切换。</p>}
+          {standby && !draftChanged && <>
             <div className="flex flex-wrap gap-2">
               <Button disabled={busy} onClick={() => void update("switch")}>
-                {state.online ? "等待任务结束后切换" : "切换并启动"}
+                {state.online ? `切换到 ${standby.name}` : `切换到 ${standby.name} 并启动`}
               </Button>
               {state.online && (
-                <Button variant="outline" disabled={busy} onClick={() => void update("switch", true)}>
+                <Button variant="outline" disabled={busy} onClick={() => setConfirmInterrupt(true)}>
                   中断任务并切换
                 </Button>
               )}
             </div>
-          )}
+            {state.online && !busy && (
+              <p className="text-sm text-muted-foreground">检查通过后，最多等待进行中的任务 60 秒。</p>
+            )}
+            <Dialog open={confirmInterrupt} onOpenChange={setConfirmInterrupt}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>中断任务并切换到 {standby.name}？</DialogTitle>
+                  <DialogDescription>检查通过后会停止正在运行的任务。被中断的任务需手动重跑。</DialogDescription>
+                </DialogHeader>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setConfirmInterrupt(false)}>取消</Button>
+                  <Button variant="destructive" onClick={() => void update("switch", true)}>确认中断并切换</Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </>}
         </>}
-        {busy && <p className="text-sm text-muted-foreground" role="status">操作进行中…</p>}
+        {busy && <p className="text-sm text-muted-foreground" role="status">{pendingMessage}</p>}
         {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
       </CardContent>
     </Card>

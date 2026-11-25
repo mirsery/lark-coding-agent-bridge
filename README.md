@@ -217,7 +217,7 @@ The console’s **运行概览** page shows the same data as the terminal dashbo
 
 #### Agent failover
 
-Open the profile's Configuration page and save a standby agent. In a private chat, the bot owner can also send `/config agent standby agy` or choose another agent. Use `/config` to switch while the bot is online, or use **切换并启动** in the local console if the profile is offline. The bridge probes the standby before switching, preserves the bot and workspace, and keeps each agent's conversation history and model preferences separately. Antigravity CLI can serve only the bot owner's private chats.
+The bot owner can send `/agent` in a private chat or open the Agent switch panel from `/config`. The panel shows the current agent and lets the owner select a standby or switch to it. The default action checks the standby and waits up to 60 seconds for running tasks. The interrupt action requires confirmation. The progress card updates with the result. Use **切换到…并启动** in the local web console when the profile is offline. Each agent keeps its own conversation history and model preferences. Antigravity CLI serves only the bot owner's private chats.
 
 ### Multiple profiles: Claude and Codex
 

@@ -11,6 +11,7 @@ import {
   createDefaultProfileConfig,
   type RootConfig,
 } from '../../../src/config/profile-schema';
+import { writeFailoverProfile, type AgentSwitchPhase } from '../../../src/runtime/agent-failover';
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
 import { getMessageReplyMode, getRequireMentionInGroup, secretKeyForApp } from '../../../src/config/schema';
 import { SessionStore } from '../../../src/session/store';
@@ -54,7 +55,7 @@ afterEach(async () => {
 });
 
 describe('profile-aware account and config commands', () => {
-  it('lets only the owner use the private config failover action without invoking the current agent', async () => {
+  it('lets only the owner use the legacy private config failover action without invoking the current agent', async () => {
     const h = await createHarness();
     const switchAgent = vi.fn(async () => {});
     const configureStandby = vi.fn(async () => {});
@@ -69,9 +70,90 @@ describe('profile-aware account and config commands', () => {
     await h.command('/config agent standby agy');
     expect(configureStandby).toHaveBeenCalledWith('agy');
     await h.command('/config agent switch claude agy');
-    expect(switchAgent).toHaveBeenCalledWith({ expected: 'claude', target: 'agy', interrupt: false });
+    await vi.waitFor(() => expect(switchAgent).toHaveBeenCalledWith({ expected: 'claude', target: 'agy', interrupt: false }, expect.any(Function)));
+    await vi.waitFor(() => expect(JSON.stringify(h.channel.rawClient.requests)).toContain('已切换'));
     await h.command('/config agent switch claude agy --interrupt');
     expect(switchAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the private agent panel and lets the owner configure the standby from the card', async () => {
+    const h = await createHarness();
+    h.controls.switchAgent = vi.fn(async () => {});
+    h.controls.configureStandby = vi.fn(async (standby) => {
+      await writeFailoverProfile(h.controls.configPath, 'claude', (profile) => ({
+        ...profile, agentFailover: { original: 'claude', preferences: {}, standby: standby ?? undefined },
+      }));
+    });
+
+    expect(await h.command('/agent')).toBe(true);
+    expect(JSON.stringify(h.channel.sent.at(-1)?.content)).toContain('agent.standby');
+    await h.command('/agent standby agy');
+    const panel = JSON.stringify(h.channel.sent.at(-1)?.content);
+    expect(panel).toContain('Antigravity');
+    expect(panel).toContain('群聊');
+    expect(panel).toContain('agent.switch');
+    expect(panel).toContain('中断任务并切换');
+    expect(panel).toContain('confirm');
+  });
+
+  it('acknowledges a switch click while the runtime is still working and updates one result card', async () => {
+    const h = await createHarness();
+    const run = deferred<void>();
+    const phase = deferred<(phase: AgentSwitchPhase) => void>();
+    h.controls.configureStandby = vi.fn(async () => {});
+    const switchAgent = h.controls.switchAgent = vi.fn(async (request, onPhase) => {
+      phase.resolve(onPhase);
+      await run.promise;
+      await writeFailoverProfile(h.controls.configPath, 'claude', (profile) => ({
+        ...profile, agentKind: request.target,
+        agentFailover: { original: 'claude', standby: request.expected, preferences: {} },
+      }));
+    });
+    await writeFailoverProfile(h.controls.configPath, 'claude', (profile) => ({
+      ...profile, agentFailover: { original: 'claude', standby: 'agy', preferences: {} },
+    }));
+
+    await h.command('/agent switch claude agy');
+    const updatePhase = await phase.promise;
+    await vi.waitFor(() => expect(JSON.stringify(h.channel.sent.at(-1)?.content)).toContain('检查'));
+    await h.command('/agent switch claude agy');
+    expect(switchAgent).toHaveBeenCalledTimes(1);
+    updatePhase('waiting');
+    await vi.waitFor(() => expect(JSON.stringify(h.channel.rawClient.requests)).toContain('等待进行中的任务'));
+    updatePhase('connecting');
+    run.resolve();
+    await vi.waitFor(() => {
+      const updates = h.channel.rawClient.requests.filter((request) => request.method === 'cardkit.v1.card.update');
+      expect(JSON.stringify(updates.at(-1)?.params)).toContain('已切换');
+      expect(JSON.stringify(updates.at(-1)?.params)).toContain('agy claude');
+      expect(new Set(updates.map((request) => (request.params as { cardId: string }).cardId)).size).toBe(1);
+    });
+  });
+
+  it('shows the failure and keeps the standby available for retry after a confirmed interrupt', async () => {
+    const h = await createHarness();
+    h.controls.configureStandby = vi.fn(async () => {});
+    const switchAgent = h.controls.switchAgent = vi.fn(async () => {
+      throw new Error('备用 agent 登录过期');
+    });
+    await writeFailoverProfile(h.controls.configPath, 'claude', (profile) => ({
+      ...profile, agentFailover: { original: 'claude', standby: 'agy', preferences: {} },
+    }));
+
+    await h.command('/agent interrupt claude agy');
+    expect(switchAgent).not.toHaveBeenCalled();
+    const send = vi.spyOn(h.channel, 'send');
+    await h.command('/agent');
+    const { messageId } = await send.mock.results[0]!.value;
+    await h.command('/agent interrupt claude agy', undefined, messageId);
+    await vi.waitFor(() => {
+      const updates = h.channel.rawClient.requests.filter((request) => request.method === 'cardkit.v1.card.update');
+      const result = JSON.stringify(updates.at(-1)?.params);
+      expect(result).toContain('切换失败');
+      expect(result).toContain('备用 agent 登录过期');
+      expect(result).toContain('claude agy');
+    });
+    expect(switchAgent).toHaveBeenCalledWith({ expected: 'claude', target: 'agy', interrupt: true }, expect.any(Function));
   });
 
   it('saves /config submit into the active v2 profile without flattening root config', async () => {
@@ -331,7 +413,7 @@ async function createHarness(options: {
   rootDir: string;
   channel: ReturnType<typeof createFakeChannel>;
   controls: Controls;
-  command(content: string, formValue?: Record<string, unknown>): Promise<boolean>;
+  command(content: string, formValue?: Record<string, unknown>, messageId?: string): Promise<boolean>;
 }> {
   const rootDir = await mkdtemp(join(tmpdir(), 'bridge-profile-config-command-'));
   roots.push(rootDir);
@@ -360,10 +442,10 @@ async function createHarness(options: {
     rootDir,
     channel,
     controls,
-    command: (content: string, formValue?: Record<string, unknown>) =>
+    command: (content: string, formValue?: Record<string, unknown>, messageId?: string) =>
       tryHandleCommand({
         channel: channel as unknown as CommandContext['channel'],
-        msg: message(content),
+        msg: { ...message(content), ...(messageId ? { messageId } : {}) },
         scope: 'chat-1',
         chatMode: 'p2p',
         sessions,

@@ -20,6 +20,7 @@ import {
   switchProfileAgent,
   withAgentSwitchLock,
   writeFailoverProfile,
+  type AgentSwitchPhase,
   type AgentSwitchRequest,
 } from './agent-failover';
 import { listenForAgentSwitch, requestAgentSwitch } from './agent-switch-socket';
@@ -100,7 +101,7 @@ class ManagedProfile {
     private workspaces: WorkspaceStore,
     private startChannelFn: StartChannelFn,
     private onExitCommand: (profile: string) => void,
-    private onSwitchAgent: (request: AgentSwitchRequest) => Promise<void>,
+    private onSwitchAgent: NonNullable<Controls['switchAgent']>,
     private onConfigureStandby: (kind: AgentKind | null) => Promise<void>,
   ) {}
 
@@ -308,7 +309,7 @@ class ManagedProfile {
       this.restarting = false;
     }
   }
-  async switchAgent(request: AgentSwitchRequest, probe: boolean): Promise<void> {
+  async switchAgent(request: AgentSwitchRequest, probe: boolean, onPhase?: (phase: AgentSwitchPhase) => void): Promise<void> {
     if (this.restarting || !this.connected) throw new Error('profile 正在重连，请稍后再试');
     if (this.profileConfig.agentKind !== request.expected) {
       throw new Error('运行中的 agent 已变更，请刷新后重试');
@@ -321,9 +322,11 @@ class ManagedProfile {
       const target = createRuntimeAgent(candidate, { ...this.appPaths, configPath: this.configPath });
       if (probe) await probeSwitchTarget(target, candidate);
 
+      onPhase?.(request.interrupt ? 'interrupting' : 'waiting');
       resume = await this.bridge.prepareAgentSwitch?.(request.interrupt);
       // Re-read under the config lock so unrelated saves during the probe
       // survive. Do not change the App identity in the middle of a cutover.
+      onPhase?.('connecting');
       let previous = current;
       await writeFailoverProfile(this.configPath, this.profile, (latest) => {
         if (latest.accounts.app.id !== this.appId || latest.accounts.app.tenant !== this.cfg.accounts.app.tenant ||
@@ -509,7 +512,7 @@ export class Supervisor {
       workspaces,
       this.startChannelFn,
       (p) => void this.stopProfile(p).catch(() => undefined),
-      (request) => this.switchAgent(profile, request),
+      (request, onPhase) => this.switchAgent(profile, request, onPhase),
       (kind) => this.configureStandby(profile, kind),
     );
     await managed.bringUp(new Date().toISOString());
@@ -550,7 +553,7 @@ export class Supervisor {
     }));
   }
 
-  async switchAgent(profile: string, request: AgentSwitchRequest): Promise<void> {
+  async switchAgent(profile: string, request: AgentSwitchRequest, onPhase?: (phase: AgentSwitchPhase) => void): Promise<void> {
     if (this.switching.has(profile)) throw new Error('profile 正在切换 agent');
     const paths = resolveAppPaths({ rootDir: this.opts.rootDir, profile });
     const remote = findLiveProcess(paths);
@@ -564,7 +567,7 @@ export class Supervisor {
       const managed = this.managed.get(profile);
       log.info('supervisor', 'agent-switch-started', { profile, ...request });
       if (managed?.online) {
-        await managed.switchAgent(request, this.opts.runPreflight !== false);
+        await managed.switchAgent(request, this.opts.runPreflight !== false, onPhase);
       } else {
         await this.switchOfflineAgent(paths, request);
       }

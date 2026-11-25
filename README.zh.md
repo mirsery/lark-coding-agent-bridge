@@ -217,10 +217,10 @@ lark-channel-bridge start --web-ui
 
 #### Agent 故障切换
 
-在 Web 控制台打开该 profile 的「配置 → Agent 切换」，选择并保存备用 agent。也可以在主人私聊发送 `/config agent standby agy`，将 `agy` 换成需要的 agent。
+在 bot 主人私聊发送 `/agent`（也可从 `/config` 点「管理 Agent 切换」），即可查看当前 agent、选择备用或发起切换。Web 控制台对应入口为「配置 → Agent 切换」。
 
-- 飞书还能收消息时，用私聊 `/config` 里的「等待任务结束后切换」。等待超过 60 秒会退出本次切换。`/config agent` 会列出当前可用的切换和中断命令。
-- 整个 profile 离线时，在 Web 点「切换并启动」。已安装的独立服务由系统服务管理器启动，其他 profile 由 Web supervisor 启动。
+- 飞书还能收消息时，点「切换到…」即可。检查通过后最多等待进行中的任务 60 秒。也可以点「中断任务并切换」并确认。进度卡会更新为切换结果。
+- 整个 profile 离线时，在 Web 点「切换到…并启动」。已安装的独立服务由系统服务管理器启动，其他 profile 由 Web supervisor 启动。
 - 备用 agent 需要在宿主机安装并完成登录。切换前 bridge 会发送一条不含会话内容的测试请求。失败时显示原因，切换成功时原 agent 成为备用。
 - 飞书身份、工作区和记忆沿用原 profile。会话和模型偏好按 agent 保存，切回可以继续原会话。已入队的普通消息可接续处理。中断的任务不会交给另一种 agent 自动重跑。
 - `agy` 只承接主人私聊。切入后群聊、定时任务和评论等 agent 入口暂停服务。

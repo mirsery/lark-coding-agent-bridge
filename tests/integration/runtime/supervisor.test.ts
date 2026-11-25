@@ -123,14 +123,15 @@ describe('Supervisor', () => {
     });
     await sup.startProfile('claude');
     await sup.configureStandby('claude', 'agy');
-    await sup.switchAgent('claude', { expected: 'claude', target: 'agy', interrupt: false });
+    const notePhase = (phase: string) => order.push(`phase:${phase}`);
+    await sup.switchAgent('claude', { expected: 'claude', target: 'agy', interrupt: false }, notePhase);
     expect(sup.list()[0]).toMatchObject({ agentKind: 'agy', appId: 'cli_a' });
     expect((await loadRootConfig(configPath))!.profiles.claude!.preferences.model).toBeUndefined();
-    await sup.switchAgent('claude', { expected: 'agy', target: 'claude', interrupt: true });
+    await sup.switchAgent('claude', { expected: 'agy', target: 'claude', interrupt: true }, notePhase);
     expect((await loadRootConfig(configPath))!.profiles.claude!.preferences.model).toBe('opus');
     expect(order.map((entry) => entry.split(':').slice(0, 2).join(':'))).toEqual([
-      'start:claude', 'prepare:false', 'stop:claude', 'start:agy',
-      'prepare:true', 'stop:agy', 'start:claude',
+      'start:claude', 'phase:waiting', 'prepare:false', 'phase:connecting', 'stop:claude', 'start:agy',
+      'phase:interrupting', 'prepare:true', 'phase:connecting', 'stop:agy', 'start:claude',
     ]);
   });
 

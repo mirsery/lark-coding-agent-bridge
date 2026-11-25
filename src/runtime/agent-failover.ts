@@ -12,6 +12,8 @@ import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../config/pr
 import { evaluateRunPolicy } from '../policy/run-policy';
 import { checkRuntimeAgentAvailability } from './agent-runtime';
 
+export type AgentSwitchPhase = 'checking' | 'waiting' | 'interrupting' | 'connecting';
+
 export interface AgentSwitchRequest {
   expected: AgentKind;
   target: AgentKind;

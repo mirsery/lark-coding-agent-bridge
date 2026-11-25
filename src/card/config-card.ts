@@ -584,15 +584,10 @@ function agentFailoverElements(state: ReturnType<typeof agentFailoverView>): obj
       content: `**当前 agent** ${current.displayName}　**备用 agent** ${standby?.displayName ?? '未配置'}` +
         (standby?.ownerDmOnly ? '\n切换后仅支持主人私聊，群聊及其他入口暂停服务。' : ''),
     },
-    ...(standby ? [{
-      tag: 'button',
-      text: { tag: 'plain_text', content: '等待任务结束后切换' },
-      behaviors: [{ type: 'callback', value: { cmd: 'config.agent.switch', arg: `${current.kind} ${standby.kind}` } }],
-    }] : []),
     {
       tag: 'button',
-      text: { tag: 'plain_text', content: '备用设置与中断选项' },
-      behaviors: [{ type: 'callback', value: { cmd: 'config.agent' } }],
+      text: { tag: 'plain_text', content: '管理 Agent 切换' },
+      behaviors: [{ type: 'callback', value: { cmd: 'agent' } }],
     },
   ];
 }
