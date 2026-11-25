@@ -144,7 +144,7 @@ export interface HostMetricsInfo {
   memoryTotal: number;
   memoryNonFree: number;
   uptimeSeconds: number;
-  disk?: { total: number; used: number; available: number };
+  disk?: { total: number; used: number; available: number; availableIncludingPurgeable?: number };
   io?: { disk: { read: number; write: number } | null; network: { read: number; write: number } | null };
 }
 

@@ -11,7 +11,7 @@ describe('host metrics', () => {
     expect(cpuPercent({ idle: 900, total: 1000 }, { idle: 10, total: 20 })).toBeNull();
   });
   it('caches disk sampling across frequent refreshes and labels the first CPU sample unavailable', async () => {
-    const read = createHostSampler();
+    const read = createHostSampler(10_000, async () => undefined);
     const first = await read(1000);
     expect(first.cpuPercent).toBeNull();
     expect(first.temperatureC).toBe(56.2);
@@ -21,5 +21,16 @@ describe('host metrics', () => {
     expect(statfs).toHaveBeenCalledTimes(1);
     expect((await read(61000)).disk?.sampledAt).toBe(61000);
     expect(statfs).toHaveBeenCalledTimes(2);
+  });
+  it('shares the macOS capacity sample and falls back to current filesystem counters on failure', async () => {
+    const available = vi.fn().mockResolvedValueOnce(50_000).mockRejectedValueOnce(new Error('capacity unavailable'))
+      .mockResolvedValueOnce(120_000);
+    const read = createHostSampler(10_000, available);
+    const [first, concurrent] = await Promise.all([read(1000), read(1000)]);
+    expect(first.disk).toEqual({ total: 102400, used: 71680, available: 20480, availableIncludingPurgeable: 50_000, sampledAt: 1000 });
+    expect(concurrent.disk).toEqual(first.disk);
+    expect(available).toHaveBeenCalledTimes(1);
+    expect((await read(61000)).disk).toEqual({ total: 102400, used: 71680, available: 20480, sampledAt: 61000 });
+    expect((await read(121000)).disk?.availableIncludingPurgeable).toBeUndefined();
   });
 });

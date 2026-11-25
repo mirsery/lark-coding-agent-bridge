@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api";
 import type { HostMetricsInfo, MonitorBot, MonitorInfo, MonitorRun, QuotaWindowInfo } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, diskDisplay } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -74,7 +74,7 @@ function Stat({ label, value, meter, detail }: { label: string; value: string; m
 
 function HostCard({ info, metrics }: { info: MonitorInfo; metrics?: HostMetricsInfo }) {
   const ram = metrics && metrics.memoryTotal > 0 ? (metrics.memoryNonFree / metrics.memoryTotal) * 100 : null;
-  const disk = metrics?.disk && metrics.disk.total > 0 ? (metrics.disk.used / metrics.disk.total) * 100 : null;
+  const disk = metrics?.disk && diskDisplay(metrics.disk);
   const net = metrics?.io?.network;
   const temp = metrics?.temperatureC;
   return (
@@ -94,9 +94,9 @@ function HostCard({ info, metrics }: { info: MonitorInfo; metrics?: HostMetricsI
         />
         <Stat
           label="磁盘"
-          value={disk === null ? "—" : `${disk.toFixed(1)}%`}
-          meter={disk}
-          detail={metrics?.disk ? `可用 ${gib(metrics.disk.available)}G / ${gib(metrics.disk.total)}G` : undefined}
+          value={disk?.percent == null ? "—" : `${disk.percent.toFixed(1)}%`}
+          meter={disk?.percent ?? null}
+          detail={disk?.detail}
         />
         <Stat
           label="网络"
