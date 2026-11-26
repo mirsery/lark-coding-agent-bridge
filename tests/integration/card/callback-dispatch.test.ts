@@ -312,7 +312,7 @@ type Harness = {
   controls: Controls;
   pending: PendingQueue;
   auth: CallbackAuth;
-  dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>): Promise<void>;
+  dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>, operatorOpenId?: string): Promise<void>;
   token(
     action: string,
     overrides?: { operatorOpenId?: string; nonce?: string; scope?: string },
@@ -388,10 +388,10 @@ async function createHarness(
         ttlMs: 60_000,
       });
     },
-    dispatch: (value, formValue) =>
+    dispatch: (value, formValue, operatorOpenId) =>
       handleCardAction({
         channel: channel as unknown as Parameters<typeof handleCardAction>[0]['channel'],
-        evt: cardEvent(value, formValue, opts.operatorId),
+        evt: cardEvent(value, formValue, operatorOpenId ?? opts.operatorId),
         sessions,
         workspaces,
         activeRuns,
