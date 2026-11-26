@@ -83,6 +83,8 @@ export function runWithAccountFailover(opts: AgentRunOptions, deps: AccountFailo
       const inFlight = new Set<string>();
       let background = 0;
       let leave: PickedAccount | undefined;
+      // Where a refused turn moves to, decided as soon as the turn ends.
+      let failTo: PickedAccount | undefined;
 
       for await (const evt of attempt.events) {
         if (evt.type === 'rate_limit') {
@@ -107,6 +109,18 @@ export function runWithAccountFailover(opts: AgentRunOptions, deps: AccountFailo
         if (refusal && (evt.type === 'done' || evt.type === 'error')) {
           if (evt.type === 'done' && evt.sessionId) sessionId = evt.sessionId;
           held.push(evt);
+          // The refused turn is over. Decide now, not when the stream ends:
+          // with background tasks left (subagents, a background Bash) the
+          // process stays up for their reports and its stream does not end,
+          // so waiting for it left the run silent until the idle watchdog.
+          failTo = stopped || wasInterrupted(held) ? undefined : deps.pool.pickRunnable(tried);
+          if (failTo) break;
+          // Nowhere to go: the turn ends paused, and whatever the background
+          // tasks still report passes through as the process's own turns.
+          yield soonestReset(refusal, deps.pool);
+          refusal = undefined;
+          yield* held.splice(0);
+          turnEnded = true;
           continue;
         }
         if (refusal && isProgress(evt)) {
@@ -169,14 +183,26 @@ export function runWithAccountFailover(opts: AgentRunOptions, deps: AccountFailo
         yield* held;
         return;
       }
-      const next = stopped || wasInterrupted(held) ? undefined : deps.pool.pickRunnable(tried);
+      const next = failTo ?? (stopped || wasInterrupted(held) ? undefined : deps.pool.pickRunnable(tried));
       if (!next) {
         yield soonestReset(refusal, deps.pool);
         yield* held;
         return;
       }
-      log.info('agent', 'account-failover', { runId: opts.runId, from: on.id, to: next.id, hasSession: Boolean(sessionId) });
-      if (!(await attempt.waitForExit(deps.exitWaitMs ?? 10_000))) await attempt.stop();
+      log.info('agent', 'account-failover', {
+        runId: opts.runId,
+        from: on.id,
+        to: next.id,
+        hasSession: Boolean(sessionId),
+        ...(background > 0 ? { background } : {}),
+      });
+      // A process kept up by background tasks will not exit on its own; those
+      // tasks run on the refused account too, and the resumed session can
+      // start them again on the next one.
+      if (background > 0 || !(await attempt.waitForExit(deps.exitWaitMs ?? 10_000))) await attempt.stop();
+      // Those tasks went with the process: don't let the executor keep the
+      // next one up on their count.
+      if (background > 0) yield { type: 'background', count: 0 };
       if (stopped) {
         yield refusal;
         yield* held;

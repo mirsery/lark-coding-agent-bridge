@@ -319,6 +319,32 @@ function fakeRun(events: AgentEvent[], log: string[] = []): AgentRun {
   };
 }
 
+/**
+ * A scripted claude attempt whose process lingers after its events, the way
+ * claude does while background tasks are running: the stream only ends once
+ * the attempt is stopped (or `release` is called).
+ */
+function lingeringRun(events: AgentEvent[], log: string[] = []): AgentRun & { release(more?: AgentEvent[]): void } {
+  let release!: (more: AgentEvent[]) => void;
+  const ended = new Promise<AgentEvent[]>((resolve) => {
+    release = resolve;
+  });
+  return {
+    runId: 'r',
+    pid: 1,
+    events: (async function* () {
+      yield* events;
+      yield* await ended;
+    })(),
+    stop: async () => {
+      log.push('stop');
+      release([]);
+    },
+    waitForExit: async () => false,
+    release: (more = []) => release(more),
+  };
+}
+
 async function collect(run: AgentRun): Promise<AgentEvent[]> {
   const out: AgentEvent[] = [];
   for await (const evt of run.events) out.push(evt);
@@ -540,6 +566,63 @@ describe('account failover', () => {
     expect(spawned).toEqual(['default']);
     expect(events.map((e) => e.type)).toEqual(['account', 'text', 'done', 'rate_limit', 'done']);
     expect(pool.refusedUntil('default')).toBe(NOW + HOUR);
+  });
+
+  it('moves a refused run on at once while its background tasks keep the process alive', async () => {
+    // 2026-11-26: the refused turn ended with subagents still running, so the
+    // process never exited; the failover waited for its stream to end and the
+    // run sat silent until the 15-minute idle watchdog killed it.
+    const { pool } = await poolWith(['b']);
+    const spawned: string[] = [];
+    const stops: string[] = [];
+    const run = runWithAccountFailover(OPTS, {
+      pool,
+      spawn: (_opts, account) => {
+        spawned.push(account.id);
+        return spawned.length === 1
+          ? lingeringRun([{ type: 'background', count: 2 }, ...refused], stops)
+          : fakeRun([
+              { type: 'text', delta: 'done on b' },
+              { type: 'done', sessionId: 's1', terminationReason: 'normal' },
+            ]);
+      },
+      labelOf: async (account) => account.label ?? account.id,
+      exitWaitMs: 0,
+    });
+    const events = await collect(run);
+    expect(spawned).toEqual(['default', 'b']);
+    expect(stops).toEqual(['stop']);
+    // The stopped process's background tasks are gone; the executor must not keep waiting on them.
+    expect(events.filter((e) => e.type === 'background').at(-1)).toEqual({ type: 'background', count: 0 });
+    expect(events.filter((e) => e.type === 'rate_limit')).toEqual([]);
+    expect(events.filter((e) => e.type === 'done')).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: 'done', sessionId: 's1' });
+  });
+
+  it('ends a refused turn at once when no account is left, and keeps passing the background turns on', async () => {
+    const { pool } = await poolWith(['b']);
+    pool.observe('b', limit({ blocked: true, resetsAt: NOW + 2 * HOUR }));
+    const spawned: string[] = [];
+    let attempt: ReturnType<typeof lingeringRun> | undefined;
+    const run = runWithAccountFailover(OPTS, {
+      pool,
+      spawn: (_opts, account) => {
+        spawned.push(account.id);
+        attempt = lingeringRun([{ type: 'background', count: 1 }, ...refused]);
+        return attempt;
+      },
+      labelOf: async () => 'me',
+    });
+    const seen: AgentEvent[] = [];
+    for await (const evt of run.events) {
+      seen.push(evt);
+      // The refused turn's end must arrive while the process is still up.
+      if (evt.type === 'done' && seen.filter((e) => e.type === 'done').length === 1) {
+        attempt!.release([{ type: 'text', delta: 'background report' }, { type: 'done', terminationReason: 'normal' }]);
+      }
+    }
+    expect(spawned).toEqual(['default']);
+    expect(seen.map((e) => e.type)).toEqual(['account', 'background', 'system', 'usage', 'rate_limit', 'done', 'text', 'done']);
   });
 
   it('hands later turns and the end of input to the attempt that is running', async () => {
