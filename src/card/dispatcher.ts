@@ -38,6 +38,14 @@ const SKILL_NAME = /^[a-z0-9-]{1,40}:[a-z0-9-]{1,40}$/;
 const SKILL_FIELD_KEY = /^[a-z_]{1,32}$/;
 const SKILL_FIELD_VALUE = /^[A-Za-z0-9_.:,/@-]{1,120}$/;
 const SKILL_MAX_FIELDS = 6;
+/** A skill card may also be a form (antelope:deploy's branch picker: one
+ * checkbox per branch plus a launch-order box). Its values ride along under
+ * form_value with the same no-free-text rule: keys are short identifiers,
+ * values are booleans, short identifier strings (spaces allowed, for a list
+ * of numbers) or arrays of those. */
+const SKILL_FORM_KEY = /^[a-z0-9_]{1,32}$/;
+const SKILL_FORM_VALUE = /^[A-Za-z0-9_.:,/@ -]{0,120}$/;
+const SKILL_FORM_MAX_FIELDS = 40;
 
 export interface CardDispatchDeps {
   channel: LarkChannel;
@@ -107,7 +115,15 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       });
       return;
     }
-    forwardToAgent(deps, click, undefined, scope, threadId, mode);
+    const form = formValue === undefined ? undefined : skillForm(formValue);
+    if (form === null) {
+      log.warn('cardAction', 'skip-bad-skill-form', {
+        scope,
+        form: JSON.stringify(formValue).slice(0, 200),
+      });
+      return;
+    }
+    forwardToAgent(deps, click, form, scope, threadId, mode);
     return;
   }
 
@@ -284,6 +300,22 @@ function skillClick(payload: Record<string, unknown>): Record<string, string> | 
     click[key] = value;
   }
   return click;
+}
+
+/** The form values of a skill card, or null when any of them is free text,
+ * too long, or not a boolean / short identifier (see SKILL_FORM_VALUE). */
+function skillForm(form: Record<string, unknown>): Record<string, unknown> | null {
+  const entries = Object.entries(form);
+  if (entries.length > SKILL_FORM_MAX_FIELDS) return null;
+  const okValue = (v: unknown): boolean =>
+    typeof v === 'boolean' || (typeof v === 'string' && SKILL_FORM_VALUE.test(v));
+  for (const [key, value] of entries) {
+    if (!SKILL_FORM_KEY.test(key)) return null;
+    if (Array.isArray(value) ? value.length > SKILL_FORM_MAX_FIELDS || !value.every(okValue) : !okValue(value)) {
+      return null;
+    }
+  }
+  return form;
 }
 
 function isSignedBridgeCallback(payload: Record<string, unknown>): boolean {
