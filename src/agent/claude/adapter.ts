@@ -30,6 +30,8 @@ export interface ClaudeAdapterOptions {
   larkChannel?: LarkChannelEnvContext;
   /** The profile's subscription accounts; runs move to another one when the quota runs out. */
   accounts?: ClaudeAccountPool;
+  /** Test hook: override {@link NEXT_TURN_GUARD_MS}. */
+  nextTurnGuardMs?: number;
 }
 
 type ClaudeChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -41,12 +43,14 @@ export class ClaudeAdapter implements AgentAdapter {
   private readonly binary: string;
   private readonly larkChannel: LarkChannelEnvContext | undefined;
   private readonly accounts: ClaudeAccountPool | undefined;
+  private readonly nextTurnGuardMs: number;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.binary = opts.binary ?? 'claude';
     this.larkChannel = opts.larkChannel;
     this.accounts = opts.accounts;
+    this.nextTurnGuardMs = opts.nextTurnGuardMs ?? NEXT_TURN_GUARD_MS;
   }
 
   async prepareRun(): Promise<void> {
@@ -235,7 +239,8 @@ export class ClaudeAdapter implements AgentAdapter {
     return {
       runId: opts.runId,
       pid: child.pid,
-      events: createEventStream(child, stderrChunks, () => runtimeError, onEvent, costBaseline, input, () => stopRequested, stdout, lines),
+      events: createEventStream(child, stderrChunks, () => runtimeError, onEvent, costBaseline, input, () => stopRequested, stdout, lines,
+        this.nextTurnGuardMs),
       send: (prompt) => input.write(prompt),
       inject(prompt: string, preview: string): boolean {
         const ok = input.inject(prompt, preview);
@@ -298,7 +303,10 @@ export class ClaudeAdapter implements AgentAdapter {
 /**
  * How long a `result` that left written input unread may be followed by
  * silence before the turn is ended anyway. The CLI starts the queued turn at
- * once; this only guards against it never doing so.
+ * once; this only guards against it never doing so. Once the queued turn has
+ * started (the CLI echoed the supplement, or the turn produced output) the
+ * guard is off: silence inside a running turn — a long tool input being
+ * generated, a foreground build — is not a turn that never started.
  */
 const NEXT_TURN_GUARD_MS = 30_000;
 
@@ -381,6 +389,7 @@ async function* createEventStream(
   wasStopped: () => boolean,
   rl: ReturnType<typeof createInterface>,
   lines: AsyncIterator<string>,
+  nextTurnGuardMs: number = NEXT_TURN_GUARD_MS,
 ): AsyncGenerator<AgentEvent> {
   // If fork itself failed synchronously, child.pid is undefined. The 'error'
   // event (ENOENT etc.) fires in the next tick, so also check getError().
@@ -428,6 +437,9 @@ async function* createEventStream(
   // turn: its `done` waits here for the turn the CLI runs next. If that turn
   // never starts, the guard lets the `done` go out anyway.
   let deferredDone: AgentEvent | undefined;
+  // The turn the CLI queued for the unread input has begun: from here its own
+  // `result` (or the process exit) ends the run, not the guard.
+  let queuedTurnStarted = false;
   let guard: ReturnType<typeof setTimeout> | undefined;
   const clearGuard = (): void => {
     if (guard) clearTimeout(guard);
@@ -439,11 +451,11 @@ async function* createEventStream(
   try {
     for (;;) {
       pendingLine ??= lines.next();
-      const next = deferredDone
+      const next = deferredDone && !queuedTurnStarted
         ? await Promise.race([
             pendingLine,
             new Promise<'guard'>((resolve) => {
-              guard = setTimeout(() => resolve('guard'), NEXT_TURN_GUARD_MS);
+              guard = setTimeout(() => resolve('guard'), nextTurnGuardMs);
             }),
           ])
         : await pendingLine;
@@ -470,6 +482,7 @@ async function* createEventStream(
       }
       const replayed = replayedUuid(parsed);
       if (replayed !== undefined) {
+        if (deferredDone) queuedTurnStarted = true;
         turnTerminal = false;
         authFailed = false;
         const preview = input.ack(replayed);
@@ -494,6 +507,7 @@ async function* createEventStream(
           if (moreInput && !wasStopped()) {
             log.info('agent', 'turn-result-more-input', { pid: child.pid ?? null, unread: input.unreadCount });
             deferredDone = evt;
+            queuedTurnStarted = false;
             continue;
           }
           deferredDone = undefined;
@@ -505,6 +519,7 @@ async function* createEventStream(
         }
         if (evt.type === 'done' || evt.type === 'error') turnTerminal = true;
         else if (evt.type === 'text' || evt.type === 'thinking' || evt.type === 'tool_use') {
+          if (deferredDone) queuedTurnStarted = true;
           turnTerminal = false;
           refused = false;
         } else if (evt.type === 'rate_limit' && evt.blocked) refused = true;

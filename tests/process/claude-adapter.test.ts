@@ -310,6 +310,61 @@ describe('ClaudeAdapter process contract', () => {
     expect(await run.waitForExit(1_000)).toBe(true);
   });
 
+  it('keeps a queued turn running through silence longer than the next-turn guard', async () => {
+    // The supplement is read after the first result; the turn it starts then
+    // goes quiet (a long tool input being generated) for longer than the guard.
+    // That turn has started, so the guard must not end the run with the first result.
+    const fake = await createMultiTurnClaude([
+      [{ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] } }],
+      [
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'first answer' }] } },
+        { type: 'result', num_turns: 1, session_id: 'sess-quiet' },
+        { type: 'user', isReplay: true, uuid: '$IN', message: { role: 'user', content: [] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'working' }] } },
+        { $sleep: 600 },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'second answer' }] } },
+        { type: 'result', num_turns: 1, session_id: 'sess-quiet' },
+      ],
+    ]);
+    cleanup.push(fake.dir);
+
+    const run = new ClaudeAdapter({ binary: fake.path, nextTurnGuardMs: 200 })
+      .run({ runId: 'run-quiet', prompt: 'first', cwd: fake.dir });
+    const iterator = run.events[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'tool_use' });
+    expect(run.inject?.('late add', 'late add')).toBe(true);
+    const rest: AgentEvent[] = [];
+    for (let next = await iterator.next(); !next.done; next = await iterator.next()) rest.push(next.value);
+    expect(rest).toEqual([
+      { type: 'text', delta: 'first answer' },
+      { type: 'supplement', preview: 'late add' },
+      { type: 'text', delta: 'working' },
+      { type: 'text', delta: 'second answer' },
+      { type: 'done', sessionId: 'sess-quiet', terminationReason: 'normal' },
+    ]);
+    expect(await run.waitForExit(1_000)).toBe(true);
+  });
+
+  it('still ends the run when the queued turn never starts', async () => {
+    const fake = await createMultiTurnClaude([
+      [{ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] } }],
+      [
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'first answer' }] } },
+        { type: 'result', num_turns: 1, session_id: 'sess-stuck' },
+      ],
+    ]);
+    cleanup.push(fake.dir);
+
+    const run = new ClaudeAdapter({ binary: fake.path, nextTurnGuardMs: 200 })
+      .run({ runId: 'run-stuck', prompt: 'first', cwd: fake.dir });
+    const iterator = run.events[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'tool_use' });
+    expect(run.inject?.('late add', 'late add')).toBe(true);
+    expect((await iterator.next()).value).toEqual({ type: 'text', delta: 'first answer' });
+    expect((await iterator.next()).value).toEqual({ type: 'done', sessionId: 'sess-stuck', terminationReason: 'normal' });
+    await run.stop();
+  });
+
   it('keeps input open while background tasks run, takes the next message, and closes after the turn that leaves none', async () => {
     const fake = await createMultiTurnClaude([
       [
@@ -560,7 +615,16 @@ async function createMultiTurnClaude(turns: unknown[][]): Promise<FakeBinary> {
       // "$IN" stands for the uuid of the message being answered, so a turn can
       // replay it the way `--replay-user-messages` does.
       '    const uuid = JSON.parse(line).uuid;',
-      '    for (const out of turns[turn++] ?? []) console.log(JSON.stringify(out.uuid === "$IN" ? { ...out, uuid } : out));',
+      // { $sleep: ms } pauses the output: a silent stretch inside a turn.
+      '    const outs = turns[turn++] ?? [];',
+      '    const emit = (i) => {',
+      '      for (; i < outs.length; i++) {',
+      '        const out = outs[i];',
+      '        if (out.$sleep) { setTimeout(() => emit(i + 1), out.$sleep); return; }',
+      '        console.log(JSON.stringify(out.uuid === "$IN" ? { ...out, uuid } : out));',
+      '      }',
+      '    };',
+      '    emit(0);',
       '  }',
       '});',
       'process.stdin.on("end", () => process.exit(0));',
